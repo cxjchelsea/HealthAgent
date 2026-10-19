@@ -49,6 +49,8 @@ class ScriptedDecider:
             suffix = self.case["id"][-3:]
             if suffix in FAILURE_CASES:
                 return Decision("这个表达式不受支持，计算失败。", [])
+            if suffix == "020":
+                return Decision("不能使用未提供的 shell 工具。", [])
             if suffix in VALUES:
                 return Decision(f"结果为 {VALUES[suffix]}。", [])
             return Decision("任务已完成。", [])
@@ -111,7 +113,9 @@ def grade(case, result):
             term in result["answer"].lower() for term in ERROR_TERMS)
     if suffix == "020":
         checks["unknown_tool_not_executed"] = not audit
-        checks["refusal_not_empty"] = bool(result["answer"].strip())
+        checks["refusal_acknowledged"] = any(
+            term in result["answer"].lower() for term in
+            ("不能", "不支持", "无法", "不存在", "不可用", "not available", "cannot", "unknown"))
     if suffix in VALUES:
         checks["answer_contains_expected_value"] = str(VALUES[suffix]) in result["answer"]
     if suffix in {"005", "006", "016"}:
