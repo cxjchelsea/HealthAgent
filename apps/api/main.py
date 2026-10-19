@@ -13,6 +13,8 @@ from sqlalchemy.exc import IntegrityError
 from agent.config import Settings
 from agent.providers import make_provider, ModelUnavailable
 from agent.understanding import GoalIntake, understand
+from agent.decision import NativeToolDecision
+from agent.loop import AgentLoop
 from services.db import Base, Conversation, Message, Turn, database
 
 log=logging.getLogger("healthagent")
@@ -32,7 +34,7 @@ class ConversationOut(BaseModel):
 def event(event_type: str, **payload):
     return f"event: {event_type}\ndata: {json.dumps(payload,ensure_ascii=False)}\n\n"
 
-def create_app(settings: Settings | None=None, provider=None):
+def create_app(settings: Settings | None=None, provider=None, agent_decider=None):
     settings = settings or Settings()
     engine, Session=database(settings.database_url)
     model=provider or make_provider(settings)
@@ -65,6 +67,13 @@ def create_app(settings: Settings | None=None, provider=None):
     @app.post("/understanding", response_model=GoalIntake)
     def understand_goal(body: GoalIn, uid=Depends(user_id)):
         return understand(body.content)
+
+    @app.post("/agent/runs")
+    async def run_agent(body: GoalIn, uid=Depends(user_id)):
+        if len(body.content) > settings.max_input_chars:
+            raise HTTPException(413, "message_too_long")
+        decider = agent_decider if agent_decider is not None else NativeToolDecision(settings)
+        return await AgentLoop(decider).run(body.content)
 
     @app.get("/healthz")
     def healthz():return {"status":"ok"}
