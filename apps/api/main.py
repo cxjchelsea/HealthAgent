@@ -27,9 +27,6 @@ class ConversationOut(BaseModel):
     id: str
     messages: list[dict]
 
-def event(event_type: str, **payload):
-    return f"event: {event_type}\ndata: {json.dumps(payload,ensure_ascii=False)}\n\n"
-
 def create_app(settings: Settings | None=None, provider=None, agent_decider=None):
     settings = settings or Settings()
     engine, Session=database(settings.database_url)
