@@ -12,6 +12,7 @@ from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from agent.config import Settings
 from agent.providers import make_provider, ModelUnavailable
+from agent.understanding import GoalIntake, understand
 from services.db import Base, Conversation, Message, Turn, database
 
 log=logging.getLogger("healthagent")
@@ -20,6 +21,9 @@ logging.basicConfig(level=logging.INFO,format='%(levelname)s %(message)s')
 class ChatIn(BaseModel):
     content: str = Field(min_length=1)
     client_request_id: str = Field(min_length=8,max_length=120)
+
+class GoalIn(BaseModel):
+    content: str = Field(min_length=1)
 
 class ConversationOut(BaseModel):
     id: str
@@ -35,7 +39,8 @@ def create_app(settings: Settings | None=None, provider=None):
 
     @asynccontextmanager
     async def lifespan(app):
-        Base.metadata.create_all(engine)  # S0 only: use Alembic migrations before production
+        from services.migrate import migrate
+        migrate(settings.database_url)
         yield
         engine.dispose()
 
@@ -56,6 +61,10 @@ def create_app(settings: Settings | None=None, provider=None):
         if not c or c.owner_id!=uid:
             raise HTTPException(404,"Conversation not found")
         return c
+
+    @app.post("/understanding", response_model=GoalIntake)
+    def understand_goal(body: GoalIn, uid=Depends(user_id)):
+        return understand(body.content)
 
     @app.get("/healthz")
     def healthz():return {"status":"ok"}
