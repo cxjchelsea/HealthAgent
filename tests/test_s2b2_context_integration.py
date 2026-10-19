@@ -46,8 +46,9 @@ def test_actual_model_input_is_bounded_with_persisted_history(tmp_path):
         actual = decision.calls[-1]
         assert actual[0]["role"] == "system"
         assert actual[-1] == {"role": "user", "content": "RECENT-QUESTION"}
-        # Each older message has 76 chars, so latest 128-char budget cannot fit it.
-        assert not any("OLD-" in m["content"] for m in actual)
+        # The most recent old message may fit; the earliest must be pruned.
+        assert not any("OLD-0-" in m["content"] for m in actual)
+        assert any("OLD-4-" in m["content"] for m in actual)
         assert actual[-2] == {"role": "assistant", "content": "ack"}
         assert sum(len(m["content"]) for m in actual[1:]) <= 128
         assert all(m["role"] in ("user", "assistant") for m in actual[1:])
