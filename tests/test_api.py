@@ -9,12 +9,14 @@ from agent.providers import ModelUnavailable
 @pytest.fixture
 def client(tmp_path):
     settings=Settings(database_url=f"sqlite:///{tmp_path/'test.db'}",model_provider="fake",user_tokens="alpha:user-a,beta:user-b",allow_demo_identity=False)
-    with TestClient(create_app(settings)) as c:yield c
+    with TestClient(create_app(settings)) as c:
+        yield c
 
 def headers(token="alpha"):return {"Authorization":f"Bearer {token}"}
 
 def make(client, token="alpha"):
-    response=client.post('/conversations',headers=headers(token));assert response.status_code==201
+    response=client.post('/conversations',headers=headers(token))
+    assert response.status_code==201
     return response.json()['id']
 
 def test_health_ready(client):

@@ -72,7 +72,8 @@ def create_app(settings: Settings | None=None, provider=None):
     @app.get("/readyz")
     def readyz():
         try:
-            with engine.connect() as db: db.execute(text("SELECT 1"))
+            with engine.connect() as db:
+                db.execute(text("SELECT 1"))
         except Exception:
             raise HTTPException(503,"database_unavailable")
         return {"status":"ready","provider_configured":settings.provider_ready}
@@ -86,7 +87,8 @@ def create_app(settings: Settings | None=None, provider=None):
     def new_conversation(uid=Depends(user_id)):
         with Session.begin() as db:
             c=Conversation(owner_id=uid)
-            db.add(c);db.flush()
+            db.add(c)
+            db.flush()
             return {"id":c.id}
 
     @app.get("/conversations")
@@ -117,9 +119,11 @@ def create_app(settings: Settings | None=None, provider=None):
             context.append({"role":"user","content":body.content})
             msg=Message(conversation_id=cid,role="user",content=body.content)
             assistant=Message(conversation_id=cid,role="assistant",content="",status="pending")
-            db.add_all([msg,assistant]);db.flush()
+            db.add_all([msg,assistant])
+            db.flush()
             turn=Turn(conversation_id=cid,request_id=body.client_request_id,assistant_message_id=assistant.id,input_chars=len(body.content))
-            db.add(turn);db.flush()
+            db.add(turn)
+            db.flush()
             message_id=assistant.id
             turn_id=turn.id
         async def produce():
