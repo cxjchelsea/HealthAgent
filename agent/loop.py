@@ -83,13 +83,20 @@ class AgentLoop:
         return {"messages": state["messages"] + observations,
                 "tasks": tasks, "traces": traces, "audit": audit}
 
-    async def run(self, goal: str, *, include_evidence: bool = False) -> dict:
+    async def run(self, goal: str, *, include_evidence: bool = False,
+                  history: list[dict] | None = None) -> dict:
         if not goal.strip() or len(goal) > 12000:
             raise ValueError("Goal must contain 1..12000 characters")
         run_id = str(uuid.uuid4())
+        clean_history = []
+        for entry in history or []:
+            if (not isinstance(entry, dict) or entry.get("role") not in ("user", "assistant")
+                    or not isinstance(entry.get("content"), str)):
+                raise ValueError("Invalid conversation history")
+            clean_history.append({"role": entry["role"], "content": entry["content"]})
         initial: AgentState = {"messages": [
             {"role": "system", "content": PROMPT},
-            {"role": "user", "content": goal}],
+            *clean_history, {"role": "user", "content": goal}],
             "traces": [], "tasks": [], "final": "", "status": "running", "iterations": 0,
             "audit_enabled": include_evidence, "audit": []}
         try:

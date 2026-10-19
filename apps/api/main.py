@@ -75,6 +75,61 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
         decider = agent_decider if agent_decider is not None else NativeToolDecision(settings)
         return await AgentLoop(decider).run(body.content)
 
+    @app.post("/conversations/{cid}/agent/messages")
+    async def send_agent_in_conversation(cid: str, body: ChatIn, uid=Depends(user_id)):
+        """S2-B1: reuse S1 ownership, persisted turns and completed conversation context."""
+        if len(body.content) > settings.max_input_chars:
+            raise HTTPException(413, "message_too_long")
+        with Session.begin() as db:
+            get_owned(db, cid, uid)
+            prior = db.scalar(select(Turn).where(
+                Turn.conversation_id == cid, Turn.request_id == body.client_request_id))
+            if prior:
+                raise HTTPException(409, "duplicate_request_id")
+            history = db.scalars(select(Message).where(
+                Message.conversation_id == cid, Message.status == "completed")
+                .order_by(Message.created_at, Message.id)).all()
+            context = [{"role": m.role, "content": m.content}
+                       for m in history[-settings.max_history_messages:]
+                       if m.role in ("user", "assistant")]
+            user_message = Message(conversation_id=cid, role="user", content=body.content)
+            response_message = Message(conversation_id=cid, role="assistant",
+                                       content="", status="pending")
+            db.add_all([user_message, response_message])
+            db.flush()
+            turn = Turn(conversation_id=cid, request_id=body.client_request_id,
+                        assistant_message_id=response_message.id,
+                        input_chars=len(body.content))
+            db.add(turn)
+            db.flush()
+            assistant_id, turn_id = response_message.id, turn.id
+        began = time.monotonic()
+        status, answer = "provider_error", ""
+        result = None
+        try:
+            decider = agent_decider if agent_decider is not None else NativeToolDecision(settings)
+            result = await AgentLoop(decider).run(body.content, history=context)
+            if result["status"] == "completed":
+                answer, status = result["answer"], "completed"
+            else:
+                status = result["status"]
+        except Exception as exc:
+            log.warning("conversation Agent failed turn=%s class=%s", turn_id, type(exc).__name__)
+            status = "provider_error"
+        finally:
+            with Session.begin() as db:
+                response = db.get(Message, assistant_id)
+                turn = db.get(Turn, turn_id)
+                if response is not None and turn is not None:
+                    response.content = answer
+                    response.status = status
+                    turn.state = status
+                    turn.output_chars = len(answer)
+                    turn.duration_ms = int((time.monotonic()-began)*1000)
+        if status != "completed":
+            raise HTTPException(503, "Agent run did not complete")
+        return {**result, "conversation_id": cid, "message_id": assistant_id}
+
     @app.get("/healthz")
     def healthz():return {"status":"ok"}
 
