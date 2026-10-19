@@ -57,5 +57,6 @@ def test_output_budget_and_limit_reason(monkeypatch):
     monkeypatch.setattr('agent.providers.httpx.AsyncClient',lambda *a,**kw:native(transport=httpx.MockTransport(handler),**kw))
     import asyncio
     async def run():return [part async for part in OllamaProxyProvider('http://example.test','qwen3:14b',max_output_tokens=4096).stream([{'role':'user','content':'hi'}])]
-    with pytest.raises(ModelUnavailable,match='output limit'):asyncio.run(run())
+    with pytest.raises(ModelUnavailable,match='output limit'):
+        asyncio.run(run())
     assert seen['options']['num_predict']==4096
