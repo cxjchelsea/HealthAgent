@@ -17,6 +17,8 @@ class AgentState(TypedDict):
     final: str
     status: str
     iterations: int
+    audit_enabled: bool
+    audit: list[dict]
 
 class AgentLoop:
     def __init__(self, decider: Any, max_steps: int = 6, clock=None):
@@ -64,6 +66,7 @@ class AgentLoop:
         tasks = list(state["tasks"])
         observations = []
         traces = list(state["traces"])
+        audit = list(state["audit"])
         # Limit fanout, never allow an arbitrary number of model tool calls.
         for index, call in enumerate(last.get("tool_calls", [])[:4]):
             function = call["function"]
@@ -74,17 +77,21 @@ class AgentLoop:
                                  "content": json.dumps(result, ensure_ascii=False)})
             traces.append({"step": state["iterations"], "type": "tool",
                            "name": name, "ok": result["ok"]})
+            if state["audit_enabled"]:
+                audit.append({"step": state["iterations"], "name": name,
+                              "arguments": function.get("arguments"), "observation": result})
         return {"messages": state["messages"] + observations,
-                "tasks": tasks, "traces": traces}
+                "tasks": tasks, "traces": traces, "audit": audit}
 
-    async def run(self, goal: str) -> dict:
+    async def run(self, goal: str, *, include_evidence: bool = False) -> dict:
         if not goal.strip() or len(goal) > 12000:
             raise ValueError("Goal must contain 1..12000 characters")
         run_id = str(uuid.uuid4())
         initial: AgentState = {"messages": [
             {"role": "system", "content": PROMPT},
             {"role": "user", "content": goal}],
-            "traces": [], "tasks": [], "final": "", "status": "running", "iterations": 0}
+            "traces": [], "tasks": [], "final": "", "status": "running", "iterations": 0,
+            "audit_enabled": include_evidence, "audit": []}
         try:
             outcome = await self.graph.ainvoke(initial, config={"recursion_limit": 2 * self.max_steps + 4})
         except Exception as exc:
@@ -93,6 +100,10 @@ class AgentLoop:
                 return {"run_id": run_id, "status": "provider_error", "answer": "",
                         "trace": [], "prompt_version": PROMPT_VERSION}
             raise
-        return {"run_id": run_id, "status": outcome["status"],
-                "answer": outcome["final"], "trace": outcome["traces"],
-                "prompt_version": PROMPT_VERSION, "steps": outcome["iterations"]}
+        result = {"run_id": run_id, "status": outcome["status"],
+                  "answer": outcome["final"], "trace": outcome["traces"],
+                  "prompt_version": PROMPT_VERSION, "steps": outcome["iterations"]}
+        if include_evidence:
+            result["audit"] = outcome["audit"]
+            result["tasks"] = outcome["tasks"]
+        return result
