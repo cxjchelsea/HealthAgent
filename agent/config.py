@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     model_timeout_seconds: float = Field(default=45, gt=0)
     model_max_output_tokens: int = Field(default=2048, ge=128, le=16384)
     max_history_messages: int = Field(default=30, ge=1, le=200)
+    context_max_chars: int = Field(default=24000, ge=128, le=200000)
     max_input_chars: int = Field(default=12000, ge=1)
     demo_user_id: str = "demo-local"
     # Not an authentication system: development-only bearer tokens map to identities.
