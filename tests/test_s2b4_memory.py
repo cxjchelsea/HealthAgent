@@ -10,8 +10,9 @@ class MemoryDecider:
         if last["role"]=="tool":
             return Decision(last["content"],[])
         if last["content"].startswith("SAVE"):
+            value = "red whale" if last["content"] == "SAVE_RED" else "blue whale"
             return Decision("",[{"id":"s","name":"save_memory",
-                                 "arguments":{"key":"project","value":"blue whale"}}])
+                                 "arguments":{"key":"project","value":value}}])
         return Decision("",[{"id":"r","name":"recall_memory",
                              "arguments":{"key":"project"}}])
 
@@ -40,7 +41,7 @@ def test_controlled_memory_lifecycle(tmp_path):
         assert "blue whale" in ask(sibling,ha,"RECALL","memory-00008").json()["answer"]
         assert '"found": false' in ask(cb,hb,"RECALL","memory-00005").json()["answer"]
         # A denied write cannot replace a previously committed fact.
-        denied_again=ask(ca,ha,"SAVE","memory-00010")
+        denied_again=ask(ca,ha,"SAVE_RED","memory-00010")
         assert "memory_write_requires_user_consent" in denied_again.json()["answer"]
         assert "blue whale" in ask(sibling,ha,"RECALL","memory-00011").json()["answer"]
         changed=c.put("/memories/project",headers=ha,json={"value":"green whale"})
