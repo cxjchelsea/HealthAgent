@@ -17,14 +17,17 @@ def migrate(database_url: str | None = None) -> str:
         existing = set(inspector.get_table_names()) - {"alembic_version"}
         expected = set(Base.metadata.tables)
         if existing and "alembic_version" not in inspector.get_table_names():
-            if existing != expected:
+            legacy = {"conversations", "messages", "turns"}
+            if existing not in (legacy, expected):
                 raise RuntimeError(f"Existing unversioned tables differ; manual migration required: {sorted(existing ^ expected)}")
             for table in Base.metadata.sorted_tables:
+                if table.name not in existing:
+                    continue
                 actual = {c["name"] for c in inspector.get_columns(table.name)}
                 required = {c.name for c in table.columns}
                 if actual != required:
                     raise RuntimeError(f"Unversioned schema mismatch in {table.name}; backup and review required")
-            mode = "validated_existing"
+            mode = "validated_existing" if existing == expected else "validated_legacy"
         elif existing:
             mode = "versioned"
         else:
@@ -40,6 +43,9 @@ def migrate(database_url: str | None = None) -> str:
     try:
         if mode == "validated_existing":
             command.stamp(config, "head")
+        elif mode == "validated_legacy":
+            command.stamp(config, "0001_s0_s1")
+            command.upgrade(config, "head")
         else:
             command.upgrade(config, "head")
     finally:
