@@ -29,7 +29,7 @@ VALUES = {
 # These require a separate model decision after observing an earlier tool response.
 # 013/014 embed the answer in the user's goal, so a parallel call isn't evidence
 # of observation-dependent reasoning.
-OBSERVATION_REQUIRED = {"011", "012", "015", "016", "017"}
+OBSERVATION_REQUIRED = {"015", "016", "017"}
 FAILURE_CASES = {"018", "019"}
 ERROR_TERMS = ("不能", "失败", "错误", "除以零", "除数", "不支持",
                "无法", "invalid", "unsupported", "division", "error")
@@ -89,11 +89,23 @@ def grade(case, result):
                 matches[0]["observation"].get("value") == VALUES[suffix]
             )
     if suffix in TITLES:
-        checks["task_title_and_state"] = (
-            TITLES[suffix] in result.get("tasks", []) and
-            any(x["name"] == "create_task" and
-                x["arguments"].get("title") == TITLES[suffix] and
-                x["observation"].get("ok") is True for x in audit)
+        # S2A-016 asks to record time, so a title describing the returned UTC
+        # value is valid, not only the literal phrase "记录时间".
+        def title_is_valid(title):
+            if not isinstance(title, str):
+                return False
+            if suffix == "016":
+                return ("时间" in title or "UTC" in title.upper()) and len(title.strip()) > 0
+            return title == TITLES[suffix]
+
+        checks["task_title_and_state"] = any(
+            x["name"] == "create_task"
+            and isinstance(x.get("arguments"), dict)
+            and title_is_valid(x["arguments"].get("title"))
+            and x["arguments"].get("title") in result.get("tasks", [])
+            and x["observation"].get("ok") is True
+            and x["observation"].get("title") == x["arguments"].get("title")
+            for x in audit
         )
     if suffix in {"009", "010"}:
         checks["empty_task_list"] = len(result.get("tasks", [])) == 0 and any(
