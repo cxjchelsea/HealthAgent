@@ -12,5 +12,5 @@ def test_ui_exposes_chat_and_agent_modes(tmp_path):
         assert 'id="mode-chat"' in response.text
         assert 'id="mode-agent"' in response.text
         assert "sendAgent" in response.text
-        assert "/agent/runs" in response.text
+        assert "/agent/messages" in response.text
         assert "/conversations/" in response.text

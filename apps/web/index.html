@@ -1,5 +1,5 @@
 <!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>HealthAgent S1</title><style>
-:root{font-family:system-ui,-apple-system,"Microsoft Yahei",sans-serif;color:#e7eef5;background:#101826}body{margin:0}main{max-width:880px;margin:auto;padding:28px 18px}h1{margin-bottom:3px}.hint{color:#93a4bc;font-size:13px}.panel{background:#182438;border:1px solid #344257;border-radius:12px;padding:18px;margin:16px 0}#messages{height:52vh;overflow:auto;white-space:pre-wrap}.msg{padding:10px 14px;margin:10px 0;background:#26374c;border-radius:8px;line-height:1.6}.assistant{background:#1a3b43}textarea{width:100%;height:90px;box-sizing:border-box;border:1px solid #516078;background:#101826;color:white;padding:12px;border-radius:8px}button{padding:10px 20px;border:0;background:#36a9a5;color:#07171d;border-radius:7px;cursor:pointer}button:disabled{opacity:.5}.toolbar{display:flex;gap:10px;align-items:center;margin-top:10px}.status{color:#a8b7c9;font-size:13px}</style></head><body><main><h1>HealthAgent <small>S0 / S1</small></h1><div class="hint">通用对话基础演示。FAKE 模型仅用于接口测试，不具备真实语言理解。</div><section class="panel"><div class="toolbar" role="group" aria-label="测试模式"><button id="mode-chat" type="button" aria-pressed="true">普通聊天 S1</button><button id="mode-agent" type="button" aria-pressed="false">Agent S2-A</button></div><p class="hint" id="mode-hint">S1 多轮会话、SSE 流式输出。</p><div id="messages" aria-live="polite"></div><textarea id="prompt" placeholder="输入消息（Ctrl + Enter 发送）"></textarea><div class="toolbar"><button id="send">发送</button><button id="stop" disabled>停止生成</button><button id="new">新建对话</button><span class="status" id="status"></span></div></section></main><script>
+:root{font-family:system-ui,-apple-system,"Microsoft Yahei",sans-serif;color:#e7eef5;background:#101826}body{margin:0}main{max-width:880px;margin:auto;padding:28px 18px}h1{margin-bottom:3px}.hint{color:#93a4bc;font-size:13px}.panel{background:#182438;border:1px solid #344257;border-radius:12px;padding:18px;margin:16px 0}#messages{height:52vh;overflow:auto;white-space:pre-wrap}.msg{padding:10px 14px;margin:10px 0;background:#26374c;border-radius:8px;line-height:1.6}.assistant{background:#1a3b43}textarea{width:100%;height:90px;box-sizing:border-box;border:1px solid #516078;background:#101826;color:white;padding:12px;border-radius:8px}button{padding:10px 20px;border:0;background:#36a9a5;color:#07171d;border-radius:7px;cursor:pointer}button:disabled{opacity:.5}.toolbar{display:flex;gap:10px;align-items:center;margin-top:10px}.status{color:#a8b7c9;font-size:13px}</style></head><body><main><h1>HealthAgent <small>Unified Agent · S2-B1</small></h1><div class="hint">通用对话基础演示。FAKE 模型仅用于接口测试，不具备真实语言理解。</div><section class="panel"><div class="toolbar" role="group" aria-label="测试模式"><button id="mode-chat" type="button" aria-pressed="true">普通聊天 S1</button><button id="mode-agent" type="button" aria-pressed="false">Agent S2-A</button></div><p class="hint" id="mode-hint">S1 多轮会话、SSE 流式输出。</p><div id="messages" aria-live="polite"></div><textarea id="prompt" placeholder="输入消息（Ctrl + Enter 发送）"></textarea><div class="toolbar"><button id="send">发送</button><button id="stop" disabled>停止生成</button><button id="new">新建对话</button><span class="status" id="status"></span></div></section></main><script>
 const KEY='healthagent.s1.conversation.v1';
 let agentMode=false;
 let conversation=null,controller=null;
@@ -14,25 +14,26 @@ function switchMode(mode){
   document.querySelector('#mode-chat').setAttribute('aria-pressed',String(!agentMode));
   document.querySelector('#mode-agent').setAttribute('aria-pressed',String(agentMode));
   document.querySelector('#mode-hint').textContent=agentMode
-    ? 'S2-A 单次 Agent Run：模型决定工具调用，返回最终答案与执行 Trace。暂不保留多轮历史，也非流式回复。'
-    : 'S1 多轮会话、SSE 流式输出。';
-  document.querySelector('#new').hidden=agentMode;
+    ? 'S2-B1 同一会话上下文 + Agent Tool Calling；最终 JSON 输出，暂无 Agent 流式事件。'
+    : 'S1 原有多轮 SSE 聊天（对照模式）。';
+  document.querySelector('#new').hidden=false;
   stopButton.textContent=agentMode?'停止等待':'停止生成';
-  messages.replaceChildren();status.textContent=agentMode?'Agent 模式已就绪':'普通聊天模式已就绪';
+  restore().catch(e=>status.textContent='恢复失败：'+e.message);
 }
 document.querySelector('#mode-chat').onclick=()=>switchMode('chat');
 document.querySelector('#mode-agent').onclick=()=>switchMode('agent');
 
 async function sendAgent(value){
+  if(!conversation){status.textContent='请先恢复或新建会话';return;}
   const startAt=performance.now();
   controller=new AbortController();sendButton.disabled=true;stopButton.disabled=false;
   add('user',value);
   const answer=add('assistant','运行中…');
   status.textContent='Agent 正在决策和执行工具…';
   try{
-    const r=await fetch('/agent/runs',{method:'POST',
+    const r=await fetch('/conversations/'+encodeURIComponent(conversation)+'/agent/messages',{method:'POST',
       headers:{'Content-Type':'application/json'},signal:controller.signal,
-      body:JSON.stringify({content:value})});
+      body:JSON.stringify({content:value,client_request_id:crypto.randomUUID()})});
     if(!r.ok)throw Error('Agent 请求失败：HTTP '+r.status);
     const data=await r.json();
     answer.textContent='Agent：'+(data.answer||'（没有最终回答）');
@@ -113,6 +114,6 @@ async function send(){
 }
 
 sendButton.onclick=send;stopButton.onclick=()=>controller?.abort();document.querySelector('#new').onclick=()=>{controller?.abort();if(controller){status.textContent='请等待当前生成停止后再新建对话';return}start().catch(e=>status.textContent=e.message)};prompt.addEventListener('keydown',e=>{if(e.key==='Enter'&&e.ctrlKey)send()});
+switchMode('agent');
 fetch('/model').then(r=>r.ok?r.json():null).then(m=>{if(m)document.querySelector('.hint').textContent='通用对话基础演示 · Provider: '+m.provider+' · Model: '+m.model}).catch(()=>{});
-restore();
 </script></body></html>
