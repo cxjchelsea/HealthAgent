@@ -32,10 +32,10 @@ TOOL_SCHEMAS = [
         "name": "utc_time", "description": "Read the current time in UTC.",
         "parameters": {"type": "object", "properties": {}, "additionalProperties": False}}},
     {"type": "function", "function": {
-        "name": "create_task", "description": "Create a task within this Agent run's isolated simulated task list.",
+        "name": "create_task", "description": "Create a task in the current conversation (persistent across messages).",
         "parameters": {"type": "object", "properties": {"title": {"type": "string"}}, "required": ["title"], "additionalProperties": False}}},
     {"type": "function", "function": {
-        "name": "list_tasks", "description": "List tasks created inside this same Agent run.",
+        "name": "list_tasks", "description": "List persistent tasks in the current conversation.",
         "parameters": {"type": "object", "properties": {}, "additionalProperties": False}}},
 ]
 
@@ -66,7 +66,7 @@ def safe_calculate(expression: str) -> float | int:
     except ZeroDivisionError as exc:
         raise ValueError("Division by zero") from exc
 
-def execute_tool(name: str, arguments: Any, tasks: list[str], clock=None) -> dict:
+def execute_tool(name: str, arguments: Any, tasks: list[str], clock=None, task_store=None) -> dict:
     """Returns typed observation; errors become data for the model, not unhandled side effects."""
     if name not in SCHEMAS:
         return {"ok": False, "error": "unknown_tool"}
@@ -80,11 +80,15 @@ def execute_tool(name: str, arguments: Any, tasks: list[str], clock=None) -> dic
             current = clock() if clock else datetime.now(timezone.utc)
             return {"ok": True, "utc": current.astimezone(timezone.utc).isoformat()}
         if name == "create_task":
+            if task_store is not None:
+                return task_store.create(parsed.title)
             if len(tasks) >= 20:
                 return {"ok": False, "error": "task_limit"}
             tasks.append(parsed.title)
             return {"ok": True, "task_id": len(tasks), "title": parsed.title}
         if name == "list_tasks":
+            if task_store is not None:
+                return task_store.list()
             return {"ok": True, "tasks": [{"task_id": i + 1, "title": t} for i, t in enumerate(tasks)]}
     except (ValidationError, ValueError, SyntaxError, OverflowError, TypeError) as exc:
         return {"ok": False, "error": "invalid_arguments", "kind": type(exc).__name__}
