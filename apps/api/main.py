@@ -11,6 +11,7 @@ from agent.understanding import GoalIntake, understand
 from agent.decision import NativeToolDecision
 from agent.loop import AgentLoop
 from agent.context import build_context
+from services.task_store import ConversationTaskStore
 from services.db import Conversation, Message, Turn, database
 
 log=logging.getLogger("healthagent")
@@ -93,7 +94,7 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
         result = None
         try:
             decider = agent_decider if agent_decider is not None else NativeToolDecision(settings)
-            result = await AgentLoop(decider).run(body.content, history=context)
+            result = await AgentLoop(decider, task_store=ConversationTaskStore(Session, cid)).run(body.content, history=context)
             if result["status"] == "completed":
                 answer, status = result["answer"], "completed"
             else:

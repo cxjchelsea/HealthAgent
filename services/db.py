@@ -27,6 +27,13 @@ class Message(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     conversation: Mapped[Conversation] = relationship(back_populates="messages")
 
+class ConversationTask(Base):
+    __tablename__ = "conversation_tasks"
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(ForeignKey("conversations.id"), index=True)
+    title: Mapped[str] = mapped_column(String(120))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
 class Turn(Base):
     __tablename__="turns"
     __table_args__=(UniqueConstraint("conversation_id", "request_id"),)

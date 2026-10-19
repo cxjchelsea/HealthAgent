@@ -1,4 +1,4 @@
-name: S0-S1 CI
+name: HealthAgent CI
 on: [push, pull_request]
 jobs:
   test:
@@ -33,4 +33,4 @@ jobs:
         run: |
           python -m services.migrate
           python -m services.migrate
-          python -c "from sqlalchemy import create_engine,text; import os; e=create_engine(os.environ['DATABASE_URL']); assert e.connect().execute(text('select version_num from alembic_version')).scalar()=='0001_s0_s1'"
+          python -c "from sqlalchemy import create_engine,text; import os; e=create_engine(os.environ['DATABASE_URL']); assert e.connect().execute(text('select version_num from alembic_version')).scalar()=='0002_tasks'"
