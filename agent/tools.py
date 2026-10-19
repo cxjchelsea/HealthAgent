@@ -14,6 +14,12 @@ class CalcArgs(StrictToolArgs):
 class TaskArgs(StrictToolArgs):
     title: str = Field(min_length=1, max_length=120)
 
+class MemoryKey(StrictToolArgs):
+    key: str = Field(min_length=1, max_length=80)
+
+class MemoryFact(MemoryKey):
+    value: str = Field(min_length=1, max_length=500)
+
 class EmptyArgs(StrictToolArgs):
     pass
 
@@ -22,6 +28,8 @@ SCHEMAS: dict[str, type[BaseModel]] = {
     "utc_time": EmptyArgs,
     "create_task": TaskArgs,
     "list_tasks": EmptyArgs,
+    "save_memory": MemoryFact,
+    "recall_memory": MemoryKey,
 }
 
 TOOL_SCHEMAS = [
@@ -37,6 +45,14 @@ TOOL_SCHEMAS = [
     {"type": "function", "function": {
         "name": "list_tasks", "description": "List persistent tasks in the current conversation.",
         "parameters": {"type": "object", "properties": {}, "additionalProperties": False}}},
+    {"type": "function", "function": {
+        "name": "save_memory", "description": "Save a user-approved fact for future conversations; requires per-turn write consent.",
+        "parameters": {"type": "object", "properties": {"key": {"type": "string"}, "value": {"type": "string"}},
+                       "required": ["key", "value"], "additionalProperties": False}}},
+    {"type": "function", "function": {
+        "name": "recall_memory", "description": "Look up a user-owned long-term memory using an exact key.",
+        "parameters": {"type": "object", "properties": {"key": {"type": "string"}},
+                       "required": ["key"], "additionalProperties": False}}},
 ]
 
 OPS = {ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul, ast.Div: operator.truediv}
@@ -66,7 +82,7 @@ def safe_calculate(expression: str) -> float | int:
     except ZeroDivisionError as exc:
         raise ValueError("Division by zero") from exc
 
-def execute_tool(name: str, arguments: Any, tasks: list[str], clock=None, task_store=None) -> dict:
+def execute_tool(name: str, arguments: Any, tasks: list[str], clock=None, task_store=None, memory_store=None) -> dict:
     """Returns typed observation; errors become data for the model, not unhandled side effects."""
     if name not in SCHEMAS:
         return {"ok": False, "error": "unknown_tool"}
@@ -74,6 +90,14 @@ def execute_tool(name: str, arguments: Any, tasks: list[str], clock=None, task_s
         return {"ok": False, "error": "invalid_arguments"}
     try:
         parsed = SCHEMAS[name].model_validate(arguments)
+        if name == "save_memory":
+            if memory_store is None:
+                return {"ok": False, "error": "memory_unavailable"}
+            return memory_store.put(parsed.key, parsed.value)
+        if name == "recall_memory":
+            if memory_store is None:
+                return {"ok": False, "error": "memory_unavailable"}
+            return memory_store.get(parsed.key)
         if name == "calculate":
             return {"ok": True, "value": safe_calculate(parsed.expression)}
         if name == "utc_time":

@@ -12,6 +12,7 @@ from agent.decision import NativeToolDecision
 from agent.loop import AgentLoop
 from agent.context import build_context
 from services.task_store import ConversationTaskStore
+from services.memory_store import MemoryStore
 from services.db import Conversation, Message, Turn, database
 
 log=logging.getLogger("healthagent")
@@ -20,6 +21,7 @@ logging.basicConfig(level=logging.INFO,format='%(levelname)s %(message)s')
 class ChatIn(BaseModel):
     content: str = Field(min_length=1)
     client_request_id: str = Field(min_length=8,max_length=120)
+    memory_write_consent: bool = False
 
 class GoalIn(BaseModel):
     content: str = Field(min_length=1)
@@ -61,6 +63,25 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
     def understand_goal(body: GoalIn, uid=Depends(user_id)):
         return understand(body.content)
 
+    class MemoryInput(BaseModel):
+        value: str = Field(min_length=1, max_length=500)
+
+    @app.get("/memories")
+    def list_memories(uid=Depends(user_id)):
+        return MemoryStore(Session, uid).list()
+
+    @app.put("/memories/{key}")
+    def set_memory(key: str, body: MemoryInput, uid=Depends(user_id)):
+        if not 1 <= len(key) <= 80:
+            raise HTTPException(422, "invalid_memory_key")
+        return MemoryStore(Session, uid, write_allowed=True).put(key, body.value)
+
+    @app.delete("/memories/{key}")
+    def delete_memory(key: str, uid=Depends(user_id)):
+        if not MemoryStore(Session, uid).delete(key):
+            raise HTTPException(404, "memory_not_found")
+        return {"deleted": True}
+
     @app.post("/conversations/{cid}/agent/messages")
     async def send_agent_in_conversation(cid: str, body: ChatIn, uid=Depends(user_id)):
         """S2-B1: reuse S1 ownership, persisted turns and completed conversation context."""
@@ -94,7 +115,8 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
         result = None
         try:
             decider = agent_decider if agent_decider is not None else NativeToolDecision(settings)
-            result = await AgentLoop(decider, task_store=ConversationTaskStore(Session, cid)).run(body.content, history=context)
+            result = await AgentLoop(decider, task_store=ConversationTaskStore(Session, cid),
+                memory_store=MemoryStore(Session, uid, write_allowed=body.memory_write_consent)).run(body.content, history=context)
             if result["status"] == "completed":
                 answer, status = result["answer"], "completed"
             else:

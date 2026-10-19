@@ -34,6 +34,14 @@ class ConversationTask(Base):
     title: Mapped[str] = mapped_column(String(120))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
+class UserMemory(Base):
+    __tablename__ = "user_memories"
+    __table_args__ = (UniqueConstraint("owner_id", "key", name="uq_user_memory_owner_key"),)
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    owner_id: Mapped[str] = mapped_column(String(128), index=True)
+    key: Mapped[str] = mapped_column(String(80))
+    value: Mapped[str] = mapped_column(String(500))
+
 class Turn(Base):
     __tablename__="turns"
     __table_args__=(UniqueConstraint("conversation_id", "request_id"),)

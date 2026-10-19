@@ -21,13 +21,14 @@ class AgentState(TypedDict):
     audit: list[dict]
 
 class AgentLoop:
-    def __init__(self, decider: Any, max_steps: int = 6, clock=None, task_store=None):
+    def __init__(self, decider: Any, max_steps: int = 6, clock=None, task_store=None, memory_store=None):
         if max_steps < 1 or max_steps > 20:
             raise ValueError("max_steps must be 1..20")
         self.decider = decider
         self.max_steps = max_steps
         self.clock = clock
         self.task_store = task_store
+        self.memory_store = memory_store
         flow = StateGraph(AgentState)
         flow.add_node("decide", self._decide)
         flow.add_node("tools", self._tools)
@@ -72,7 +73,7 @@ class AgentLoop:
         for index, call in enumerate(last.get("tool_calls", [])[:4]):
             function = call["function"]
             name = function.get("name")
-            result = execute_tool(name, function.get("arguments"), tasks, self.clock, task_store=self.task_store)
+            result = execute_tool(name, function.get("arguments"), tasks, self.clock, task_store=self.task_store, memory_store=self.memory_store)
             observations.append({"role": "tool", "tool_name": name,
                                  "tool_call_id": call["id"],
                                  "content": json.dumps(result, ensure_ascii=False)})
