@@ -1,0 +1,71 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>HealthAgent S1</title><style>
+:root{font-family:system-ui,-apple-system,"Microsoft Yahei",sans-serif;color:#e7eef5;background:#101826}body{margin:0}main{max-width:880px;margin:auto;padding:28px 18px}h1{margin-bottom:3px}.hint{color:#93a4bc;font-size:13px}.panel{background:#182438;border:1px solid #344257;border-radius:12px;padding:18px;margin:16px 0}#messages{height:52vh;overflow:auto;white-space:pre-wrap}.msg{padding:10px 14px;margin:10px 0;background:#26374c;border-radius:8px;line-height:1.6}.assistant{background:#1a3b43}textarea{width:100%;height:90px;box-sizing:border-box;border:1px solid #516078;background:#101826;color:white;padding:12px;border-radius:8px}button{padding:10px 20px;border:0;background:#36a9a5;color:#07171d;border-radius:7px;cursor:pointer}button:disabled{opacity:.5}.toolbar{display:flex;gap:10px;align-items:center;margin-top:10px}.status{color:#a8b7c9;font-size:13px}</style></head><body><main><h1>HealthAgent <small>S0 / S1</small></h1><div class="hint">通用对话基础演示。FAKE 模型仅用于接口测试，不具备真实语言理解。</div><section class="panel"><div id="messages" aria-live="polite"></div><textarea id="prompt" placeholder="输入消息（Ctrl + Enter 发送）"></textarea><div class="toolbar"><button id="send">发送</button><button id="stop" disabled>停止生成</button><button id="new">新建对话</button><span class="status" id="status"></span></div></section></main><script>
+const KEY='healthagent.s1.conversation.v1';
+let conversation=null,controller=null;
+const messages=document.querySelector('#messages'),prompt=document.querySelector('#prompt'),status=document.querySelector('#status');
+const sendButton=document.querySelector('#send'),stopButton=document.querySelector('#stop');
+function add(role,content){const d=document.createElement('div');d.className='msg '+role;d.textContent=(role==='user'?'你：':'Agent：')+content;messages.appendChild(d);messages.scrollTop=messages.scrollHeight;return d}
+async function start(){const r=await fetch('/conversations',{method:'POST'});if(!r.ok)throw Error('创建会话失败');conversation=(await r.json()).id;localStorage.setItem(KEY,conversation);messages.replaceChildren();status.textContent='新对话已创建'}
+async function restore(){const saved=localStorage.getItem(KEY);if(!saved){await start();return}try{const r=await fetch('/conversations/'+encodeURIComponent(saved));if(!r.ok){if(r.status===404||r.status===401){localStorage.removeItem(KEY);await start();return}throw Error('恢复对话失败：'+r.status)}const data=await r.json();conversation=saved;messages.replaceChildren();for(const msg of data.messages){if(msg.role==='user'||msg.role==='assistant'){const item=add(msg.role,msg.content||'');if(msg.status&&msg.status!=='completed')item.dataset.status=msg.status}}status.textContent='已恢复历史对话'}catch(e){status.textContent='恢复失败：'+e.message+'；不会自动覆盖原会话'}}
+async function send(){
+  const value=prompt.value.trim();
+  if(!value||controller)return;
+  if(!conversation){status.textContent='请先恢复或新建对话';return}
+  prompt.value='';add('user',value);
+  const a=add('assistant','');
+  controller=new AbortController();stopButton.disabled=false;sendButton.disabled=true;
+  status.textContent='等待模型首个内容片段…';
+  let output='',terminal=false,deltaCount=0;
+  const startAt=performance.now();
+  try{
+    const r=await fetch(`/conversations/${encodeURIComponent(conversation)}/messages`,{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({content:value,client_request_id:crypto.randomUUID()}),signal:controller.signal
+    });
+    if(!r.ok)throw Error('请求失败：'+r.status);
+    if(!r.body)throw Error('浏览器不支持响应流');
+    const reader=r.body.getReader(),decoder=new TextDecoder();
+    let buffer='';
+    const process=(raw)=>{
+      const lines=raw.split('\n');
+      const type=lines.find(x=>x.startsWith('event:'))?.slice(6).trim();
+      const dataLines=lines.filter(x=>x.startsWith('data:'));
+      if(!dataLines.length)return;
+      let e;
+      try{e=JSON.parse(dataLines.map(x=>x.slice(5).trimStart()).join('\n'))}
+      catch(err){console.error('SSE event parse error',err);return}
+      if(type==='message_delta'){
+        if(typeof e.text!=='string')return;
+        deltaCount++;
+        if(deltaCount===1){
+          console.info(`[HealthAgent SSE] first_delta_ms=${Math.round(performance.now()-startAt)}`);
+        }
+        output+=e.text;
+        a.textContent='Agent：'+output;
+        messages.scrollTop=messages.scrollHeight;
+        status.textContent=`接收中 · ${deltaCount} 个增量片段`;
+      }else if(type==='error'){
+        status.textContent='模型调用失败（请查看服务日志）';terminal=true;
+      }else if(type==='message_done'){
+        status.textContent=`${e.status} · ${deltaCount} 个增量片段 · ${((performance.now()-startAt)/1000).toFixed(1)} 秒`;
+        console.info(`[HealthAgent SSE] done delta_count=${deltaCount} elapsed_ms=${Math.round(performance.now()-startAt)}`);
+        terminal=true;
+      }
+    };
+    while(true){
+      const {done,value:chunk}=await reader.read();
+      if(done)break;
+      buffer+=decoder.decode(chunk,{stream:true}).replace(/\r\n/g,'\n').replace(/\r/g,'\n');
+      let split;
+      while((split=buffer.indexOf('\n\n'))>=0){process(buffer.slice(0,split));buffer=buffer.slice(split+2)}
+    }
+    buffer+=decoder.decode();if(buffer.trim())process(buffer);
+    if(!terminal)status.textContent='流提前结束，请刷新核对保存的消息';
+  }catch(e){status.textContent=e.name==='AbortError'?'已停止':'错误：'+e.message}
+  finally{controller=null;stopButton.disabled=true;sendButton.disabled=false}
+}
+
+sendButton.onclick=send;stopButton.onclick=()=>controller?.abort();document.querySelector('#new').onclick=()=>{controller?.abort();if(controller){status.textContent='请等待当前生成停止后再新建对话';return}start().catch(e=>status.textContent=e.message)};prompt.addEventListener('keydown',e=>{if(e.key==='Enter'&&e.ctrlKey)send()});
+fetch('/model').then(r=>r.ok?r.json():null).then(m=>{if(m)document.querySelector('.hint').textContent='通用对话基础演示 · Provider: '+m.provider+' · Model: '+m.model}).catch(()=>{});
+restore();
+</script></body></html>

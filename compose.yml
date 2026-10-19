@@ -1,0 +1,30 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: healthagent
+      POSTGRES_PASSWORD: dev_only_change_me
+      POSTGRES_DB: healthagent
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U healthagent -d healthagent"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+  api:
+    build: .
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      DATABASE_URL: postgresql+psycopg://healthagent:dev_only_change_me@db:5432/healthagent
+      MODEL_PROVIDER: ${MODEL_PROVIDER:-fake}
+      MODEL_API_KEY: ${MODEL_API_KEY:-}
+      MODEL_BASE_URL: ${MODEL_BASE_URL:-https://api.openai.com/v1}
+      MODEL_NAME: ${MODEL_NAME:-gpt-4o-mini}
+      ALLOW_DEMO_IDENTITY: "true"
+    depends_on:
+      db:
+        condition: service_healthy
+volumes:
+  pgdata:

@@ -1,0 +1,5 @@
+{"case_id": "T-001", "input": " HELLO ", "expected_normalized": "hello"}
+{"case_id": "T-002", "input": " Hello Agent ", "expected_normalized": "hello agent"}
+{"case_id": "T-003", "input": " WHO AM I ", "expected_normalized": "who am i"}
+{"case_id": "T-004", "input": " test ", "expected_normalized": "test"}
+{"case_id": "T-005", "input": " HealthAgent ", "expected_normalized": "healthagent"}
