@@ -36,6 +36,8 @@ def test_controlled_memory_lifecycle(tmp_path):
         assert saved.status_code==200 and '"saved": true' in saved.json()["answer"]
         assert c.get("/memories",headers=ha).json()==[{"key":"project","value":"blue whale"}]
         assert '"found": true' in ask(ca,ha,"RECALL","memory-00003").json()["answer"]
+        sibling=c.post("/conversations",headers=ha).json()["id"]
+        assert "blue whale" in ask(sibling,ha,"RECALL","memory-00008").json()["answer"]
         assert '"found": false' in ask(cb,hb,"RECALL","memory-00005").json()["answer"]
         changed=c.put("/memories/project",headers=ha,json={"value":"green whale"})
         assert changed.status_code==200
