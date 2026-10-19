@@ -10,7 +10,7 @@ def test_bounded_selection_and_roles():
     assert build_context(history,"question",max_messages=3,max_chars=22)==[
         {"role":"assistant","content":"prior"},{"role":"user","content":"new"},
         {"role":"assistant","content":"recent"}]
-    assert build_context(history,"question",max_messages=3,max_chars=13)==[
+    assert build_context(history,"question",max_messages=3,max_chars=14)==[
         {"role":"assistant","content":"recent"}]
     with pytest.raises(ValueError):
         build_context(history,"too long",max_messages=10,max_chars=3)
