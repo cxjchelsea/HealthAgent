@@ -39,6 +39,10 @@ def test_controlled_memory_lifecycle(tmp_path):
         sibling=c.post("/conversations",headers=ha).json()["id"]
         assert "blue whale" in ask(sibling,ha,"RECALL","memory-00008").json()["answer"]
         assert '"found": false' in ask(cb,hb,"RECALL","memory-00005").json()["answer"]
+        # A denied write cannot replace a previously committed fact.
+        denied_again=ask(ca,ha,"SAVE","memory-00010")
+        assert "memory_write_requires_user_consent" in denied_again.json()["answer"]
+        assert "blue whale" in ask(sibling,ha,"RECALL","memory-00011").json()["answer"]
         changed=c.put("/memories/project",headers=ha,json={"value":"green whale"})
         assert changed.status_code==200
         assert "green whale" in ask(ca,ha,"RECALL","memory-00006").json()["answer"]
