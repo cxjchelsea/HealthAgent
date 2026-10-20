@@ -10,6 +10,13 @@ class Decision:
     content: str
     tool_calls: list[dict[str, Any]]
 
+class ToolDecisionError(ModelUnavailable):
+    """Typed, redacted failure reason for model tool decision."""
+    def __init__(self, code: str):
+        super().__init__(code)
+        self.code = code
+
+
 class NativeToolDecision:
     def __init__(self, settings):
         self.settings = settings
@@ -24,13 +31,13 @@ class NativeToolDecision:
             headers = {}
         elif s.model_provider == "openai_compatible":
             if not s.model_api_key:
-                raise ModelUnavailable("Missing model credentials")
+                raise ToolDecisionError("missing_credentials")
             url = s.model_base_url.rstrip("/") + "/chat/completions"
             body = {"model": s.model_name, "messages": messages, "tools": tools,
                     "tool_choice": "auto", "stream": False, "temperature": 0}
             headers = {"Authorization": "Bearer " + s.model_api_key}
         else:
-            raise ModelUnavailable("S2-A requires a tool-calling model provider")
+            raise ToolDecisionError("unsupported_provider")
         normalized = []
         for item in messages:
             message = dict(item)
@@ -52,21 +59,32 @@ class NativeToolDecision:
                 response = await client.post(url, json=body, headers=headers)
                 response.raise_for_status()
                 payload = response.json()
-        except (httpx.HTTPError, ValueError) as exc:
-            raise ModelUnavailable("Tool decision provider request failed") from exc
-        if isinstance(payload, dict) and payload.get("error"):
-            raise ModelUnavailable("Provider refused tool decision")
+        except httpx.HTTPStatusError as exc:
+            raise ToolDecisionError("http_status") from exc
+        except httpx.TimeoutException as exc:
+            raise ToolDecisionError("timeout") from exc
+        except httpx.TransportError as exc:
+            raise ToolDecisionError("network") from exc
+        except ValueError as exc:
+            raise ToolDecisionError("invalid_json_response") from exc
+        if not isinstance(payload, dict):
+            raise ToolDecisionError("invalid_response")
+        if payload.get("error"):
+            raise ToolDecisionError("provider_rejected")
         if s.model_provider == "ollama_proxy":
             message = payload.get("message", {})
         else:
             choices = payload.get("choices") or []
             message = choices[0].get("message", {}) if choices else {}
         if not isinstance(message, dict):
-            raise ModelUnavailable("Invalid tool decision message")
+            raise ToolDecisionError("invalid_response")
+        raw_calls = message.get("tool_calls") or []
+        if not isinstance(raw_calls, list):
+            raise ToolDecisionError("malformed_tool_call")
         calls = []
-        for index, raw in enumerate(message.get("tool_calls") or []):
+        for index, raw in enumerate(raw_calls):
             if not isinstance(raw, dict) or not isinstance(raw.get("function"), dict):
-                raise ModelUnavailable("Malformed tool_call")
+                raise ToolDecisionError("malformed_tool_call")
             fn = raw["function"]
             arguments = fn.get("arguments", {})
             if isinstance(arguments, str):
@@ -78,7 +96,7 @@ class NativeToolDecision:
                           "name": fn.get("name"), "arguments": arguments})
         content = message.get("content") or ""
         if not isinstance(content, str):
-            raise ModelUnavailable("Invalid decision content")
+            raise ToolDecisionError("invalid_decision_content")
         if not calls and not content.strip():
-            raise ModelUnavailable("Empty model decision")
+            raise ToolDecisionError("empty_decision")
         return Decision(content=content, tool_calls=calls)

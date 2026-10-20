@@ -4,6 +4,7 @@ Uses only the safe arithmetic tool to trigger a reproducible divide-by-zero
 observation, followed by a model-chosen plan revision and successful calculation.
 Not run by CI; no mocked model decisions or arbitrary failure hooks.
 """
+import argparse
 import asyncio
 import json
 import os
@@ -14,7 +15,7 @@ import httpx
 from agent.providers import ModelUnavailable
 
 from agent.config import Settings
-from agent.decision import NativeToolDecision
+from agent.decision import NativeToolDecision, ToolDecisionError
 from agent.loop import AgentLoop
 
 
@@ -39,6 +40,8 @@ class DiagnosticDecider:
                         else "provider_response")
             self.failure = {"category": category,
                             "exception_type": type(cause).__name__ if cause else type(exc).__name__}
+            if isinstance(exc, ToolDecisionError):
+                self.failure["reason_code"] = exc.code
             if isinstance(cause, httpx.HTTPStatusError):
                 self.failure["http_status"] = cause.response.status_code
             raise
@@ -46,7 +49,7 @@ class DiagnosticDecider:
             self.total_ms += round((time.monotonic() - started) * 1000)
 
 
-async def evaluate():
+async def evaluate(strategy="dynamic"):
     if os.getenv("RUN_S2D_LIVE") != "1":
         raise RuntimeError("Set RUN_S2D_LIVE=1 to allow model provider calls")
     settings = Settings()
@@ -58,7 +61,7 @@ async def evaluate():
     )
     decider = DiagnosticDecider(NativeToolDecision(settings))
     started = time.monotonic()
-    result = await AgentLoop(decider, max_steps=10, skill_strategy="all",
+    result = await AgentLoop(decider, max_steps=10, skill_strategy=strategy,
                              skill_budget_chars=2000).run(goal, include_evidence=True)
     duration_ms = round((time.monotonic() - started) * 1000)
     audit = result.get("audit", [])
@@ -72,6 +75,7 @@ async def evaluate():
                    x["status"] == "completed" for x in result["plan"])}
     return {"suite": "s2d-qwen-recovery-v1", "mode": "REAL_PROVIDER",
             "provider": settings.model_provider, "model": settings.model_name,
+            "strategy": strategy,
             "checks": verdict, "passed": all(verdict.values()),
             "agent_status": result["status"],
             "termination_reason": result["status"],
@@ -88,8 +92,12 @@ async def evaluate():
 
 
 def main():
-    report = asyncio.run(evaluate())
-    path = Path("evals/results/s2d/qwen-recovery-v1.json")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--strategy", choices=("dynamic", "all"), default="dynamic")
+    parser.add_argument("--output")
+    args = parser.parse_args()
+    report = asyncio.run(evaluate(args.strategy))
+    path = Path(args.output or f"evals/results/s2d/qwen-recovery-{args.strategy}-v2.json")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     print("S2-D real Qwen recovery:", "PASS" if report["passed"] else "FAIL", path)

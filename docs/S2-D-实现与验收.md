@@ -72,3 +72,15 @@ python -m evals.s2d_live_recovery
 ```
 
 输出仍保存在 `evals/results/s2d/qwen-recovery-v1.json`。只有获得明确的 Tool Trace / Agent 状态后才能判断失败恢复是否有效。CI 不执行真实 Qwen，不得将工具诊断代码的测试成功表述为真实恢复通过。
+
+## 首次 Tool Decision 异常精细诊断（2026-10-20）
+
+真实报告确认首次决策请求即 `provider_error`，1 次请求约 3.16 秒，`provider_failure.category=provider_response`，无任何 Tool Trace；这不能证明重规划能力失败。现 `NativeToolDecision` 定义 `ToolDecisionError(code)`（继承 ModelUnavailable），区分 `empty_decision`、`malformed_tool_call`、`invalid_response`、`provider_rejected`、`invalid_json_response`、`http_status`、`timeout`、`network`、`missing_credentials` 等，不保存原始响应或请求正文。原 AgentLoop 的 fail-close provider_error 行为不改变，避免 Provider 异常被误判为 Agent completed。
+
+真实失败恢复 Harness 新增 `--strategy dynamic|all`，默认 dynamic；各自写入不同 JSON 文件，不覆盖已获得的证据。通过真实工具 `calculate(8/0)` 产生受控失败，仍要求模型自行 `revise_plan`、成功计算 64 和计划完成，不能伪造任何模型决策。需在用户本机真实 Qwen 运行：
+```powershell
+$env:RUN_S2D_LIVE = "1"
+python -m evals.s2d_live_recovery --strategy dynamic
+python -m evals.s2d_live_recovery --strategy all
+```
+测试成功前不得将真实重规划记为 PASS。CI 仅覆盖细分错误码和敏感信息不回显等确定性验证；策略间结果不做统计显著性宣称。
