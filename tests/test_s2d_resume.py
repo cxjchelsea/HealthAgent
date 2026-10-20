@@ -87,6 +87,7 @@ def test_user_correction_supersedes_only_affected_completed_step():
     assert ledger.steps[0]["goal"] == "look up RAG"
     assert ledger.steps[0]["status"] == "completed"
     assert ledger.steps[1]["status"] == "pending"
+    assert [step["id"] for step in ledger.steps] == [1, 3]
     assert ledger.events[-1]["invalidated"] == [2]
     ledger.observe("calculate", {"ok": True, "value": 81}, {"expression": "9*9"})
     assert all(x["status"] == "completed" for x in ledger.steps)
