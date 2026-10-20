@@ -25,3 +25,10 @@ def test_fixed_request_controls_only_change_user_goal():
     assert all(c[4] == "fixed_request" for c in fixed)
     assert fixed[-1][1] == CASES[-1][1]
     assert fixed[-1][3] == cases[3][3]
+
+def test_recovery_e2e_uses_live_provider_successful_short_goal():
+    import inspect
+    from evals import s2d_live_recovery
+    fixed_failure = list(build_cases())[5][1]
+    # Keep the first-decision success evidence relevant to full E2E.
+    assert fixed_failure in inspect.getsource(s2d_live_recovery.evaluate)
