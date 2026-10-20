@@ -10,6 +10,7 @@ from agent.config import Settings
 from agent.understanding import GoalIntake, understand
 from agent.decision import NativeToolDecision
 from agent.loop import AgentLoop
+from agent.mock_mcp import MockMCPClient
 from agent.context import build_context
 from services.task_store import ConversationTaskStore
 from services.memory_store import MemoryStore
@@ -116,7 +117,8 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
         try:
             decider = agent_decider if agent_decider is not None else NativeToolDecision(settings)
             result = await AgentLoop(decider, task_store=ConversationTaskStore(Session, cid),
-                memory_store=MemoryStore(Session, uid, write_allowed=body.memory_write_consent)).run(body.content, history=context)
+                memory_store=MemoryStore(Session, uid, write_allowed=body.memory_write_consent),
+                mcp_client=MockMCPClient()).run(body.content, history=context)
             if result["status"] == "completed":
                 answer, status = result["answer"], "completed"
             else:
