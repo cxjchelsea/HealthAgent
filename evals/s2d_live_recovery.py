@@ -55,12 +55,9 @@ async def evaluate(strategy="dynamic"):
     if os.getenv("RUN_S2D_LIVE") != "1":
         raise RuntimeError("Set RUN_S2D_LIVE=1 to allow model provider calls")
     settings = Settings()
-    goal = (
-        "请使用 propose_plan 制定两个带 expected_tool 和 expected_arguments 的步骤。"
-        "第一步计算 8/0，用 calculate 观察真实除零错误；第二步在收到失败后"
-        "调用 revise_plan 只保留待执行任务，将错误计算替换为 calculate(expression='8*8')，"
-        "最终核验结果 64。如果第一步失败，不要假称成功。"
-    )
+    # v2 fixed-request real-provider matrix returned propose_plan for this goal.
+    # Avoid prescribing tool schema internals in the user-facing task.
+    goal = "请先用 propose_plan 制定计划，先用 calculate 计算8/0并观察失败，再修订计划计算8*8。"
     decider = DiagnosticDecider(NativeToolDecision(settings))
     started = time.monotonic()
     result = await AgentLoop(decider, max_steps=10, skill_strategy=strategy,
@@ -75,7 +72,7 @@ async def evaluate(strategy="dynamic"):
                "observed_recovery": recovered, "terminal_completed": result["status"] == "completed",
                "all_plan_steps_verified": bool(result.get("plan")) and all(
                    x["status"] == "completed" for x in result["plan"])}
-    return {"suite": "s2d-qwen-recovery-v1", "mode": "REAL_PROVIDER",
+    return {"suite": "s2d-qwen-recovery-v3", "mode": "REAL_PROVIDER",
             "provider": settings.model_provider, "model": settings.model_name,
             "strategy": strategy,
             "checks": verdict, "passed": all(verdict.values()),
@@ -99,7 +96,7 @@ def main():
     parser.add_argument("--output")
     args = parser.parse_args()
     report = asyncio.run(evaluate(args.strategy))
-    path = Path(args.output or f"evals/results/s2d/qwen-recovery-{args.strategy}-v2.json")
+    path = Path(args.output or f"evals/results/s2d/qwen-recovery-{args.strategy}-v3.json")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     print("S2-D real Qwen recovery:", "PASS" if report["passed"] else "FAIL", path)
