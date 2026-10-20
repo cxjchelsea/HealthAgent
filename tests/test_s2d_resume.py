@@ -66,3 +66,36 @@ def test_invalid_checkpoint_fails_closed():
         pass
     else:
         raise AssertionError("unchecked completed step")
+
+
+def test_user_correction_supersedes_only_affected_completed_step():
+    ledger = PlanLedger()
+    ledger.propose([
+        {"goal": "look up RAG", "expected_tool": "mcp_reference_lookup",
+         "expected_arguments": {"term": "rag"}},
+        {"goal": "calculate original", "expected_tool": "calculate",
+         "expected_arguments": {"expression": "8*8"}},
+    ])
+    ledger.observe("mcp_reference_lookup", {"ok": True}, {"term": "rag"})
+    ledger.observe("calculate", {"ok": True, "value": 64}, {"expression": "8*8"})
+    assert all(x["status"] == "completed" for x in ledger.steps)
+    result = ledger.revise(1, [
+        {"goal": "calculate corrected target", "expected_tool": "calculate",
+         "expected_arguments": {"expression": "9*9"}}],
+        "user changed the second calculation", invalidate_step_ids=[2])
+    assert result["ok"] and result["revision"] == 2
+    assert ledger.steps[0]["goal"] == "look up RAG"
+    assert ledger.steps[0]["status"] == "completed"
+    assert ledger.steps[1]["status"] == "pending"
+    assert ledger.events[-1]["invalidated"] == [2]
+    ledger.observe("calculate", {"ok": True, "value": 81}, {"expression": "9*9"})
+    assert all(x["status"] == "completed" for x in ledger.steps)
+
+
+def test_bad_invalidation_fails_without_mutating_progress():
+    ledger = PlanLedger()
+    ledger.propose(["not finished"])
+    result = ledger.revise(1, ["another"], "change", invalidate_step_ids=[1])
+    assert result["error"] == "invalid_invalidation"
+    assert ledger.revision == 1
+    assert ledger.steps[0]["goal"] == "not finished"

@@ -100,7 +100,8 @@ class AgentLoop:
                         result = ledger.propose(args["steps"])
                     elif name == "revise_plan":
                         result = ledger.revise(args["expected_revision"] or ledger.revision,
-                                               args["pending_steps"], args["reason"])
+                                               args["pending_steps"], args["reason"],
+                                               args["invalidate_step_ids"])
                     else:
                         result = ledger.complete(args["step_id"], args["evidence_tool"],
                                                  state["last_success"])

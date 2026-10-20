@@ -35,6 +35,7 @@ class ReviseArgs(StrictToolArgs):
     expected_revision: int | None = Field(default=None, ge=1)
     pending_steps: list[str | BoundPlanStep] = Field(min_length=1, max_length=8)
     reason: str = Field(min_length=1, max_length=180)
+    invalidate_step_ids: list[int] = Field(default_factory=list, max_length=8)
 
 class CompleteArgs(StrictToolArgs):
     step_id: int = Field(ge=1)
@@ -101,7 +102,8 @@ TOOL_SCHEMAS = [
                         "expected_arguments": {"type": "object"}},
                     "required": ["goal", "expected_tool", "expected_arguments"],
                     "additionalProperties": False}]}, "minItems": 1, "maxItems": 8},
-            "reason": {"type": "string"}},
+            "reason": {"type": "string"},
+            "invalidate_step_ids": {"type": "array", "items": {"type": "integer"}, "maxItems": 8}},
             "required": ["pending_steps", "reason"],
             "additionalProperties": False}}},
     {"type": "function", "function": {

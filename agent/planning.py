@@ -53,7 +53,8 @@ class PlanLedger:
                             "tool": evidence_tool})
         return {"ok": True, "steps": self.snapshot()}
 
-    def revise(self, expected_revision: int, pending_steps: list[str], reason: str) -> dict:
+    def revise(self, expected_revision: int, pending_steps: list[str], reason: str,
+               invalidate_step_ids: list[int] | None = None) -> dict:
         if not self.steps:
             return {"ok": False, "error": "plan_not_created", "plan_revision": 0}
         if expected_revision != self.revision:
@@ -62,13 +63,20 @@ class PlanLedger:
         if not reason.strip() or len(reason) > 180 or not self._valid(pending_steps):
             return {"ok": False, "error": "invalid_revision",
                     "plan_revision": self.revision}
-        preserved = [dict(step) for step in self.steps if step["status"] == "completed"]
+        invalidated = set(invalidate_step_ids or [])
+        completed_ids = {s["id"] for s in self.steps if s["status"] == "completed"}
+        if len(invalidated) != len(invalidate_step_ids or []) or not invalidated.issubset(completed_ids):
+            return {"ok": False, "error": "invalid_invalidation",
+                    "plan_revision": self.revision}
+        preserved = [dict(step) for step in self.steps
+                     if step["status"] == "completed" and step["id"] not in invalidated]
         self.steps = preserved + [
             self._step(len(preserved) + i + 1, goal)
             for i, goal in enumerate(pending_steps)]
         self.revision += 1
         self.events.append({"event": "plan_revised", "revision": self.revision,
-                            "preserved": len(preserved), "reason": reason[:180]})
+                            "preserved": len(preserved), "invalidated": sorted(invalidated),
+                            "reason": reason[:180]})
         return {"ok": True, "revision": self.revision, "steps": self.snapshot()}
 
     @classmethod
