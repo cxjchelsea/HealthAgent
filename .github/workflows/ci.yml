@@ -37,4 +37,4 @@ jobs:
         run: |
           python -m services.migrate
           python -m services.migrate
-          python -c "from sqlalchemy import create_engine,text; import os; e=create_engine(os.environ['DATABASE_URL']); assert e.connect().execute(text('select version_num from alembic_version')).scalar()=='0004_conversation_plan'"
+          python -c "from sqlalchemy import create_engine,text; import os; e=create_engine(os.environ['DATABASE_URL']); assert e.connect().execute(text('select version_num from alembic_version')).scalar()=='0005_active_turn_guard'"
