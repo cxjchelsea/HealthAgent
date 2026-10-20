@@ -94,3 +94,16 @@ python -m evals.s2d_live_recovery --strategy all
 `evals/s2d_live_recovery.py` 对此报错写入 `provider_failure.response_shape`。自动化覆盖空后成功、连续两次仅 thinking 的 fail-closed、Malformed Tool Call 不重试。CI 成功仅表示适配器行为可靠，不表示用户本地模型真实失败恢复已经通过。
 
 复验：`$env:RUN_S2D_LIVE="1"` 后分别执行 `python -m evals.s2d_live_recovery --strategy dynamic` 与 `python -m evals.s2d_live_recovery --strategy all`，检查生成的 v2 JSON。只有真正进入工具执行并看到受控失败→模型重规划→成功恢复的证据才算 PASS。
+
+## Provider 空决策：停止补丁式猜测，先完成四级控制变量矩阵（2026-10-20）
+
+真实 Qwen 两次重试后仍返回 `message_present=true`, `content_chars=0`, `tool_call_count=0`, `thinking_present=false`, `done_reason=stop`，dynamic 和 all 一致。该结果不支持进一步添加重试，也不支持宣称重规划模型失败。网页成功而故障恢复脚本失败的关键差异是复杂故障指令和暴露的工具/Schema，尚未有独立控制变量证据。
+
+新增独立的 `evals/s2d_provider_compatibility.py`，使用**正式 NativeToolDecision 适配器**、相同系统 Prompt 和真实 Provider 顺序发起四种只读决策请求：(1) 纯文本且无工具，(2) 单 `calculate`，(3) `propose_plan`+ `calculate`，(4) 原完整失败恢复目标与对应 Planning Tool Schemas。此诊断**只观察 Tool Decision，不执行任何返回工具**；不记录 Prompt 原文、回复、Thinking、凭证或网关地址。每个案例分别输出请求耗时、Prompt 长度、工具数、可用内容与 Tool Call 数量、错误码/响应结构。不会把诊断矩阵“通过”误计为失败恢复成功。
+
+本地运行：
+```powershell
+$env:RUN_S2D_LIVE="1"
+python -m evals.s2d_provider_compatibility
+```
+生成 `evals/results/s2d/qwen-provider-compatibility-v1.json`。根据报告判断：纯文本也空→模型/网关基础链路；只有工具请求空→Tool Calling 适配与网关；仅计划工具空→计划 Schema 兼容；仅复杂目标空→指令复杂度/模型行为。定位后再做最小修复并继续原失败恢复脚本验证。PR #11 必须保持 Draft。
