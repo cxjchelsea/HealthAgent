@@ -157,3 +157,14 @@ python -m services.recover_turns --minimum-age-minutes 10
 python -m services.recover_turns --minimum-age-minutes 10 --apply --confirm-workers-stopped
 ```
 执行前核对 `DATABASE_URL` 指向正确数据库并备份。旧进程仍运行时不得执行 --apply。此次为 S2-D 渐进切片，CI/真实多进程崩溃物理验收状态需分别记录。
+
+## 2026-10-20 正式 Conversation API 真实 Qwen 多轮验收入口
+
+新增 `evals/s2d_conversation_api_live.py`。此工具**不创建第二条 Agent 执行链**：通过 FastAPI `TestClient(create_app(settings))` 真实调用唯一 `POST /conversations/{cid}/agent/messages`；其 `NativeToolDecision` 指向用户配置的真实 Provider，数据库固定使用自动清理的临时 SQLite，不访问生产/日常工作数据库，不使用 Mock 决策。自动创建会话→第一轮规划计算 8*8→检查持久 checkpoint→第二轮更正为 9*9→检查 revision 前进、9*9 完成证据、8*8 旧完成结果已废止、两轮消息与 Turn 终态。报告不导出原始回复、凭证或完整用户消息。任何一步失败仍生成可供定位的 JSON；该脚本单次运行不代表可靠性统计或 PostgreSQL/多进程物理验收。
+
+Windows（使用本地 `.env` 配置的 qwen3:14b）：
+```powershell
+$env:RUN_S2D_LIVE = "1"
+python -m evals.s2d_conversation_api_live
+```
+报告：`evals/results/s2d/qwen-conversation-api-v1.json`。检查失败项与 `trace_tools` 后针对确切证据修复；**未执行此本地真实 Provider 脚本前不能声称多轮真实 API PASS**。这是进程内 ASGI HTTP 接口级 E2E，而非浏览器或独立 Uvicorn 进程验收。S2-D 仍 IN PROGRESS。
