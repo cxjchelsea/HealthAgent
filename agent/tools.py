@@ -23,6 +23,24 @@ class MemoryFact(MemoryKey):
 class ReferenceArgs(StrictToolArgs):
     term: str = Field(min_length=1, max_length=80)
 
+class BoundPlanStep(StrictToolArgs):
+    goal: str = Field(min_length=1, max_length=160)
+    expected_tool: str
+    expected_arguments: dict
+
+class PlanArgs(StrictToolArgs):
+    steps: list[str | BoundPlanStep] = Field(min_length=1, max_length=8)
+
+class ReviseArgs(StrictToolArgs):
+    expected_revision: int | None = Field(default=None, ge=1)
+    pending_steps: list[str | BoundPlanStep] = Field(min_length=1, max_length=8)
+    reason: str = Field(min_length=1, max_length=180)
+    invalidate_step_ids: list[int] = Field(default_factory=list, max_length=8)
+
+class CompleteArgs(StrictToolArgs):
+    step_id: int = Field(ge=1)
+    evidence_tool: str = Field(min_length=1, max_length=80)
+
 class EmptyArgs(StrictToolArgs):
     pass
 
@@ -34,6 +52,9 @@ SCHEMAS: dict[str, type[BaseModel]] = {
     "save_memory": MemoryFact,
     "recall_memory": MemoryKey,
     "mcp_reference_lookup": ReferenceArgs,
+    "propose_plan": PlanArgs,
+    "revise_plan": ReviseArgs,
+    "complete_plan_step": CompleteArgs,
 }
 
 TOOL_SCHEMAS = [
@@ -61,6 +82,35 @@ TOOL_SCHEMAS = [
         "name": "mcp_reference_lookup", "description": "Look up agent engineering terms in a trusted mock reference catalog.",
         "parameters": {"type": "object", "properties": {"term": {"type": "string"}},
                        "required": ["term"], "additionalProperties": False}}},
+    {"type": "function", "function": {
+        "name": "propose_plan", "description": "Propose a short explicit task plan; steps are not yet completed.",
+        "parameters": {"type": "object", "properties": {
+            "steps": {"type": "array", "items": {"anyOf": [{"type": "string"}, {
+                "type": "object", "properties": {
+                    "goal": {"type": "string"}, "expected_tool": {"type": "string"},
+                    "expected_arguments": {"type": "object"}},
+                "required": ["goal", "expected_tool", "expected_arguments"],
+                "additionalProperties": False}]}, "minItems": 1, "maxItems": 8}},
+            "required": ["steps"], "additionalProperties": False}}},
+    {"type": "function", "function": {
+        "name": "revise_plan", "description": "After changed goal or failed tool, revise pending steps preserving completed evidence.",
+        "parameters": {"type": "object", "properties": {
+            "expected_revision": {"type": "integer"}, "pending_steps": {
+                "type": "array", "items": {"anyOf": [{"type": "string"}, {
+                    "type": "object", "properties": {
+                        "goal": {"type": "string"}, "expected_tool": {"type": "string"},
+                        "expected_arguments": {"type": "object"}},
+                    "required": ["goal", "expected_tool", "expected_arguments"],
+                    "additionalProperties": False}]}, "minItems": 1, "maxItems": 8},
+            "reason": {"type": "string"},
+            "invalidate_step_ids": {"type": "array", "items": {"type": "integer"}, "maxItems": 8}},
+            "required": ["pending_steps", "reason"],
+            "additionalProperties": False}}},
+    {"type": "function", "function": {
+        "name": "complete_plan_step", "description": "Mark a plan step complete only when the named tool has successful observed evidence.",
+        "parameters": {"type": "object", "properties": {
+            "step_id": {"type": "integer"}, "evidence_tool": {"type": "string"}},
+            "required": ["step_id", "evidence_tool"], "additionalProperties": False}}},
 ]
 
 OPS = {ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul, ast.Div: operator.truediv}
