@@ -186,3 +186,11 @@ python -m evals.s2d_conversation_api_live
 Qwen v2 实际复验仍 `invalidated=[]` / `preserved=1`，说明指令增强不能稳定促成旧证据废止。已在 AgentLoop 中添加**仅针对明确算术替换表达式**的保守最终状态校验：当本轮话语出现“不是旧表达式，而是新表达式”、此前 checkpoint 存在同表达式、同工具绑定的 completed 步骤时，最终检查该**旧表达式绑定**是否仍保留 completed。如果保留，改为 `partial` 并明确提示旧证据尚未失效；不静默移除工具证据、不自动代模型决定废止、也不改动 PlanLedger 修订行为。对“在原计算基础上再算新表达式”之类追加目标不触发。检查按旧表达式绑定而非只看 ID，避免 revise_plan 重编号导致误拦截。
 
 **重要限制**：这是非常窄的算术演示防误报保护，并不是通用自然语言替换意图理解器。它阻止本例错误声称 completed，但**不会令 9×9 更正案例自动 PASS**；模型仍需要正确提供 invalidate_step_ids。后续完整语义理解/冲突确认需单独设计，不应将本校验宣称为通用 Agent 目标一致性机制。相关回归见 `tests/test_s2d_goal_correction_guard.py`，本地真实 Provider 重新执行后需观察第二轮是否从 completed 转为 partial，以及其余工具轨迹是否保持正常。
+
+## 2026-10-20 更正废止缺口：工具级拒绝与模型重试
+
+此前真实 Qwen 连续多次给出 `revise_plan`，但 `invalidated=[]`、`preserved=1`，使旧 8*8 成功证据仍保留。仅增加 Core Prompt / Planning Skill 未改变这一行为；随后最终态降级为 partial 只防止误报，没有促使模型修正工具请求。
+
+本次将已存在的显式算术更正 guard 提前到 AgentLoop 的 `revise_plan` 工具准入处：**当已有匹配旧表达式的已完成 checkpoint 步骤而模型未提供对应 `invalidate_step_ids` 时，返回 `missing_required_invalidation`、`required_step_ids`、原 revision，并给出可操作重试提示**。拒绝发生在 `PlanLedger.revise()` 之前，计划不发生修改；必须由模型再次提交完整修订，不由执行器静默补全参数。新增脚本化多次模型决策测试覆盖：缺失废止 → 工具拒绝 → 修正为 [1] → 修订成功 → 9*9 工具验证 → completed。
+
+该规则只对精确识别的“不是旧算术表达式，而是……”匹配旧 checkpoint 的情况生效；追加任务、无历史绑定的情形不拦截。**尚未证明一般语言的目标变更可自动识别**。真实 Qwen 再测可继续执行 `python -m evals.s2d_conversation_api_live`，报告 `qwen-conversation-api-v2.json`，本次关键关注 `revision_diagnostics.invalidated` 是否变成 [1] 及工具反馈后是否二次 revise_plan；如模型不重试，只能报告 partial，不代表修复完全成功。S2-D 不在未取得真实模型 PASS 前 CLOSED。
