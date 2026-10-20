@@ -217,6 +217,41 @@ class AgentLoop:
                 if step["status"] == "completed"
                 and step.get("expected_tool") == "calculate"
                 and step.get("expected_arguments") == {"expression": old_expression}]
+        # Explicit saved-memory questions use a trusted, owner-scoped read.
+        # Do not leave correctness to optional model tool choice.
+        if (self.memory_store is not None and any(phrase in goal for phrase in (
+                "还记得", "记得我", "之前保存", "之前记住", "保存的",
+                "记住的", "测试偏好是什么", "测试偏好吗"))):
+            records = self.memory_store.list()
+            if len(records) > 100:
+                return {"run_id": run_id, "status": "partial",
+                        "answer": "长期记忆条目过多，请在记忆管理面板按 Key 查询。",
+                        "trace": [{"step": 1, "type": "memory_lookup_limit"}],
+                        "prompt_version": PROMPT_VERSION}
+            # Exact literal matches are authoritative; a fuzzy semantic match is not.
+            matches = [item for item in records if item["key"].casefold() in goal.casefold()]
+            if matches:
+                answer = "已保存的匹配记忆：" + "；".join(
+                    item["key"] + "＝" + item["value"] for item in matches)
+                other_keys = [item["key"] for item in records if item not in matches]
+                if other_keys:
+                    answer += "。其他不同 Key 的记忆：" + "、".join(other_keys) + (
+                        "；这些 Key 不会自动视作同义或覆盖。")
+            elif records:
+                answer = ("未能根据问题确定精确记忆 Key。当前已保存的 Key：" +
+                          "、".join(item["key"] for item in records) +
+                          "。请指定 Key 查询，或在记忆管理面板核对。")
+            else:
+                answer = "已查询当前用户的长期记忆库，目前没有保存的记录。"
+            result = {"run_id": run_id, "status": "completed", "answer": answer,
+                      "trace": [{"step": 1, "type": "memory_index_lookup",
+                                 "matches": len(matches), "total": len(records)}],
+                      "prompt_version": PROMPT_VERSION}
+            if include_evidence:
+                result["audit"] = [{"name": "memory_index_lookup",
+                                     "observation": {"ok": True, "matches": len(matches),
+                                                     "total": len(records)}}]
+            return result
         selected_tools = exposed_tools(goal, TOOL_SCHEMAS, strategy=self.skill_strategy)
         if resumed.revision:
             names = {t["function"]["name"] for t in selected_tools}
