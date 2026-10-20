@@ -42,6 +42,12 @@ class UserMemory(Base):
     key: Mapped[str] = mapped_column(String(80))
     value: Mapped[str] = mapped_column(String(500))
 
+class ConversationPlan(Base):
+    __tablename__ = "conversation_plans"
+    conversation_id: Mapped[str] = mapped_column(
+        ForeignKey("conversations.id"), primary_key=True)
+    snapshot: Mapped[str] = mapped_column(Text, default="{}")
+
 class Turn(Base):
     __tablename__="turns"
     __table_args__=(UniqueConstraint("conversation_id", "request_id"),)

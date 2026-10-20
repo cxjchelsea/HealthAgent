@@ -140,7 +140,8 @@ class AgentLoop:
                 "plan": state["plan"], "last_success": state["last_success"]}
 
     async def run(self, goal: str, *, include_evidence: bool = False,
-                  history: list[dict] | None = None) -> dict:
+                  history: list[dict] | None = None,
+                  plan_checkpoint: dict | None = None) -> dict:
         if not goal.strip() or len(goal) > 12000:
             raise ValueError("Goal must contain 1..12000 characters")
         run_id = str(uuid.uuid4())
@@ -150,13 +151,23 @@ class AgentLoop:
                     or not isinstance(entry.get("content"), str)):
                 raise ValueError("Invalid conversation history")
             clean_history.append({"role": entry["role"], "content": entry["content"]})
+        resumed = PlanLedger.restore(plan_checkpoint) if plan_checkpoint else PlanLedger()
+        selected_tools = exposed_tools(goal, TOOL_SCHEMAS, strategy=self.skill_strategy)
+        if resumed.revision:
+            names = {t["function"]["name"] for t in selected_tools}
+            selected_tools += [t for t in TOOL_SCHEMAS if t["function"]["name"]
+                               in {"propose_plan", "revise_plan", "complete_plan_step"}
+                               and t["function"]["name"] not in names]
+        resume_context = ("\nTrusted checkpoint: revision " + str(resumed.revision) +
+                          "; steps: " + json.dumps(resumed.snapshot(), ensure_ascii=False)
+                          if resumed.revision else "")
         initial: AgentState = {"messages": [
-            {"role": "system", "content": PROMPT + "\nSelected skill instructions (" + SKILL_VERSION + "):\n" + load_instructions(goal, strategy=self.skill_strategy, max_chars=self.skill_budget_chars)},
+            {"role": "system", "content": PROMPT + "\nSelected skill instructions (" + SKILL_VERSION + "):\n" + load_instructions(goal, strategy=self.skill_strategy, max_chars=self.skill_budget_chars) + resume_context},
             *clean_history, {"role": "user", "content": goal}],
             "traces": [], "tasks": [], "final": "", "status": "running", "iterations": 0,
             "audit_enabled": include_evidence, "audit": [],
-            "allowed_tools": exposed_tools(goal, TOOL_SCHEMAS, strategy=self.skill_strategy),
-            "plan": PlanLedger(), "last_success": None}
+            "allowed_tools": selected_tools,
+            "plan": resumed, "last_success": None}
         try:
             outcome = await self.graph.ainvoke(initial, config={"recursion_limit": 2 * self.max_steps + 4})
         except Exception as exc:
@@ -169,7 +180,8 @@ class AgentLoop:
                   "answer": outcome["final"], "trace": outcome["traces"],
                   "prompt_version": PROMPT_VERSION, "steps": outcome["iterations"],
                   "plan": outcome["plan"].snapshot(), "plan_revision": outcome["plan"].revision,
-                  "plan_events": list(outcome["plan"].events)}
+                  "plan_events": list(outcome["plan"].events),
+                  "plan_checkpoint": outcome["plan"].checkpoint() if outcome["plan"].revision else None}
         if include_evidence:
             result["audit"] = outcome["audit"]
             result["tasks"] = outcome["tasks"]

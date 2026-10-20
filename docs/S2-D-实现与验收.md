@@ -43,3 +43,11 @@ python -m evals.s2d_benchmark
 重规划保留 completed 步骤；修订请求可省略 expected_revision，由可信执行层使用当前 Revision；如显式提供过期值仍予拒绝。失败时附当前 Revision 与重试引导，继续采用模型自行决定是否/如何局部重规划。新增整条 AgentLoop 的模拟决策 E2E：计划→参考查询成功→错误计算→局部修订→正确计算→最终 completed，及失败/歧义证据负例。
 
 **仍待真实 Qwen 复验**：模型是否实际提供结构化绑定并成功调用 `revise_plan` 由本地 Qwen Trace 决定；通过 pytest/CI 不能冒充真实模型成功率。证据绑定是窄域参数匹配，不是通用目标语义验证；跨对话计划持续性和任务变更仍属于 S2-D 后续工作。
+
+## S2-D 增量：真实失败恢复 Harness + 会话计划 Checkpoint
+
+新增 `evals/s2d_live_recovery.py`，使用真实 Provider / 原 AgentLoop 的确定性可复现错误（calculate 8/0），观察模型是否自行 `revise_plan` 并以 calculate 8*8 恢复。该测试必须本地设置 `RUN_S2D_LIVE=1` 才运行，CI 只验自动化，没有用户的 Qwen 服务。与恶意故障注入不同，测试仅使用已允许的算术工具及可验证错误。结果保存于 `evals/results/s2d/qwen-recovery-v1.json`，失败不能掩盖。
+
+跨消息会话计划引入 `conversation_plans` 的持久化迁移 `0004_conversation_plan` 和 `ConversationPlanStore`。正式 Conversation Agent API 仍是唯一入口，读取该会话的 checkpoint，恢复 PlanLedger / revision / 已验证步骤，并在 completed/partial 时保存。对后续用户更正，模型可以调用 `revise_plan` 修改未验证的待执行步骤；已完成步骤按原证据保留。恢复数据是数据库内由后端生成的快照，不允许用户任意传入。已有会话 Owner 校验仍执行。
+
+当前版本的明确限制：首次实现尚未覆盖同一会话**并发消息**对 checkpoint 的竞态写入、用户更改**已经完成**的旧目标时的 supersede 治理、复杂多轮目标归属判断、崩溃前未落盘的 in-flight 状态恢复，以及全链路原子提交。此次开发不宣称这些已完成，也不将本地真实模型测试计为已通过。下一步应优先进行单会话竞态/覆盖保护以及真正用户更正的物理 E2E，之后再考虑 S2-D CLOSED。

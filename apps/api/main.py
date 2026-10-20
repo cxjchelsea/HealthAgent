@@ -14,6 +14,7 @@ from agent.mcp_stdio_client import StdioMCPClient
 from agent.context import build_context
 from services.task_store import ConversationTaskStore
 from services.memory_store import MemoryStore
+from services.plan_store import ConversationPlanStore
 from services.db import Conversation, Message, Turn, database
 
 log=logging.getLogger("healthagent")
@@ -111,6 +112,8 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
             db.add(turn)
             db.flush()
             assistant_id, turn_id = response_message.id, turn.id
+        plan_store = ConversationPlanStore(Session, cid)
+        existing_checkpoint = plan_store.load()
         began = time.monotonic()
         status, answer = "provider_error", ""
         result = None
@@ -119,9 +122,12 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
             result = await AgentLoop(decider, task_store=ConversationTaskStore(Session, cid),
                 memory_store=MemoryStore(Session, uid, write_allowed=body.memory_write_consent),
                 mcp_client=StdioMCPClient(), skill_strategy=settings.skill_strategy,
-                skill_budget_chars=settings.skill_budget_chars).run(body.content, history=context)
+                skill_budget_chars=settings.skill_budget_chars).run(body.content, history=context,
+                                      plan_checkpoint=existing_checkpoint)
             if result["status"] in {"completed", "partial"}:
                 answer, status = result["answer"], result["status"]
+                if result.get("plan_checkpoint"):
+                    plan_store.save(result["plan_checkpoint"])
             else:
                 status = result["status"]
         except Exception as exc:

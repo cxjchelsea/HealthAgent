@@ -71,6 +71,36 @@ class PlanLedger:
                             "preserved": len(preserved), "reason": reason[:180]})
         return {"ok": True, "revision": self.revision, "steps": self.snapshot()}
 
+    @classmethod
+    def restore(cls, snapshot: dict) -> "PlanLedger":
+        if not isinstance(snapshot, dict):
+            raise ValueError("invalid_plan_snapshot")
+        steps = snapshot.get("steps")
+        revision = snapshot.get("revision")
+        if not isinstance(revision, int) or not 1 <= revision <= 100000:
+            raise ValueError("invalid_plan_revision")
+        if not isinstance(steps, list) or not 1 <= len(steps) <= MAX_ITEMS:
+            raise ValueError("invalid_plan_steps")
+        restored = []
+        for i, step in enumerate(steps):
+            if not isinstance(step, dict) or step.get("id") != i + 1:
+                raise ValueError("invalid_plan_step")
+            if step.get("status") not in ("pending", "completed"):
+                raise ValueError("invalid_plan_status")
+            raw = {k: step[k] for k in ("goal", "expected_tool", "expected_arguments")
+                   if k in step}
+            if not cls._valid([raw if "expected_tool" in raw else raw.get("goal")]):
+                raise ValueError("invalid_plan_binding")
+            if step["status"] == "completed" and not isinstance(
+                step.get("evidence_tool"), str):
+                raise ValueError("missing_evidence")
+            restored.append(dict(step))
+        return cls(steps=restored, revision=revision,
+                   events=[{"event": "plan_resumed", "revision": revision}])
+
+    def checkpoint(self) -> dict:
+        return {"revision": self.revision, "steps": self.snapshot()}
+
     def snapshot(self) -> list[dict]:
         return [dict(s) for s in self.steps]
 
