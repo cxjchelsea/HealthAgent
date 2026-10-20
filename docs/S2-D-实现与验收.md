@@ -117,3 +117,9 @@ python -m evals.s2d_provider_compatibility
 本地复验：`$env:RUN_S2D_LIVE="1"; python -m evals.s2d_provider_compatibility`，读取 `evals/results/s2d/qwen-provider-compatibility-v2.json`。重点比较 fixed_simple、fixed_failure、fixed_original；若只有 fixed_original 失败，再逐段简化原复杂任务并保留固定请求条件。若 fixed_simple 也失败，不能归因于故障语义，应检查后续运行的服务状态、模型生成输出参数与请求间波动。
 
 当前**未修复**真实失败恢复：四组首次证据只是 Provider 预决策，不执行真实工具。下一次决策应基于匹配实验结果确定最小原因，然后再运行 `python -m evals.s2d_live_recovery --strategy dynamic` 验收完整 Observation → revise_plan → calculate 恢复链路。PR #11 保持 Draft，不得未经授权合并。
+
+## 2026-10-20 v2 固定请求真实 Provider 实验与 E2E 最小修订
+
+用户上传的七案例 v2 报告显示：`fixed_simple`=decision(propose_plan)，`fixed_failure`=decision(propose_plan)，`fixed_original`=provider_error(empty_decision)。固定三例采用相同 system、三项 tool schemas、Provider 配置，只有 user goal 不同。短失败恢复描述已能在第一次真实模型调用中输出工具调用；未证明后续执行和真实恢复成功。原始指令失败可能与其长度或具体指令组合有关，目前无法区分，不能宣称找到了 Provider 根因。
+
+仅将 `evals/s2d_live_recovery.py` 的 E2E 目标改成已验证会产生 `propose_plan` 的 `fixed_failure` 短描述，不修改正式 AgentLoop/Provider，保留原有失败观察、模型修订、计算成功、计划全部验证的五项判定。报告路径升级为 `evals/results/s2d/qwen-recovery-dynamic-v3.json`（或 all-v3），避免覆盖旧证据。后续需在用户 Windows 真实 Qwen 环境运行 `$env:RUN_S2D_LIVE="1"; python -m evals.s2d_live_recovery --strategy dynamic`，将报告反馈用于下一次有因修复。CI 仅验证代码行为，不能宣称真实恢复 E2E PASS。
