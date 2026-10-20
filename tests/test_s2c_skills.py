@@ -20,7 +20,8 @@ class MCPDecision:
                              else {"title":"should-not-run"}}])
 
 def test_skill_discovery_and_fallback():
-    names=lambda q: [s["function"]["name"] for s in exposed_tools(q,TOOL_SCHEMAS)]
+    def names(q):
+        return [s["function"]["name"] for s in exposed_tools(q, TOOL_SCHEMAS)]
     assert names("请查询 MCP 参考资料") == ["mcp_reference_lookup"]
     assert "create_task" in names("帮我创建待办任务")
     assert len(names("任意模糊请求")) == len(TOOL_SCHEMAS)
