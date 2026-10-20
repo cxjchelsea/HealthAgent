@@ -209,3 +209,9 @@ Qwen v2 实际复验仍 `invalidated=[]` / `preserved=1`，说明指令增强不
 | 正式 API 本地并发/持久化 | Windows 四项 pytest 通过；GitHub CI 的相关门禁通过 |
 
 **决策边界**：这些证据支持受控 S2-D 算术计划恢复/更正与既有回归；不等于通用自然语言目标识别、外部工具 exactly-once 或长期稳定性。最新精确 HEAD 的 CI 要单独确认 SUCCESS；若全绿，可推荐 PR #11 进入合并前最终审查，但不自行合并。
+
+## 2026-10-20 部分废止稳定 Step ID 修复
+
+审查发现旧 `revise()` 在保留原 Step 2、废止 Step 1 时，会给新增步骤分配 `len(preserved)+1=2`，造成 ID 冲突。此次选择 **Step ID 在同一计划生命周期中不重用、不中途重编号**：`PlanLedger.next_step_id` 单调递增，revise 保留已完成步骤的原始 ID，新增步骤分配新 ID；`complete()` 改为按实际 ID 查找，不再视 ID 等于列表位置。Checkpoint 增加 `next_step_id`，恢复兼容旧 checkpoint（缺省 `max(id)+1`），严格拒绝重复、乱序及非法游标；超过 8 个活跃步骤时在修改之前拒绝。无需修改数据库迁移结构。
+
+`tests/test_s2d_stable_step_ids.py` 覆盖部分废止、跨轮递增、SQLite checkpoint 持久化恢复、旧格式恢复、重复 ID 负例及超量修订不变性。原 `test_s2d_resume` 的预期 ID 调整为 [1,3]。此规则能保证活动步骤唯一且保持标识稳定，但不表示外部系统的已废止历史步骤有独立持久归档。需要在最新 HEAD CI 全绿后再给出合并准备度结论。
