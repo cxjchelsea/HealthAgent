@@ -8,4 +8,4 @@ def test_planning_skill_explains_completed_step_invalidation():
         strategy="dynamic", max_chars=2000)
     assert "invalidate_step_ids" in instructions
     assert "completed" in instructions
-    assert "preserve unrelated" in instructions
+    assert "preserve others" in instructions
