@@ -1,5 +1,6 @@
 """LangGraph S2-A execution loop, bounded and observable."""
 import json
+import re
 import uuid
 from pathlib import Path
 from typing import Any, TypedDict
@@ -26,6 +27,7 @@ class AgentState(TypedDict):
     allowed_tools: list[dict]
     plan: PlanLedger
     last_success: dict | None
+    superseded_step_ids: list[int]
 
 class AgentLoop:
     def __init__(self, decider: Any, max_steps: int = 6, clock=None, task_store=None, memory_store=None, mcp_client=None, skill_strategy='dynamic', skill_budget_chars=600):
@@ -53,8 +55,14 @@ class AgentLoop:
         if not decision.tool_calls:
             pending = [s["id"] for s in state["plan"].snapshot()
                        if s["status"] != "completed"]
-            is_partial = bool(pending)
+            superseded = [step_id for step_id in state["superseded_step_ids"]
+                          if any(s["id"] == step_id and s["status"] == "completed"
+                                 for s in state["plan"].snapshot())]
+            is_partial = bool(pending or superseded)
             final = decision.content
+            if superseded:
+                final = ("目标更正尚未完成：旧步骤 " + ", ".join(map(str, superseded)) +
+                         " 的完成证据仍有效，不能作为新目标的完成证明。\n" + final)
             if is_partial:
                 final = ("计划尚未完成（未验证步骤：" + ", ".join(map(str, pending)) +
                          "）。以下是模型当前回复，不代表全部完成。\n" + final)
@@ -153,6 +161,17 @@ class AgentLoop:
                 raise ValueError("Invalid conversation history")
             clean_history.append({"role": entry["role"], "content": entry["content"]})
         resumed = PlanLedger.restore(plan_checkpoint) if plan_checkpoint else PlanLedger()
+        # Conservative guard for explicit arithmetic replacement, not additive goals.
+        # No automatic evidence deletion: the model must invalidate via revise_plan.
+        superseded_step_ids = []
+        correction = re.search(r"不是\\s*([0-9]+\\s*[*+/-]\\s*[0-9]+)\\s*[,，；;。]?\\s*而是", goal)
+        if correction:
+            old_expression = re.sub(r"\\s+", "", correction.group(1))
+            superseded_step_ids = [
+                step["id"] for step in resumed.snapshot()
+                if step["status"] == "completed"
+                and step.get("expected_tool") == "calculate"
+                and step.get("expected_arguments") == {"expression": old_expression}]
         selected_tools = exposed_tools(goal, TOOL_SCHEMAS, strategy=self.skill_strategy)
         if resumed.revision:
             names = {t["function"]["name"] for t in selected_tools}
@@ -168,7 +187,8 @@ class AgentLoop:
             "traces": [], "tasks": [], "final": "", "status": "running", "iterations": 0,
             "audit_enabled": include_evidence, "audit": [],
             "allowed_tools": selected_tools,
-            "plan": resumed, "last_success": None}
+            "plan": resumed, "last_success": None,
+            "superseded_step_ids": superseded_step_ids}
         try:
             outcome = await self.graph.ainvoke(initial, config={"recursion_limit": 2 * self.max_steps + 4})
         except Exception as exc:
