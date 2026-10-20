@@ -25,7 +25,7 @@ class MultiTurnPlanner:
                                   "expected_arguments": {"expression": "10*10"}}]}),
             5: ("calculate", {"expression": "10*10"}),
             7: ("revise_plan", {"reason": "user corrected completed second step",
-                               "invalidate_step_ids": [2],
+                               "invalidate_step_ids": [3],
                                "pending_steps": [{"goal": "calculate 11*11",
                                   "expected_tool": "calculate",
                                   "expected_arguments": {"expression": "11*11"}}]}),
@@ -66,10 +66,12 @@ def test_api_multiturn_pending_and_completed_correction(tmp_path):
         assert second["plan_revision"] == 2
         assert second["plan"][0]["status"] == "completed"
         assert second["plan"][1]["expected_arguments"]["expression"] == "10*10"
+        assert [step["id"] for step in second["plan"]] == [1, 3]
 
         third = send("再次更正已经完成的第二步，改算 11*11", "s2d-multi-003")
         assert third["status"] == "completed"
         assert third["plan_revision"] == 3
         assert third["plan"][0]["expected_arguments"]["expression"] == "8*8"
         assert third["plan"][1]["expected_arguments"]["expression"] == "11*11"
-        assert third["plan_events"][-2]["invalidated"] == [2]
+        assert [step["id"] for step in third["plan"]] == [1, 4]
+        assert third["plan_events"][-2]["invalidated"] == [3]
