@@ -40,10 +40,10 @@ FIXED_GOALS = (
 
 def build_cases():
     for name, goal, allowed in CASES:
-        system = PROMPT + "\nSelected skill instructions (" + SKILL_VERSION + " ):\n" + (
+        system = PROMPT + "\nSelected skill instructions (" + SKILL_VERSION + "):\n" + (
             load_instructions(goal, strategy="dynamic", max_chars=2000))
         yield name, goal, allowed, system, "incremental"
-    fixed_system = PROMPT + "\nSelected skill instructions (" + SKILL_VERSION + " ):\n" + (
+    fixed_system = PROMPT + "\nSelected skill instructions (" + SKILL_VERSION + "):\n" + (
         load_instructions(CASES[-1][1], strategy="dynamic", max_chars=2000))
     for name, goal in FIXED_GOALS:
         yield name, goal, ("propose_plan", "calculate", "revise_plan"), fixed_system, "fixed_request"
