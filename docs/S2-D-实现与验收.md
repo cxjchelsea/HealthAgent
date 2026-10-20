@@ -123,3 +123,11 @@ python -m evals.s2d_provider_compatibility
 用户上传的七案例 v2 报告显示：`fixed_simple`=decision(propose_plan)，`fixed_failure`=decision(propose_plan)，`fixed_original`=provider_error(empty_decision)。固定三例采用相同 system、三项 tool schemas、Provider 配置，只有 user goal 不同。短失败恢复描述已能在第一次真实模型调用中输出工具调用；未证明后续执行和真实恢复成功。原始指令失败可能与其长度或具体指令组合有关，目前无法区分，不能宣称找到了 Provider 根因。
 
 仅将 `evals/s2d_live_recovery.py` 的 E2E 目标改成已验证会产生 `propose_plan` 的 `fixed_failure` 短描述，不修改正式 AgentLoop/Provider，保留原有失败观察、模型修订、计算成功、计划全部验证的五项判定。报告路径升级为 `evals/results/s2d/qwen-recovery-dynamic-v3.json`（或 all-v3），避免覆盖旧证据。后续需在用户 Windows 真实 Qwen 环境运行 `$env:RUN_S2D_LIVE="1"; python -m evals.s2d_live_recovery --strategy dynamic`，将报告反馈用于下一次有因修复。CI 仅验证代码行为，不能宣称真实恢复 E2E PASS。
+
+## 2026-10-20 真实 Qwen 受控失败恢复 v3：首次 E2E PASS
+
+用户提交本地 `qwen-recovery-dynamic-v3.json`，记录 REAL_PROVIDER / ollama_proxy / qwen3:14b / dynamic。五个报告检查均为 true：`observed_failure`、`model_revised_plan`、`observed_recovery`、`terminal_completed`、`all_plan_steps_verified`。真实执行 Trace 顺序：第 1 步 `propose_plan` 成功；第 2 步 `calculate` 失败；第 3 步 `revise_plan` 成功；第 4 步 `calculate` 成功；第 5 步模型结束并返回 completed。计划 Revision 1 → 2，最终一步 `expected_tool=calculate`、`expected_arguments.expression=8*8`、`evidence_tool=calculate`、状态 completed。共 5 次模型决策，总耗时 5273 ms，`provider_failure=null`。
+
+**证据限制**：失败事件报告为 `invalid_arguments`，当前保存的 Trace 并未包含失败调用的原始参数，因此只能验证真实工具失败→模型修订→成功恢复，不能断言实际触发了算术除零异常或精确判断原始错误参数。单次成功不代表可靠性百分比或复杂任务泛化；这不是正式 Conversation API 跨轮数据库一致性测试。此前长指令导致 `empty_decision` 的具体模型/Proxy 根因尚未确认，不能将简化测试目标描述为 Provider 根因修复。
+
+此项真实模型恢复链路可标记 **PASS（单次受控实验）**，但 S2-D 整体仍 **IN PROGRESS**。下一步仅在必要时检查失败调用参数是否确为 `8/0`、错误语义，再选择下一项实际纵向功能，不启动新 Runtime 架构。对应先前代码 HEAD `8d0cb23d38807754283cbcf8d078c1c89e300c30` 的 CI #39384712114 SUCCESS。
