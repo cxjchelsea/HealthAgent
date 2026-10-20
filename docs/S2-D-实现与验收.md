@@ -168,3 +168,9 @@ $env:RUN_S2D_LIVE = "1"
 python -m evals.s2d_conversation_api_live
 ```
 报告：`evals/results/s2d/qwen-conversation-api-v1.json`。检查失败项与 `trace_tools` 后针对确切证据修复；**未执行此本地真实 Provider 脚本前不能声称多轮真实 API PASS**。这是进程内 ASGI HTTP 接口级 E2E，而非浏览器或独立 Uvicorn 进程验收。S2-D 仍 IN PROGRESS。
+
+## 真实 Qwen 多轮 API v1 反馈与 v2 诊断（2026-10-20）
+
+本地真实 `qwen-conversation-api-v1.json` 为 8/9 PASS：两轮 HTTP 200，`propose_plan → calculate` 与 `revise_plan → calculate` 均执行，checkpoint Revision 1→2，9*9 步骤完成；唯一失败项为 `old_calculation_invalidated=false`，说明旧 8*8 completed 证据仍在最终 checkpoint。v1 报告没有修订的 invalidated / preserved 详情，不能据此直接确定是模型漏传 `invalidate_step_ids`，还是执行层故障。
+
+修复 E731 测试语法并将报告升级为 v2，增加脱敏的 `revision_diagnostics`（revision、invalidated、preserved）和 `final_plan_steps`（id、status、expected_tool、expected_arguments）。不改变核心 `PlanLedger` 的默认保留已完成步骤机制，避免为了测试通过而自动废止历史证据。Windows 更新分支后运行 `$env:RUN_S2D_LIVE="1"; python -m evals.s2d_conversation_api_live`，读取 `evals/results/s2d/qwen-conversation-api-v2.json`。在 v2 实证出来之前继续标记多轮更正最终验收 FAIL / S2-D IN PROGRESS。
