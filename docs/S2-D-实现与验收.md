@@ -139,3 +139,21 @@ python -m evals.s2d_provider_compatibility
 新增 `0005_active_turn_guard`：在现有 `turns` 表创建仅对 `state='running'` 生效的 `conversation_id` 部分唯一索引（SQLite / PostgreSQL），利用数据库事务中的 Turn 插入实现跨进程原子准入。同一会话已有 running turn 时，新的独立请求在加载 Checkpoint / 执行 Agent 前返回 HTTP 409 `conversation_turn_in_progress`；不同会话可并行，已结束状态释放索引位置。已有 request_id 幂等冲突继续使用 `duplicate_request_id`。测试验证同会话拒绝、跨会话允许、终态释放后重入。
 
 **限制与部署风险**：这是一项“拒绝同会话并发”，不是请求排队或全链路原子持久化。异常中断后遗留的 `running` Turn 可能阻止新请求；当前没有 TTL / 后台恢复机制，需运维审查并治理停滞的 Turn。迁移前如存在多个相同会话的 `running` Turn，数据库将拒绝创建唯一索引；不得自动删除或改写未核查的历史记录。SQLite 单写者争用仍可能表现为 database locked，而不是始终为 409。工具的外部副作用和 Plan Checkpoint、assistant 消息仍未实现同一事务提交。S2-D 继续 IN PROGRESS；CI PASS 不代表多 worker + 真实 Qwen 物理并发测试已执行。
+
+## Running Turn 崩溃恢复与数据库提交一致性（2026-10-20）
+
+CI 回归发现 `tests/test_migration.py` 仍期望旧 Alembic 版本 0004，实际版本已升级至 0005；已按新增索引修正断言。
+
+**本次增量：**
+- `services/recover_turns.py` 提供默认仅查看的人工恢复工具，扫描超过指定时长且 assistant placeholder 仍存在的 `running` Turn。只能在**停止所有 API worker、确认无在执行工具**后加上 `--apply --confirm-workers-stopped` 将其标为 `interrupted`，保留原请求及 Checkpoint，不自动重放、不给工具补偿、不标记成功。年龄阈值只是人工筛选条件，不是自动抢占权威；缺少对应 assistant 时间戳的异常数据不自动处理。
+- API 成功结果的 `conversation_plans.snapshot`、assistant message 状态和 `turns.state` 改为**同一个 SQLAlchemy 数据库事务提交**，若事务失败一并回滚，向客户端报告 503 `turn_finalization_failed`。仅一个会话 running Turn 的数据库索引仍有效，终态时释放。
+- 新增恢复路径测试；真实模型恢复原有证据保留。
+
+**不可扩大声明：** 这解决的是本地 SQL 数据库中三个记录的原子提交，**无法**将运行过程中已经发生的外部工具调用、用户记忆/任务工具写入纳入同一事务，也不能在崩溃后证明外部副作用没有发生。没有引入 Outbox、补偿执行、分布式租约或自动重试，避免误报 exactly-once。恢复命令要求停机维护，不适合不经人工审查的生产自动运行。
+
+停机确认后本地操作示例：
+```powershell
+python -m services.recover_turns --minimum-age-minutes 10
+python -m services.recover_turns --minimum-age-minutes 10 --apply --confirm-workers-stopped
+```
+执行前核对 `DATABASE_URL` 指向正确数据库并备份。旧进程仍运行时不得执行 --apply。此次为 S2-D 渐进切片，CI/真实多进程崩溃物理验收状态需分别记录。
