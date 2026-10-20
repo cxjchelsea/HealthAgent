@@ -57,3 +57,18 @@ python -m evals.s2d_benchmark
 `revise_plan` 增加可选 `invalidate_step_ids`，允许在最新用户目标确有更正时指定哪些**已完成**步骤的旧证据已过期。执行层检查编号确为已完成步骤，拒绝未知/未完成/重复编号，保持未受影响的已完成步骤，再用新待执行步骤替换需要重做的内容；Revision 增加，并在 plan_events 记录废止的步骤 ID。测试覆盖“先查询 RAG、后算 8×8，下一轮更正第二步为 9×9，保留 RAG 进度”。
 
 这并非自主识别用户目标更正的语义完备实现：是否调用此工具以及哪些步骤受影响由模型提出，执行层只验证结构和版本。更复杂的权限治理、并发消息协调以及步骤语义有效性仍需单独验证。
+
+## 真实 Qwen 失败恢复：空 Trace 诊断修正
+
+用户提供的 `qwen-recovery-v1.json` 显示五项任务检查全为 false、`plan=null`、`events=null`、`trace=[]`，因此先定位 Provider 链路，不能将其判定为模型无法重规划。真实网页多轮计划修订 RAG → 9*9 已成功。
+
+`evals/s2d_live_recovery.py` 增加包装真实 `NativeToolDecision` 的 `DiagnosticDecider`，只记录模型决策请求次数、总决策耗时、Run 总耗时、Agent 原始 status / 终止原因、Prompt 版本、响应层网络/超时/HTTP状态错误类别及异常类名（无 URL、请求、密钥、原始回答）。同时给 all 工具策略显式使用 2000 字符 Skills Budget，避免当前默认预算影响评测，**不改正式会话 API 配置**。诊断测试覆盖 Provider 网络失败分类和正常无错误路径。
+
+本地更新同一 PR 分支后执行：
+
+```powershell
+$env:RUN_S2D_LIVE="1"
+python -m evals.s2d_live_recovery
+```
+
+输出仍保存在 `evals/results/s2d/qwen-recovery-v1.json`。只有获得明确的 Tool Trace / Agent 状态后才能判断失败恢复是否有效。CI 不执行真实 Qwen，不得将工具诊断代码的测试成功表述为真实恢复通过。
