@@ -15,7 +15,7 @@ from agent.decision import NativeToolDecision, ToolDecisionError
 from agent.providers import ModelUnavailable
 from agent.tools import TOOL_SCHEMAS
 from agent.loop import PROMPT
-from agent.skills import exposed_tools, load_instructions, SKILL_VERSION
+from agent.skills import load_instructions, SKILL_VERSION
 
 CASES = (
     ("plain_text_no_tools", "请用一句话回答：2加2等于多少？", ()),
@@ -29,18 +29,35 @@ CASES = (
      ("propose_plan", "calculate", "revise_plan")),
 )
 
+
+# A controlled comparison: identical system prompt, tools, and provider settings.
+# Only the user goal changes between these three requests.
+FIXED_GOALS = (
+    ("fixed_simple", "请先用 propose_plan 制定计算8*8的计划，再调用 calculate。"),
+    ("fixed_failure", "请先用 propose_plan 制定计划，先用 calculate 计算8/0并观察失败，再修订计划计算8*8。"),
+    ("fixed_original", CASES[-1][1]),
+)
+
+def build_cases():
+    for name, goal, allowed in CASES:
+        system = PROMPT + "\\nSelected skill instructions (" + SKILL_VERSION + "):\\n" + (
+            load_instructions(goal, strategy="dynamic", max_chars=2000))
+        yield name, goal, allowed, system, "incremental"
+    fixed_system = PROMPT + "\\nSelected skill instructions (" + SKILL_VERSION + "):\\n" + (
+        load_instructions(CASES[-1][1], strategy="dynamic", max_chars=2000))
+    for name, goal in FIXED_GOALS:
+        yield name, goal, ("propose_plan", "calculate", "revise_plan"), fixed_system, "fixed_request"
+
 async def evaluate():
     if os.getenv("RUN_S2D_LIVE") != "1":
         raise RuntimeError("Set RUN_S2D_LIVE=1 before accessing the real model")
     settings = Settings()
     adapter = NativeToolDecision(settings)
     results = []
-    for name, goal, allowed in CASES:
+    for name, goal, allowed, instruction, group in build_cases():
         tools = [schema for schema in TOOL_SCHEMAS if schema["function"]["name"] in allowed]
-        instruction = PROMPT + "\nSelected skill instructions (" + SKILL_VERSION + "):\n" + (
-            load_instructions(goal, strategy="dynamic", max_chars=2000))
         started = time.monotonic()
-        case = {"case_id": name, "tools_count": len(tools),
+        case = {"case_id": name, "comparison_group": group, "tools_count": len(tools),
                 "prompt_chars": len(instruction), "goal_chars": len(goal)}
         try:
             decision = await adapter.decide([
@@ -56,17 +73,18 @@ async def evaluate():
             case.update({"status": "provider_error", "reason_code": "model_unavailable"})
         case["duration_ms"] = round((time.monotonic() - started) * 1000)
         results.append(case)
-    return {"suite": "s2d-provider-compatibility-v1",
+    return {"suite": "s2d-provider-compatibility-v2",
             "mode": "REAL_PROVIDER", "provider": settings.model_provider,
             "model": settings.model_name, "cases": results,
             "limitations": ["One request per case; no stability inference",
                             "Tool calls are inspected but NEVER executed",
+                            "Fixed-request cases share identical system prompt and tool schemas",
                             "No raw responses, thinking text, credentials or prompts are stored"]}
 
 
 def main():
     report = asyncio.run(evaluate())
-    path = Path("evals/results/s2d/qwen-provider-compatibility-v1.json")
+    path = Path("evals/results/s2d/qwen-provider-compatibility-v2.json")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
     for case in report["cases"]:
