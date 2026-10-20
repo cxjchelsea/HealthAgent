@@ -47,7 +47,7 @@ INSTRUCTIONS = {
     "tasks": "Use create_task/list_tasks; tasks belong to the current conversation.",
     "memory": "Use recall_memory for exact keys; saving requires current-turn consent.",
     "reference": "Use mcp_reference_lookup for terms present in the trusted reference catalog.",
-    "planning": "Use bound propose_plan steps. On correction, invalidate superseded completed IDs via revise_plan.invalidate_step_ids; retain unaffected steps. On failure, revise pending steps. Unbound steps require complete_plan_step.",
+    "planning": "Bind plan steps. On correction, set revise_plan.invalidate_step_ids for superseded completed IDs; preserve others. Revise failed steps.",
 }
 SKILL_VERSION = "s2c-skills-v1"
 
