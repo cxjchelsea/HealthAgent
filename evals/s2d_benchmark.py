@@ -14,7 +14,7 @@ def evaluate():
     ledger.observe("calculate", {"ok": False, "error": "invalid_arguments"})
     retry = ledger.revise(1, ["calculate with corrected arguments"], "invalid_arguments")
     stale = ledger.revise(1, ["discard"], "stale")
-    finished = ledger.complete(2, "calculate", {"name": "calculate", "ok": True})
+    finished = ledger.complete(3, "calculate", {"name": "calculate", "ok": True})
     tests = {
         "plan_created": proposed["ok"],
         "unverified_completion_blocked": denial["error"] == "missing_success_evidence",
@@ -27,8 +27,8 @@ def evaluate():
     return {"suite": "s2d-ledger-replay-v1", "mode": "deterministic_no_llm",
             "checks": tests, "passed": all(tests.values()),
             "final_plan": ledger.snapshot(), "events": ledger.events,
-            "limitations": ["In-memory per-run plan only", "No semantic verification of goal-to-tool evidence",
-                            "No persisted cross-run plan or user correction reconciliation"]}
+            "limitations": ["Deterministic ledger replay only, not live model evaluation",
+                            "No general semantic verification of user goal changes"]}
 
 
 def main():
