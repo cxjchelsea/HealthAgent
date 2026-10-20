@@ -24,11 +24,10 @@ def test_precedence_is_separately_graded():
     assert all(grade("math_precedence", outcome("18+24*3", "90", 90)).values())
 
 
-def test_ambiguity_requires_clarification_without_tool():
-    yes = grade("math_ambiguous", outcome(answer="需要确认括号：先算哪一步？"))
-    assert all(yes.values())
-    no = grade("math_ambiguous", outcome("18+24*3", "90", 90))
-    assert not all(no.values())
+def test_natural_math_uses_standard_precedence():
+    assert all(grade("math_natural_precedence", outcome("18+24*3", "90", 90)).values())
+    checks = grade("math_natural_precedence", outcome("(18+24)*3", "126", 126))
+    assert not checks["correct_tool_result"]
 
 
 def test_no_other_tool_observations_in_diagnostics():

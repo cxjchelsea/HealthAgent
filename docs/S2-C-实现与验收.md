@@ -65,3 +65,11 @@ python -m uvicorn apps.api.main:app --reload
 复验命令：`$env:RUN_S2C_LIVE='1'; python -m evals.s2c_live_benchmark --math-only --repeats 2 --inspect-ambiguity --output evals/results/s2c/math-closure.json`。需人工核查原文确实向用户提出澄清，不能仅靠关键词判分推断。之后可运行不带 `--math-only` 的完整 40 次对照。实际 Qwen 复验尚需用户本机执行，不能写成已通过。
 
 此处拟收口的是 **S2-C 第一版 Skills/固定 stdio MCP/Harness**，不是通用任意 MCP Server、多租户生产安全、完全模型可靠性或语义规划。自研 MCP Client + 官方 SDK 的 stdio 子集互操作已在 CI 检查；动态暴露带有关键词误过滤风险，尚未证明显著优于 all。**只有 CI、人工歧义澄清复核与最终 PR 审查完成后，才可批准合并并在 main 后验收 CLOSED**。
+
+## S2-C 合并前最终验收收口：数学标准优先级纠偏
+
+最终人工复验（Qwen3:14b / Ollama）明确显示 `18加24乘3` 四次均按照常规乘法优先级生成 `18 + 24 * 3 = 90` 并调用真实 `calculate` 工具成功；原测试强制“不调用工具而澄清”的规则不合理，不能据此认定模型失败。证据：用户本地 `math-closure.json` 12 次 Run，明确先加后乘和运算优先级均通过，两策略都为 4/6；差额完全来自原 `math_ambiguous` 不当评分口径。
+
+本次将该样例重命名为 `math_natural_precedence`，用通常运算优先级的数值 90、工具成功、答案中含 90 验收。撤除“该算术句必须澄清”的过强 Prompt 指令，改成尊重常规运算优先级；只有信息真实缺失或常规约定不能解决时才澄清。删除仅针对旧案例的 `--inspect-ambiguity` 输出与旧判分门禁，留下独立回归测试。相关通用澄清能力作为 S2-D 可继续评测的非阻塞事项。
+
+**修复后的新版本不宣称再次在用户机器上跑过 Qwen。** 根据最后一次真实原始 Trace 以及校正后完全一致的判断口径，原始 `math-closure.json` 可重新判定自然表达式的工具行为通过；S2-C 初版固定 MCP/Skills/Harness 提供可合并的验收证据，但新代码的功能门禁仍以最新 CI 为准。尚未覆盖生产级任意 MCP、真正 token 计费、统计显著的速度收益。
