@@ -6,6 +6,7 @@ from typing import Any, TypedDict
 from langgraph.graph import END, StateGraph
 from agent.decision import NativeToolDecision
 from agent.tools import TOOL_SCHEMAS, execute_tool
+from agent.skills import exposed_tools, load_instructions, SKILL_VERSION
 
 PROMPT_VERSION = "s2a-core-v1"
 PROMPT = (Path(__file__).parent / "prompts" / "s2a_core_v1.md").read_text(encoding="utf-8")
@@ -19,9 +20,10 @@ class AgentState(TypedDict):
     iterations: int
     audit_enabled: bool
     audit: list[dict]
+    allowed_tools: list[dict]
 
 class AgentLoop:
-    def __init__(self, decider: Any, max_steps: int = 6, clock=None, task_store=None, memory_store=None):
+    def __init__(self, decider: Any, max_steps: int = 6, clock=None, task_store=None, memory_store=None, mcp_client=None, skill_strategy='dynamic', skill_budget_chars=600):
         if max_steps < 1 or max_steps > 20:
             raise ValueError("max_steps must be 1..20")
         self.decider = decider
@@ -29,6 +31,9 @@ class AgentLoop:
         self.clock = clock
         self.task_store = task_store
         self.memory_store = memory_store
+        self.mcp_client = mcp_client
+        self.skill_strategy = skill_strategy
+        self.skill_budget_chars = skill_budget_chars
         flow = StateGraph(AgentState)
         flow.add_node("decide", self._decide)
         flow.add_node("tools", self._tools)
@@ -38,7 +43,7 @@ class AgentLoop:
         self.graph = flow.compile()
 
     async def _decide(self, state: AgentState) -> dict:
-        decision = await self.decider.decide(state["messages"], TOOL_SCHEMAS)
+        decision = await self.decider.decide(state["messages"], state["allowed_tools"])
         iteration = state["iterations"] + 1
         if not decision.tool_calls:
             return {"iterations": iteration, "final": decision.content,
@@ -73,7 +78,12 @@ class AgentLoop:
         for index, call in enumerate(last.get("tool_calls", [])[:4]):
             function = call["function"]
             name = function.get("name")
-            result = execute_tool(name, function.get("arguments"), tasks, self.clock, task_store=self.task_store, memory_store=self.memory_store)
+            if name not in {tool["function"]["name"] for tool in state["allowed_tools"]}:
+                result = {"ok": False, "error": "tool_not_exposed"}
+            else:
+                result = execute_tool(name, function.get("arguments"), tasks, self.clock,
+                                      task_store=self.task_store, memory_store=self.memory_store,
+                                      mcp_client=self.mcp_client)
             observations.append({"role": "tool", "tool_name": name,
                                  "tool_call_id": call["id"],
                                  "content": json.dumps(result, ensure_ascii=False)})
@@ -97,10 +107,11 @@ class AgentLoop:
                 raise ValueError("Invalid conversation history")
             clean_history.append({"role": entry["role"], "content": entry["content"]})
         initial: AgentState = {"messages": [
-            {"role": "system", "content": PROMPT},
+            {"role": "system", "content": PROMPT + "\nSelected skill instructions (" + SKILL_VERSION + "):\n" + load_instructions(goal, strategy=self.skill_strategy, max_chars=self.skill_budget_chars)},
             *clean_history, {"role": "user", "content": goal}],
             "traces": [], "tasks": [], "final": "", "status": "running", "iterations": 0,
-            "audit_enabled": include_evidence, "audit": []}
+            "audit_enabled": include_evidence, "audit": [],
+            "allowed_tools": exposed_tools(goal, TOOL_SCHEMAS, strategy=self.skill_strategy)}
         try:
             outcome = await self.graph.ainvoke(initial, config={"recursion_limit": 2 * self.max_steps + 4})
         except Exception as exc:
