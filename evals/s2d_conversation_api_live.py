@@ -81,6 +81,12 @@ def evaluate():
                     "trace_tools": [item.get("tools") for item in payload.get("trace", [])
                                     if item.get("type") == "decision"],
                     "plan_events": [item.get("event") for item in payload.get("plan_events", [])],
+                    "revision_diagnostics": [
+                        {"revision": item.get("revision"),
+                         "invalidated": item.get("invalidated"),
+                         "preserved": item.get("preserved")}
+                        for item in payload.get("plan_events", [])
+                        if item.get("event") == "plan_revised"],
                     "error_code": payload.get("detail") if response.status_code != 200 else None,
                 })
                 engine, Session = database(db_url)
@@ -109,13 +115,18 @@ def evaluate():
                               checkpoints[-1] if checkpoints else None,
                               persisted, turns)
         return {
-            "suite": "s2d-conversation-api-live-v1",
+            "suite": "s2d-conversation-api-live-v2",
             "mode": "REAL_PROVIDER", "provider": settings.model_provider,
             "model": settings.model_name,
             "duration_ms": round((time.monotonic() - started) * 1000),
             "checks": checks, "passed": all(checks.values()),
             "turns": outcomes,
             "checkpoint_revisions": [x.get("revision") if x else None for x in checkpoints],
+            "final_plan_steps": [
+                {"id": x.get("id"), "status": x.get("status"),
+                 "expected_tool": x.get("expected_tool"),
+                 "expected_arguments": x.get("expected_arguments")}
+                for x in ((checkpoints[-1] or {}).get("steps", []) if checkpoints else [])],
             "database": "isolated_temporary_sqlite",
             "limitations": [
                 "Single real-provider sequence, not a reliability estimate",
@@ -127,7 +138,7 @@ def evaluate():
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--output", default="evals/results/s2d/qwen-conversation-api-v1.json")
+    parser.add_argument("--output", default="evals/results/s2d/qwen-conversation-api-v2.json")
     args = parser.parse_args()
     report = evaluate()
     path = Path(args.output)
