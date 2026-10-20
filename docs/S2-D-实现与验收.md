@@ -194,3 +194,18 @@ Qwen v2 实际复验仍 `invalidated=[]` / `preserved=1`，说明指令增强不
 本次将已存在的显式算术更正 guard 提前到 AgentLoop 的 `revise_plan` 工具准入处：**当已有匹配旧表达式的已完成 checkpoint 步骤而模型未提供对应 `invalidate_step_ids` 时，返回 `missing_required_invalidation`、`required_step_ids`、原 revision，并给出可操作重试提示**。拒绝发生在 `PlanLedger.revise()` 之前，计划不发生修改；必须由模型再次提交完整修订，不由执行器静默补全参数。新增脚本化多次模型决策测试覆盖：缺失废止 → 工具拒绝 → 修正为 [1] → 修订成功 → 9*9 工具验证 → completed。
 
 该规则只对精确识别的“不是旧算术表达式，而是……”匹配旧 checkpoint 的情况生效；追加任务、无历史绑定的情形不拦截。**尚未证明一般语言的目标变更可自动识别**。真实 Qwen 再测可继续执行 `python -m evals.s2d_conversation_api_live`，报告 `qwen-conversation-api-v2.json`，本次关键关注 `revision_diagnostics.invalidated` 是否变成 [1] 及工具反馈后是否二次 revise_plan；如模型不重试，只能报告 partial，不代表修复完全成功。S2-D 不在未取得真实模型 PASS 前 CLOSED。
+
+## 2026-10-20 S2-D 最终回归矩阵（合并前）
+
+同一 PR #11 收口，不修改已获得真实 Qwen 9/9 PASS 的主链。补充 `tests/test_s2d_invalidation_regression.py`，覆盖错误编号 [99] 经 AgentLoop 工具入口被拒、revision 仍为 1、模型改用 [1] 修订后成功、旧绑定废止且新 9*9 工具绑定完成。
+
+| 回归范围 | 证据 |
+|---|---|
+| 追加任务保留旧证据 | `tests/test_s2d_goal_correction_guard.py` |
+| 无关目标更正不误废止 | `tests/test_s2d_goal_correction_guard.py` |
+| 无效完成步骤编号、旧修订拒绝 | `tests/test_s2d_resume.py` / `tests/test_s2d_invalidation_regression.py` |
+| 真实模型工具失败恢复 | 已上传 `qwen-recovery-dynamic-v3.json`：单次五项通过 |
+| 真实模型跨轮目标替换 | 已上传 `qwen-conversation-api-v2(3).json`：单次九项通过，第二轮 revise_plan 两次，最终 invalidated=[1] |
+| 正式 API 本地并发/持久化 | Windows 四项 pytest 通过；GitHub CI 的相关门禁通过 |
+
+**决策边界**：这些证据支持受控 S2-D 算术计划恢复/更正与既有回归；不等于通用自然语言目标识别、外部工具 exactly-once 或长期稳定性。最新精确 HEAD 的 CI 要单独确认 SUCCESS；若全绿，可推荐 PR #11 进入合并前最终审查，但不自行合并。
