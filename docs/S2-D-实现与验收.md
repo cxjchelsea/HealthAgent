@@ -107,3 +107,13 @@ $env:RUN_S2D_LIVE="1"
 python -m evals.s2d_provider_compatibility
 ```
 生成 `evals/results/s2d/qwen-provider-compatibility-v1.json`。根据报告判断：纯文本也空→模型/网关基础链路；只有工具请求空→Tool Calling 适配与网关；仅计划工具空→计划 Schema 兼容；仅复杂目标空→指令复杂度/模型行为。定位后再做最小修复并继续原失败恢复脚本验证。PR #11 必须保持 Draft。
+
+## 2026-10-20 真实 Qwen 兼容实验反馈与匹配请求复验
+
+用户在 Windows 上提交 `qwen-provider-compatibility-v1.json`：plain_text_no_tools=decision(文本), calculate_only=decision(calculate), plan_and_calculate=decision(propose_plan), recovery_goal=provider_error(empty_decision)。各案例仅一次，不是稳定性结论。该结果直接排除“所有请求均无法连接”和“所有 Tool Calling 均不兼容”；**没有**证明恢复指令必然导致空回复，也没有证明模型无法修订计划。
+
+审查发现初版矩阵随每条 goal 动态选择 Skills Instructions，故此前“复杂恢复指令”与“简单规划指令”对照**不只更改用户消息**。新增同一脚本中的 fixed_simple / fixed_failure / fixed_original 三个控制案例：共享与 recovery_goal 一致的 system prompt、三项原生 tool schemas、Provider settings，只更改用户目标。新增测试验证三例请求条件一致，以及 fixed_original 与原始 recovery_goal 精确一致。CI 仅检查程序，**不能替代真实 Provider 结果**。
+
+本地复验：`$env:RUN_S2D_LIVE="1"; python -m evals.s2d_provider_compatibility`，读取 `evals/results/s2d/qwen-provider-compatibility-v2.json`。重点比较 fixed_simple、fixed_failure、fixed_original；若只有 fixed_original 失败，再逐段简化原复杂任务并保留固定请求条件。若 fixed_simple 也失败，不能归因于故障语义，应检查后续运行的服务状态、模型生成输出参数与请求间波动。
+
+当前**未修复**真实失败恢复：四组首次证据只是 Provider 预决策，不执行真实工具。下一次决策应基于匹配实验结果确定最小原因，然后再运行 `python -m evals.s2d_live_recovery --strategy dynamic` 验收完整 Observation → revise_plan → calculate 恢复链路。PR #11 保持 Draft，不得未经授权合并。
