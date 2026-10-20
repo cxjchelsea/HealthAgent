@@ -28,6 +28,7 @@ class AgentState(TypedDict):
     plan: PlanLedger
     last_success: dict | None
     superseded_step_ids: list[int]
+    superseded_expression: str | None
 
 class AgentLoop:
     def __init__(self, decider: Any, max_steps: int = 6, clock=None, task_store=None, memory_store=None, mcp_client=None, skill_strategy='dynamic', skill_budget_chars=600):
@@ -57,6 +58,8 @@ class AgentLoop:
                        if s["status"] != "completed"]
             superseded = [step_id for step_id in state["superseded_step_ids"]
                           if any(s["id"] == step_id and s["status"] == "completed"
+                                 and s.get("expected_tool") == "calculate"
+                                 and s.get("expected_arguments") == {"expression": state["superseded_expression"]}
                                  for s in state["plan"].snapshot())]
             is_partial = bool(pending or superseded)
             final = decision.content
@@ -164,9 +167,11 @@ class AgentLoop:
         # Conservative guard for explicit arithmetic replacement, not additive goals.
         # No automatic evidence deletion: the model must invalidate via revise_plan.
         superseded_step_ids = []
+        superseded_expression = None
         correction = re.search(r"不是\s*([0-9]+\s*[*+/-]\s*[0-9]+)\s*[,，；;。]?\s*而是", goal)
         if correction:
             old_expression = re.sub(r"\s+", "", correction.group(1))
+            superseded_expression = old_expression
             superseded_step_ids = [
                 step["id"] for step in resumed.snapshot()
                 if step["status"] == "completed"
@@ -188,7 +193,8 @@ class AgentLoop:
             "audit_enabled": include_evidence, "audit": [],
             "allowed_tools": selected_tools,
             "plan": resumed, "last_success": None,
-            "superseded_step_ids": superseded_step_ids}
+            "superseded_step_ids": superseded_step_ids,
+            "superseded_expression": superseded_expression}
         try:
             outcome = await self.graph.ainvoke(initial, config={"recursion_limit": 2 * self.max_steps + 4})
         except Exception as exc:
