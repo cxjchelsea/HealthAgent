@@ -16,7 +16,7 @@ button:disabled{opacity:.5}.toolbar{display:flex;gap:10px;align-items:center;mar
 <section class="panel"><div id="messages" aria-live="polite"></div>
 <textarea id="prompt" placeholder="输入消息（Ctrl + Enter 发送）"></textarea>
 <div class="toolbar"><label class="hint"><input type="checkbox" id="memory-consent"> 本次允许 Agent 保存长期记忆</label></div><div class="toolbar"><button id="send">发送</button><button id="stop" disabled>停止等待</button>
-<button id="new">新建对话</button><span class="status" id="status"></span></div></section></main><script>
+<button id="new">新建对话</button><span class="status" id="status"></span></div></section><section class="panel"><h2>长期记忆管理</h2><p class="hint">按精确 Key 管理；含义相近但 Key 不同的记录不会自动合并。修改和删除均只作用于选定 Key。</p><button id="memory-refresh" type="button">刷新记忆</button><div id="memory-list" aria-live="polite"></div><p class="status" id="memory-status"></p></section></main><script>
 const KEY='healthagent.s1.conversation.v1';
 let conversation=null,controller=null;
 const messages=document.querySelector('#messages'),prompt=document.querySelector('#prompt'),status=document.querySelector('#status');
@@ -87,6 +87,53 @@ async function send(){
   status.textContent=e.name==='AbortError'?'已停止等待（不保证服务端已取消）':'请求失败：'+e.message;
  }finally{controller=null;sendButton.disabled=false;stopButton.disabled=true;}
 }
+// Explicit owner-scoped memory CRUD. All values are inserted as text, never HTML.
+const memoryList=document.querySelector('#memory-list');
+const memoryStatus=document.querySelector('#memory-status');
+async function memoryRequest(url,options){
+ const r=await fetch(url,options);
+ if(!r.ok)throw Error('HTTP '+r.status);
+ return r.status===204?null:r.json();
+}
+async function refreshMemories(){
+ memoryStatus.textContent='正在加载记忆…';
+ try{
+  const items=await memoryRequest('/memories');
+  memoryList.replaceChildren();
+  if(!items.length){memoryList.textContent='当前没有长期记忆。';}
+  for(const item of items){
+   const line=document.createElement('div');line.className='msg';
+   const key=document.createElement('div');key.className='hint';key.textContent='Key：'+item.key;
+   const value=document.createElement('input');value.type='text';value.value=item.value;value.maxLength=500;
+   value.setAttribute('aria-label','记忆值：'+item.key);
+   value.style.cssText='width:100%;box-sizing:border-box;padding:8px;margin:8px 0;background:#101826;color:white;border:1px solid #516078;border-radius:5px';
+   const save=document.createElement('button');save.type='button';save.textContent='保存修改';
+   save.onclick=async()=>{
+    if(!value.value.trim()){memoryStatus.textContent='记忆值不能为空';return;}
+    try{
+     await memoryRequest('/memories/'+encodeURIComponent(item.key),{
+      method:'PUT',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({value:value.value})});
+     memoryStatus.textContent='已保存 Key：'+item.key;
+     await refreshMemories();
+    }catch(e){memoryStatus.textContent='保存失败：'+e.message;}
+   };
+   const remove=document.createElement('button');remove.type='button';remove.textContent='删除';
+   remove.style.marginLeft='8px';
+   remove.onclick=async()=>{
+    if(!confirm('确定删除长期记忆 '+item.key+' 吗？此操作无法撤销。'))return;
+    try{
+     await memoryRequest('/memories/'+encodeURIComponent(item.key),{method:'DELETE'});
+     await refreshMemories();
+    }catch(e){memoryStatus.textContent='删除失败：'+e.message;}
+   };
+   line.append(key,value,save,remove);memoryList.appendChild(line);
+  }
+  memoryStatus.textContent='共 '+items.length+' 条记忆；不同 Key 不会自动合并。';
+ }catch(e){memoryStatus.textContent='加载失败：'+e.message;}
+}
+document.querySelector('#memory-refresh').onclick=refreshMemories;
+refreshMemories();
 sendButton.onclick=send;
 stopButton.onclick=()=>controller?.abort();
 document.querySelector('#new').onclick=()=>{
