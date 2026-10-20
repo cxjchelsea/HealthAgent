@@ -7,6 +7,7 @@ MAX_ITEMS = 8
 class PlanLedger:
     steps: list[dict] = field(default_factory=list)
     revision: int = 0
+    next_step_id: int = 1
     events: list[dict] = field(default_factory=list)
 
     def propose(self, steps: list[str]) -> dict:
@@ -16,6 +17,7 @@ class PlanLedger:
             return {"ok": False, "error": "invalid_plan"}
         self.steps = [self._step(i + 1, item) for i, item in enumerate(steps)]
         self.revision = 1
+        self.next_step_id = len(self.steps) + 1
         self.events.append({"event": "plan_created", "revision": 1})
         return {"ok": True, "revision": 1, "steps": self.snapshot()}
 
@@ -38,9 +40,9 @@ class PlanLedger:
                                 "error": result.get("error", "unknown")})
 
     def complete(self, step_id: int, evidence_tool: str, observation: dict | None) -> dict:
-        if not self.steps or not 1 <= step_id <= len(self.steps):
+        step = next((s for s in self.steps if s["id"] == step_id), None)
+        if step is None:
             return {"ok": False, "error": "unknown_step"}
-        step = self.steps[step_id - 1]
         if step["status"] != "pending":
             return {"ok": False, "error": "step_not_pending"}
         if not observation or not observation.get("ok"):
@@ -70,9 +72,13 @@ class PlanLedger:
                     "plan_revision": self.revision}
         preserved = [dict(step) for step in self.steps
                      if step["status"] == "completed" and step["id"] not in invalidated]
+        if len(preserved) + len(pending_steps) > MAX_ITEMS:
+            return {"ok": False, "error": "invalid_revision",
+                    "plan_revision": self.revision}
         self.steps = preserved + [
-            self._step(len(preserved) + i + 1, goal)
+            self._step(self.next_step_id + i, goal)
             for i, goal in enumerate(pending_steps)]
+        self.next_step_id += len(pending_steps)
         self.revision += 1
         self.events.append({"event": "plan_revised", "revision": self.revision,
                             "preserved": len(preserved), "invalidated": sorted(invalidated),
@@ -90,9 +96,12 @@ class PlanLedger:
         if not isinstance(steps, list) or not 1 <= len(steps) <= MAX_ITEMS:
             raise ValueError("invalid_plan_steps")
         restored = []
+        previous_id = 0
         for i, step in enumerate(steps):
-            if not isinstance(step, dict) or step.get("id") != i + 1:
+            if (not isinstance(step, dict) or type(step.get("id")) is not int
+                    or step["id"] <= previous_id):
                 raise ValueError("invalid_plan_step")
+            previous_id = step["id"]
             if step.get("status") not in ("pending", "completed"):
                 raise ValueError("invalid_plan_status")
             raw = {k: step[k] for k in ("goal", "expected_tool", "expected_arguments")
@@ -103,11 +112,15 @@ class PlanLedger:
                 step.get("evidence_tool"), str):
                 raise ValueError("missing_evidence")
             restored.append(dict(step))
-        return cls(steps=restored, revision=revision,
+        next_step_id = snapshot.get("next_step_id", previous_id + 1)
+        if type(next_step_id) is not int or next_step_id <= previous_id:
+            raise ValueError("invalid_next_step_id")
+        return cls(steps=restored, revision=revision, next_step_id=next_step_id,
                    events=[{"event": "plan_resumed", "revision": revision}])
 
     def checkpoint(self) -> dict:
-        return {"revision": self.revision, "steps": self.snapshot()}
+        return {"revision": self.revision, "next_step_id": self.next_step_id,
+                "steps": self.snapshot()}
 
     def snapshot(self) -> list[dict]:
         return [dict(s) for s in self.steps]
