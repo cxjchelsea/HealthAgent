@@ -6,6 +6,7 @@ from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select, text
+from sqlalchemy.exc import IntegrityError
 from agent.config import Settings
 from agent.understanding import GoalIntake, understand
 from agent.decision import NativeToolDecision
@@ -89,29 +90,39 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
         """S2-B1: reuse S1 ownership, persisted turns and completed conversation context."""
         if len(body.content) > settings.max_input_chars:
             raise HTTPException(413, "message_too_long")
-        with Session.begin() as db:
-            get_owned(db, cid, uid)
-            prior = db.scalar(select(Turn).where(
-                Turn.conversation_id == cid, Turn.request_id == body.client_request_id))
-            if prior:
-                raise HTTPException(409, "duplicate_request_id")
-            history = db.scalars(select(Message).where(
-                Message.conversation_id == cid, Message.status == "completed")
-                .order_by(Message.created_at, Message.id)).all()
-            context = build_context(history, body.content,
-                                    max_messages=settings.max_history_messages,
-                                    max_chars=settings.context_max_chars)
-            user_message = Message(conversation_id=cid, role="user", content=body.content)
-            response_message = Message(conversation_id=cid, role="assistant",
-                                       content="", status="pending")
-            db.add_all([user_message, response_message])
-            db.flush()
-            turn = Turn(conversation_id=cid, request_id=body.client_request_id,
-                        assistant_message_id=response_message.id,
-                        input_chars=len(body.content))
-            db.add(turn)
-            db.flush()
-            assistant_id, turn_id = response_message.id, turn.id
+        try:
+            with Session.begin() as db:
+                get_owned(db, cid, uid)
+                prior = db.scalar(select(Turn).where(
+                    Turn.conversation_id == cid, Turn.request_id == body.client_request_id))
+                if prior:
+                    raise HTTPException(409, "duplicate_request_id")
+                history = db.scalars(select(Message).where(
+                    Message.conversation_id == cid, Message.status == "completed")
+                    .order_by(Message.created_at, Message.id)).all()
+                context = build_context(history, body.content,
+                                        max_messages=settings.max_history_messages,
+                                        max_chars=settings.context_max_chars)
+                user_message = Message(conversation_id=cid, role="user", content=body.content)
+                response_message = Message(conversation_id=cid, role="assistant",
+                                           content="", status="pending")
+                db.add_all([user_message, response_message])
+                db.flush()
+                turn = Turn(conversation_id=cid, request_id=body.client_request_id,
+                            assistant_message_id=response_message.id,
+                            input_chars=len(body.content))
+                db.add(turn)
+                db.flush()
+                assistant_id, turn_id = response_message.id, turn.id
+        except IntegrityError as exc:
+            # A concurrent running turn violates uq_running_turn_per_conversation.
+            # Both SQLite and PostgreSQL enforce this atomically at the database.
+            with Session() as db:
+                active = db.scalar(select(Turn.id).where(
+                    Turn.conversation_id == cid, Turn.state == "running"))
+            if active:
+                raise HTTPException(409, "conversation_turn_in_progress") from exc
+            raise
         plan_store = ConversationPlanStore(Session, cid)
         existing_checkpoint = plan_store.load()
         began = time.monotonic()
