@@ -29,7 +29,7 @@ def select_skills(goal: str, *, strategy: str = "dynamic") -> tuple[Skill, ...]:
         "clock": ("时间", "几点", "utc", "clock", "time"),
         "tasks": ("任务", "待办", "task", "todo", "清单"),
         "memory": ("记住", "记忆", "回忆", "保存", "memory", "remember", "recall"),
-        "reference": ("参考", "资料", "词条", "术语", "reference", "catalog", "mcp"),
+        "reference": ("参考", "资料", "词条", "术语", "reference", "catalog", "mcp", "rag"),
         "planning": ("计划", "规划", "多步", "步骤", "重新", "失败后", "plan", "replan", "workflow"),
     }
     matched = [skill for skill in SKILLS
@@ -47,7 +47,7 @@ INSTRUCTIONS = {
     "tasks": "Use create_task/list_tasks; tasks belong to the current conversation.",
     "memory": "Use recall_memory for exact keys; saving requires current-turn consent.",
     "reference": "Use mcp_reference_lookup for terms present in the trusted reference catalog.",
-    "planning": "For complex multi-step work use propose_plan, revise pending steps after failed observations, and define verifiable steps as {goal,expected_tool,expected_arguments}; exact successful observations auto-complete uniquely bound steps. Unbound steps require explicit complete_plan_step.",
+    "planning": "Use propose_plan with bound steps {goal,expected_tool,expected_arguments}; revise on failure. Unbound steps need complete_plan_step.",
 }
 SKILL_VERSION = "s2c-skills-v1"
 
