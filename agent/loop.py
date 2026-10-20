@@ -51,8 +51,15 @@ class AgentLoop:
         decision = await self.decider.decide(state["messages"], state["allowed_tools"])
         iteration = state["iterations"] + 1
         if not decision.tool_calls:
-            return {"iterations": iteration, "final": decision.content,
-                    "status": "completed", "traces": state["traces"] + [
+            pending = [s["id"] for s in state["plan"].snapshot()
+                       if s["status"] != "completed"]
+            is_partial = bool(pending)
+            final = decision.content
+            if is_partial:
+                final = ("计划尚未完成（未验证步骤：" + ", ".join(map(str, pending)) +
+                         "）。以下是模型当前回复，不代表全部完成。\n" + final)
+            return {"iterations": iteration, "final": final,
+                    "status": "partial" if is_partial else "completed", "traces": state["traces"] + [
                         {"step": iteration, "type": "final", "chars": len(decision.content)}]}
         if iteration >= self.max_steps:
             return {"iterations": iteration, "final": "Agent reached its decision step limit.",
@@ -97,8 +104,15 @@ class AgentLoop:
                     else:
                         result = ledger.complete(args["step_id"], args["evidence_tool"],
                                                  state["last_success"])
-                except (ValidationError, TypeError, ValueError):
-                    result = {"ok": False, "error": "invalid_arguments"}
+                except ValidationError as exc:
+                    result = {"ok": False, "error": "invalid_arguments",
+                              "details": [{"field": ".".join(str(x) for x in issue["loc"]),
+                                           "kind": issue["type"]}
+                                          for issue in exc.errors()[:6]],
+                              "plan_revision": state["plan"].revision}
+                except (TypeError, ValueError):
+                    result = {"ok": False, "error": "invalid_arguments",
+                              "plan_revision": state["plan"].revision}
             else:
                 result = execute_tool(name, function.get("arguments"), tasks, self.clock,
                                       task_store=self.task_store, memory_store=self.memory_store,

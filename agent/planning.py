@@ -44,10 +44,14 @@ class PlanLedger:
         return {"ok": True, "steps": self.snapshot()}
 
     def revise(self, expected_revision: int, pending_steps: list[str], reason: str) -> dict:
-        if not self.steps or expected_revision != self.revision:
-            return {"ok": False, "error": "stale_plan_revision"}
+        if not self.steps:
+            return {"ok": False, "error": "plan_not_created", "plan_revision": 0}
+        if expected_revision != self.revision:
+            return {"ok": False, "error": "stale_plan_revision",
+                    "plan_revision": self.revision}
         if not reason.strip() or len(reason) > 180 or not self._valid(pending_steps):
-            return {"ok": False, "error": "invalid_revision"}
+            return {"ok": False, "error": "invalid_revision",
+                    "plan_revision": self.revision}
         preserved = [dict(step) for step in self.steps if step["status"] == "completed"]
         self.steps = preserved + [
             {"id": len(preserved) + i + 1, "goal": goal, "status": "pending"}

@@ -120,8 +120,8 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                 memory_store=MemoryStore(Session, uid, write_allowed=body.memory_write_consent),
                 mcp_client=StdioMCPClient(), skill_strategy=settings.skill_strategy,
                 skill_budget_chars=settings.skill_budget_chars).run(body.content, history=context)
-            if result["status"] == "completed":
-                answer, status = result["answer"], "completed"
+            if result["status"] in {"completed", "partial"}:
+                answer, status = result["answer"], result["status"]
             else:
                 status = result["status"]
         except Exception as exc:
@@ -137,7 +137,7 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                     turn.state = status
                     turn.output_chars = len(answer)
                     turn.duration_ms = int((time.monotonic()-began)*1000)
-        if status != "completed":
+        if status not in {"completed", "partial"}:
             raise HTTPException(503, "Agent run did not complete")
         return {**result, "conversation_id": cid, "message_id": assistant_id}
 

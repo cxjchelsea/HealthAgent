@@ -23,3 +23,13 @@
 python -m pytest -q
 python -m evals.s2d_benchmark
 ```
+
+## S2-D 本轮真实 Qwen E2E 反馈修复
+
+用户第一次真实 Qwen Trace：`propose_plan` 成功，`mcp_reference_lookup` 成功，`calculate` 一次失败，`revise_plan` 失败，再次 `calculate` 成功，但在未显示任何 `complete_plan_step` 时宣称已完成。该截图未暴露 revise 的原始错误码，不能反推具体错误原因。
+
+- `revise_plan` 返回可区分的 `plan_not_created`、`stale_plan_revision`（携当前 revision）、`invalid_revision`（携 revision）；Pydantic 参数校验返回受限字段名及错误类型，不回显用户参数值。
+- 若模型返回 final 时计划仍有 pending，统一 AgentLoop 将 status 置为 `partial`，在回复前附上明确的未验证步骤告知，不能标记为全部 `completed`。官方 Conversation API 接受并保存 partial 回答，不再误报 503 或丢失用户可读的部分结果；该回复不计入后续已完成消息历史。
+- 新增正式 AgentLoop 负例，验证模型虚假完成被隔离、过期 revision 反馈、参数错误可诊断。
+
+**仍待真实 Qwen 本地复验**：需查看后续失败原因与 PlanLedger 输出；Run 内单次 `last_success` 证据尚不能保证步骤语义相关性或多轮持久性。本修复属 S2-D IN PROGRESS，并不声称已有完整恢复链路。

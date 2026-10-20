@@ -48,6 +48,53 @@ class FakeCompletion:
 def test_agent_loop_rejects_completion_without_observation():
     result = asyncio.run(AgentLoop(FakeCompletion()).run(
         "规划一个多步任务，只有执行后才能完成", include_evidence=True))
-    assert result["status"] == "completed"
+    assert result["status"] == "partial"
+    assert "计划尚未完成" in result["answer"]
     assert result["plan"][0]["status"] == "pending"
     assert result["audit"][-1]["observation"]["error"] == "missing_success_evidence"
+
+class BadRevise:
+    def __init__(self):
+        self.calls = 0
+    async def decide(self, messages, tools):
+        self.calls += 1
+        if self.calls == 1:
+            return Decision("", [{"id": "p", "name": "propose_plan",
+                                  "arguments": {"steps": ["calculate"]}}])
+        if self.calls == 2:
+            return Decision("", [{"id": "r", "name": "revise_plan",
+                                  "arguments": {"expected_revision": 3,
+                                                "pending_steps": ["retry"],
+                                                "reason": "previous failure"}}])
+        return Decision("我已经全部完成。", [])
+
+
+def test_stale_revision_explains_current_revision_and_blocks_false_completion():
+    result = asyncio.run(AgentLoop(BadRevise()).run("请规划多步任务", include_evidence=True))
+    assert result["status"] == "partial"
+    assert result["audit"][-1]["observation"]["error"] == "stale_plan_revision"
+    assert result["audit"][-1]["observation"]["plan_revision"] == 1
+    assert result["plan"][0]["status"] == "pending"
+
+
+class MalformedRevise(BadRevise):
+    async def decide(self, messages, tools):
+        self.calls += 1
+        if self.calls == 1:
+            return Decision("", [{"id": "p", "name": "propose_plan",
+                                  "arguments": {"steps": ["calculate"]}}])
+        if self.calls == 2:
+            return Decision("", [{"id": "r", "name": "revise_plan",
+                                  "arguments": {"expected_revision": "wrong",
+                                                "pending_steps": [],
+                                                "reason": ""}}])
+        return Decision("已完成", [])
+
+
+def test_revision_validation_returns_bounded_field_diagnostics():
+    result = asyncio.run(AgentLoop(MalformedRevise()).run("请规划多步任务", include_evidence=True))
+    observation = result["audit"][-1]["observation"]
+    assert result["status"] == "partial"
+    assert observation["error"] == "invalid_arguments"
+    assert observation["plan_revision"] == 1
+    assert all(set(x) == {"field", "kind"} for x in observation["details"])
