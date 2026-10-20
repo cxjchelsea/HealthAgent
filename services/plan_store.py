@@ -16,10 +16,13 @@ class ConversationPlanStore:
                 ConversationPlan.conversation_id == self.conversation_id))
             return json.loads(record.snapshot) if record else None
 
+    def save_in_session(self, db, snapshot: dict):
+        record = db.get(ConversationPlan, self.conversation_id)
+        if record is None:
+            record = ConversationPlan(conversation_id=self.conversation_id)
+            db.add(record)
+        record.snapshot = json.dumps(snapshot, ensure_ascii=False)
+
     def save(self, snapshot: dict):
         with self.session_factory.begin() as db:
-            record = db.get(ConversationPlan, self.conversation_id)
-            if record is None:
-                record = ConversationPlan(conversation_id=self.conversation_id)
-                db.add(record)
-            record.snapshot = json.dumps(snapshot, ensure_ascii=False)
+            self.save_in_session(db, snapshot)
