@@ -47,3 +47,11 @@ python -m uvicorn apps.api.main:app --reload
 真实 Qwen 对照脚本：`RUN_S2C_LIVE=1 python -m evals.s2c_live_benchmark --repeats 2`（Windows PowerShell 在命令前用 `$env:RUN_S2C_LIVE='1'`）。两种策略 all/dynamic 都调用真实供应商及原 AgentLoop，复测多工具、隐含意图、参考工具负例、禁用 shell 等 8 种场景，交错策略顺序，统计任务检查通过率、Tool Calls 和中位耗时。输出 `evals/results/s2c/live-comparison-v1.json`，不写入用户原始问题或完整模型回答；需要真实服务配置，CI 不替代用户本地运行。此脚本的有限关键词判分还需人工抽样核对，不能宣称等于真实任务质量或统计显著结论。
 
 在本地真实运行并收到证据前，S2-C 保持 **IN PROGRESS**；不得仅凭 SDK / CI 成功声称 Qwen all/dynamic 实验已完成。
+
+## 真实 Qwen 对照评测的数学歧义定向修复
+
+用户提供的 v1 真实 Qwen 报告共 32 次 Run：all 14/16、dynamic 14/16，失败均在 `implicit_math`；四次失败都成功调用 `calculate` 且最终状态 completed。**这不足以断定是 Skills 误过滤，也不能断定模型算错**：旧题目“18 加上 24 再乘 3”有括号/运算优先级理解歧义，旧版报告未保存算术工具表达式与结果，导致无法诊断。
+
+`evals/s2c_live_benchmark.py` v2 将单个数学歧义题拆为三项：`math_explicit`（先加再乘，结果 126）、`math_precedence`（按运算优先级，结果 90）和 `math_ambiguous`（应先要求澄清而非擅自计算）。前两项分别检查工具成功、**实际工具返回数字**与答案数值；后一项检查未调用算术工具并提出澄清。新增 `checks` 细项与仅包含算术表达式、数值、错误码的诊断记录，不写入记忆/参考工具的原始观察或模型全文。歧义澄清自动判分仅为启发式，必须结合人工判断。
+
+回归执行：`python -m pytest -q`；真实 Qwen 定向复验：`$env:RUN_S2C_LIVE='1'` 后 `python -m evals.s2c_live_benchmark --math-only --repeats 2`；完整对照 `python -m evals.s2c_live_benchmark --repeats 2`。默认写入 `evals/results/s2c/live-comparison-v2.json`。本阶段**没有在 CI 中远程运行用户的 Qwen 服务**，等待本地上传真实报告之后复核，暂不将 S2-C 关闭。
