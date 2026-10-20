@@ -29,6 +29,10 @@ class AgentState(TypedDict):
     last_success: dict | None
     superseded_step_ids: list[int]
     superseded_expression: str | None
+    memory_recall_required: bool
+    memory_recall_observed: bool
+    memory_recall_retry: bool
+    recall_retry_pending: bool
 
 class AgentLoop:
     def __init__(self, decider: Any, max_steps: int = 6, clock=None, task_store=None, memory_store=None, mcp_client=None, skill_strategy='dynamic', skill_budget_chars=600):
@@ -46,7 +50,7 @@ class AgentLoop:
         flow.add_node("decide", self._decide)
         flow.add_node("tools", self._tools)
         flow.set_entry_point("decide")
-        flow.add_conditional_edges("decide", self._next, {"tools": "tools", "done": END})
+        flow.add_conditional_edges("decide", self._next, {"tools": "tools", "done": END, "retry": "decide"})
         flow.add_edge("tools", "decide")
         self.graph = flow.compile()
 
@@ -54,6 +58,24 @@ class AgentLoop:
         decision = await self.decider.decide(state["messages"], state["allowed_tools"])
         iteration = state["iterations"] + 1
         if not decision.tool_calls:
+            if state["memory_recall_required"] and not state["memory_recall_observed"]:
+                if not state["memory_recall_retry"] and iteration < self.max_steps:
+                    return {"iterations": iteration, "memory_recall_retry": True,
+                            "recall_retry_pending": True,
+                            "messages": state["messages"] + [{
+                                "role": "system", "content":
+                                "The user asks about stored long-term memory, but no "
+                                "memory lookup occurred. Call recall_memory with a real "
+                                "stored key. Do not assert the memory is absent without "
+                                "a successful lookup. If the key is unknown, say it "
+                                "could not be verified."}],
+                            "traces": state["traces"] + [{
+                                "step": iteration, "type": "memory_recall_retry"}]}
+                return {"iterations": iteration,
+                        "final": "尚未核实长期记忆：模型未调用 recall_memory，"
+                                 "不能据此断言已保存的信息不存在。请在记忆管理面板核对 Key。",
+                        "status": "partial", "traces": state["traces"] + [{
+                            "step": iteration, "type": "memory_recall_unverified"}]}
             pending = [s["id"] for s in state["plan"].snapshot()
                        if s["status"] != "completed"]
             superseded = [step_id for step_id in state["superseded_step_ids"]
@@ -85,11 +107,14 @@ class AgentLoop:
             "name": c["name"], "arguments": c["arguments"]}} for c in decision.tool_calls]
         return {"iterations": iteration, "messages": state["messages"] + [
             {"role": "assistant", "content": decision.content, "tool_calls": assistant_calls}],
+            "recall_retry_pending": False,
             "traces": state["traces"] + [{"step": iteration, "type": "decision",
                                          "tools": [c["name"] for c in decision.tool_calls]}]}
 
     def _next(self, state: AgentState) -> str:
-        return "done" if state["status"] != "running" else "tools"
+        if state["status"] != "running":
+            return "done"
+        return "retry" if state["recall_retry_pending"] else "tools"
 
     async def _tools(self, state: AgentState) -> dict:
         last = state["messages"][-1]
@@ -136,6 +161,8 @@ class AgentLoop:
                 result = execute_tool(name, function.get("arguments"), tasks, self.clock,
                                       task_store=self.task_store, memory_store=self.memory_store,
                                       mcp_client=self.mcp_client)
+            if name == "recall_memory":
+                state["memory_recall_observed"] = True
             if name not in {"propose_plan", "revise_plan", "complete_plan_step"}:
                 state["plan"].observe(name, result, function.get("arguments"))
                 if result.get("ok"):
@@ -161,7 +188,8 @@ class AgentLoop:
                               "arguments": function.get("arguments"), "observation": result})
         return {"messages": state["messages"] + observations,
                 "tasks": tasks, "traces": traces, "audit": audit,
-                "plan": state["plan"], "last_success": state["last_success"]}
+                "plan": state["plan"], "last_success": state["last_success"],
+                "memory_recall_observed": state["memory_recall_observed"]}
 
     async def run(self, goal: str, *, include_evidence: bool = False,
                   history: list[dict] | None = None,
@@ -189,6 +217,41 @@ class AgentLoop:
                 if step["status"] == "completed"
                 and step.get("expected_tool") == "calculate"
                 and step.get("expected_arguments") == {"expression": old_expression}]
+        # Explicit saved-memory questions use a trusted, owner-scoped read.
+        # Do not leave correctness to optional model tool choice.
+        if (self.memory_store is not None and any(phrase in goal for phrase in (
+                "还记得", "记得我", "之前保存", "之前记住", "保存的",
+                "记住的", "测试偏好是什么", "测试偏好吗"))):
+            records = self.memory_store.list()
+            if len(records) > 100:
+                return {"run_id": run_id, "status": "partial",
+                        "answer": "长期记忆条目过多，请在记忆管理面板按 Key 查询。",
+                        "trace": [{"step": 1, "type": "memory_lookup_limit"}],
+                        "prompt_version": PROMPT_VERSION}
+            # Exact literal matches are authoritative; a fuzzy semantic match is not.
+            matches = [item for item in records if item["key"].casefold() in goal.casefold()]
+            if matches:
+                answer = "已保存的匹配记忆：" + "；".join(
+                    item["key"] + "＝" + item["value"] for item in matches)
+                other_keys = [item["key"] for item in records if item not in matches]
+                if other_keys:
+                    answer += "。其他不同 Key 的记忆：" + "、".join(other_keys) + (
+                        "；这些 Key 不会自动视作同义或覆盖。")
+            elif records:
+                answer = ("未能根据问题确定精确记忆 Key。当前已保存的 Key：" +
+                          "、".join(item["key"] for item in records) +
+                          "。请指定 Key 查询，或在记忆管理面板核对。")
+            else:
+                answer = "已查询当前用户的长期记忆库，目前没有保存的记录。"
+            result = {"run_id": run_id, "status": "completed", "answer": answer,
+                      "trace": [{"step": 1, "type": "memory_index_lookup",
+                                 "matches": len(matches), "total": len(records)}],
+                      "prompt_version": PROMPT_VERSION}
+            if include_evidence:
+                result["audit"] = [{"name": "memory_index_lookup",
+                                     "observation": {"ok": True, "matches": len(matches),
+                                                     "total": len(records)}}]
+            return result
         selected_tools = exposed_tools(goal, TOOL_SCHEMAS, strategy=self.skill_strategy)
         if resumed.revision:
             names = {t["function"]["name"] for t in selected_tools}
@@ -198,6 +261,10 @@ class AgentLoop:
         resume_context = ("\nTrusted checkpoint: revision " + str(resumed.revision) +
                           "; steps: " + json.dumps(resumed.snapshot(), ensure_ascii=False)
                           if resumed.revision else "")
+        # A bounded re-decision only for explicit saved-memory requests.
+        recall_required = any(phrase in goal for phrase in (
+            "还记得", "记得我", "之前保存", "之前记住", "保存的",
+            "记住的", "测试偏好是什么", "测试偏好吗"))
         initial: AgentState = {"messages": [
             {"role": "system", "content": PROMPT + "\nSelected skill instructions (" + SKILL_VERSION + "):\n" + load_instructions(goal, strategy=self.skill_strategy, max_chars=self.skill_budget_chars) + resume_context},
             *clean_history, {"role": "user", "content": goal}],
@@ -206,7 +273,10 @@ class AgentLoop:
             "allowed_tools": selected_tools,
             "plan": resumed, "last_success": None,
             "superseded_step_ids": superseded_step_ids,
-            "superseded_expression": superseded_expression}
+            "superseded_expression": superseded_expression,
+            "memory_recall_required": recall_required and self.memory_store is not None,
+            "memory_recall_observed": False, "memory_recall_retry": False,
+            "recall_retry_pending": False}
         try:
             outcome = await self.graph.ainvoke(initial, config={"recursion_limit": 2 * self.max_steps + 4})
         except Exception as exc:
