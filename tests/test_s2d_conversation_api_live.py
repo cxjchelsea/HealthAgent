@@ -3,7 +3,8 @@ from evals.s2d_conversation_api_live import _plan_checks
 
 
 def test_two_turn_verdict_requires_revision_and_invalidation():
-    completed = lambda expression: {
+    def completed(expression):
+        return {
         "status": "completed", "expected_tool": "calculate",
         "expected_arguments": {"expression": expression},
         "evidence_tool": "calculate"}
