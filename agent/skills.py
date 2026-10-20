@@ -37,3 +37,25 @@ def select_skills(goal: str, *, strategy: str = "dynamic") -> tuple[Skill, ...]:
 def exposed_tools(goal: str, schemas: list[dict], *, strategy: str = "dynamic") -> list[dict]:
     names = {name for skill in select_skills(goal, strategy=strategy) for name in skill.tool_names}
     return [schema for schema in schemas if schema["function"]["name"] in names]
+
+# Trusted, versioned instructions are not presented until their manifest is selected.
+INSTRUCTIONS = {
+    "arithmetic": "Use calculate for arithmetic; report observation, not a guessed number.",
+    "clock": "Use utc_time to read the current UTC time before answering.",
+    "tasks": "Use create_task/list_tasks; tasks belong to the current conversation.",
+    "memory": "Use recall_memory for exact keys; saving requires current-turn consent.",
+    "reference": "Use mcp_reference_lookup for terms present in the trusted reference catalog.",
+}
+SKILL_VERSION = "s2c-skills-v1"
+
+def load_instructions(goal: str, *, strategy: str = "dynamic",
+                      max_chars: int = 600) -> str:
+    """Load only instructions selected by manifest; reject overflowing budgets."""
+    if not 0 <= max_chars <= 20000:
+        raise ValueError("Invalid skill instruction budget")
+    entries = [f"{skill.name}: {INSTRUCTIONS[skill.name]}"
+               for skill in select_skills(goal, strategy=strategy)]
+    result = "\n".join(entries)
+    if len(result) > max_chars:
+        raise ValueError("Selected skill instructions exceed budget")
+    return result

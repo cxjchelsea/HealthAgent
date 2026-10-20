@@ -6,7 +6,7 @@ from typing import Any, TypedDict
 from langgraph.graph import END, StateGraph
 from agent.decision import NativeToolDecision
 from agent.tools import TOOL_SCHEMAS, execute_tool
-from agent.skills import exposed_tools
+from agent.skills import exposed_tools, load_instructions, SKILL_VERSION
 
 PROMPT_VERSION = "s2a-core-v1"
 PROMPT = (Path(__file__).parent / "prompts" / "s2a_core_v1.md").read_text(encoding="utf-8")
@@ -23,7 +23,7 @@ class AgentState(TypedDict):
     allowed_tools: list[dict]
 
 class AgentLoop:
-    def __init__(self, decider: Any, max_steps: int = 6, clock=None, task_store=None, memory_store=None, mcp_client=None, skill_strategy='dynamic'):
+    def __init__(self, decider: Any, max_steps: int = 6, clock=None, task_store=None, memory_store=None, mcp_client=None, skill_strategy='dynamic', skill_budget_chars=600):
         if max_steps < 1 or max_steps > 20:
             raise ValueError("max_steps must be 1..20")
         self.decider = decider
@@ -33,6 +33,7 @@ class AgentLoop:
         self.memory_store = memory_store
         self.mcp_client = mcp_client
         self.skill_strategy = skill_strategy
+        self.skill_budget_chars = skill_budget_chars
         flow = StateGraph(AgentState)
         flow.add_node("decide", self._decide)
         flow.add_node("tools", self._tools)
@@ -106,7 +107,7 @@ class AgentLoop:
                 raise ValueError("Invalid conversation history")
             clean_history.append({"role": entry["role"], "content": entry["content"]})
         initial: AgentState = {"messages": [
-            {"role": "system", "content": PROMPT},
+            {"role": "system", "content": PROMPT + "\nSelected skill instructions (" + SKILL_VERSION + "):\n" + load_instructions(goal, strategy=self.skill_strategy, max_chars=self.skill_budget_chars)},
             *clean_history, {"role": "user", "content": goal}],
             "traces": [], "tasks": [], "final": "", "status": "running", "iterations": 0,
             "audit_enabled": include_evidence, "audit": [],

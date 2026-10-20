@@ -27,3 +27,15 @@ python -m uvicorn apps.api.main:app --reload
 ```
 
 网页在已有会话里问“请用参考资料工具解释 MCP 术语”，观察 `mcp_reference_lookup` 的成功/失败 Trace，再问计算与任务、记忆，核实既有链路无回归。真正 Qwen 工具选择应另行计入人工验收，而不是借测试脚本声称成功。
+
+## 增量集成：隔离 stdio MCP / Skills 分级加载 / 对照 Harness
+
+新增 `agent/mcp_stdio_server.py` 作为独立 Python 子进程内运行的受信任参考 Server；`agent/mcp_stdio_client.py` 通过 stdio JSON-RPC 2.0 的 `initialize`、`notifications/initialized`、`tools/list`、`tools/call` 完成协议消息交互，验证协议版本和工具清单，仅允许调用固定工具；超时、未知工具、格式错误均返回受控错误。正式会话 API 现注入 `StdioMCPClient`，原进程内 MockMCPClient 仅用于受信任服务的工具实现。
+
+**协议范围说明：** 本版为固定的单服务、单工具 stdio MCP JSON-RPC 协议纵向切片；暂未用第三方 MCP SDK 互操作测试、未实现资源、提示词、取消、进度通知、动态服务器注册或网络传输。子进程隔离不等同于 OS 安全沙箱，不允许模型决定启动命令；只通过固定 `python -m agent.mcp_stdio_server` 调用受信任服务。
+
+`agent/skills.py` 将精简 manifest 与正文 instructions 分离，只有选择后的正文才加入系统上下文。增加 `SKILL_STRATEGY=dynamic|all`、`SKILL_BUDGET_CHARS`（默认 600）配置；超过预算拒绝执行而非静默截断。当前正文仍是受信任的代码内静态文本，没有从未审计文件目录动态加载或第三方 Skills 发现。
+
+`evals/s2c_benchmark.py` 对十条固定目标运行 `all` 与 `dynamic`，比较预期工具覆盖率、暴露工具数量、Schema 字符开销、已加载 Skill 文本长度及选择器执行时间；`python -m evals.s2c_benchmark` 输出 `evals/results/s2c/selection-v1.json`。**这不是 LLM 准确率、token 价格或真实端到端延迟比较。** `tests/test_s2c_integration.py` 包含 stdio 握手+查询、非法输入、预算边界和对照指标断言。
+
+最终 S2-C CLOSED 前，还需要真实 Qwen 多场景 dynamic/all 对照、真实 MCP SDK 互操作性及安全异常测评。本阶段文档持续维护，不增加第二份子阶段验收文件。
