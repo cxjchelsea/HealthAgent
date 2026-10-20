@@ -44,7 +44,7 @@ async function restore(){
   const data=await r.json();conversation=saved;messages.replaceChildren();
   for(const m of data.messages){
    if(m.role==='user'||m.role==='assistant'){
-    if(m.role==='assistant'&&m.status!=='completed')continue;
+    if(m.role==='assistant'&&!['completed','partial'].includes(m.status))continue;
     const el=add(m.role,m.content||'');if(m.status!=='completed')el.dataset.status=m.status;
    }
   }
