@@ -99,7 +99,7 @@ class AgentLoop:
                     if name == "propose_plan":
                         result = ledger.propose(args["steps"])
                     elif name == "revise_plan":
-                        result = ledger.revise(args["expected_revision"],
+                        result = ledger.revise(args["expected_revision"] or ledger.revision,
                                                args["pending_steps"], args["reason"])
                     else:
                         result = ledger.complete(args["step_id"], args["evidence_tool"],
@@ -118,11 +118,15 @@ class AgentLoop:
                                       task_store=self.task_store, memory_store=self.memory_store,
                                       mcp_client=self.mcp_client)
             if name not in {"propose_plan", "revise_plan", "complete_plan_step"}:
-                state["plan"].observe(name, result)
+                state["plan"].observe(name, result, function.get("arguments"))
                 if result.get("ok"):
                     state["last_success"] = {"name": name, **result}
                 else:
                     state["last_success"] = None
+            if name == "propose_plan" and result.get("ok"):
+                result["guidance"] = "Plan revision is 1; use bound steps with expected_tool/expected_arguments for verified automatic progress."
+            if name == "revise_plan" and not result.get("ok"):
+                result["guidance"] = "Retry with current revision or omit expected_revision, preserving verified steps."
             observations.append({"role": "tool", "tool_name": name,
                                  "tool_call_id": call["id"],
                                  "content": json.dumps(result, ensure_ascii=False)})

@@ -23,12 +23,17 @@ class MemoryFact(MemoryKey):
 class ReferenceArgs(StrictToolArgs):
     term: str = Field(min_length=1, max_length=80)
 
+class BoundPlanStep(StrictToolArgs):
+    goal: str = Field(min_length=1, max_length=160)
+    expected_tool: str
+    expected_arguments: dict
+
 class PlanArgs(StrictToolArgs):
-    steps: list[str] = Field(min_length=1, max_length=8)
+    steps: list[str | BoundPlanStep] = Field(min_length=1, max_length=8)
 
 class ReviseArgs(StrictToolArgs):
-    expected_revision: int = Field(ge=1)
-    pending_steps: list[str] = Field(min_length=1, max_length=8)
+    expected_revision: int | None = Field(default=None, ge=1)
+    pending_steps: list[str | BoundPlanStep] = Field(min_length=1, max_length=8)
     reason: str = Field(min_length=1, max_length=180)
 
 class CompleteArgs(StrictToolArgs):
@@ -79,15 +84,25 @@ TOOL_SCHEMAS = [
     {"type": "function", "function": {
         "name": "propose_plan", "description": "Propose a short explicit task plan; steps are not yet completed.",
         "parameters": {"type": "object", "properties": {
-            "steps": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 8}},
+            "steps": {"type": "array", "items": {"anyOf": [{"type": "string"}, {
+                "type": "object", "properties": {
+                    "goal": {"type": "string"}, "expected_tool": {"type": "string"},
+                    "expected_arguments": {"type": "object"}},
+                "required": ["goal", "expected_tool", "expected_arguments"],
+                "additionalProperties": False}]}, "minItems": 1, "maxItems": 8}},
             "required": ["steps"], "additionalProperties": False}}},
     {"type": "function", "function": {
         "name": "revise_plan", "description": "After changed goal or failed tool, revise pending steps preserving completed evidence.",
         "parameters": {"type": "object", "properties": {
             "expected_revision": {"type": "integer"}, "pending_steps": {
-                "type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 8},
+                "type": "array", "items": {"anyOf": [{"type": "string"}, {
+                    "type": "object", "properties": {
+                        "goal": {"type": "string"}, "expected_tool": {"type": "string"},
+                        "expected_arguments": {"type": "object"}},
+                    "required": ["goal", "expected_tool", "expected_arguments"],
+                    "additionalProperties": False}]}, "minItems": 1, "maxItems": 8},
             "reason": {"type": "string"}},
-            "required": ["expected_revision", "pending_steps", "reason"],
+            "required": ["pending_steps", "reason"],
             "additionalProperties": False}}},
     {"type": "function", "function": {
         "name": "complete_plan_step", "description": "Mark a plan step complete only when the named tool has successful observed evidence.",

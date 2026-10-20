@@ -33,3 +33,13 @@ python -m evals.s2d_benchmark
 - 新增正式 AgentLoop 负例，验证模型虚假完成被隔离、过期 revision 反馈、参数错误可诊断。
 
 **仍待真实 Qwen 本地复验**：需查看后续失败原因与 PlanLedger 输出；Run 内单次 `last_success` 证据尚不能保证步骤语义相关性或多轮持久性。本修复属 S2-D IN PROGRESS，并不声称已有完整恢复链路。
+
+## S2-D 执行证据与计划步骤绑定修复（同一 PR #11）
+
+用户第二次真实 Qwen 验收：工具 RAG 查询和最终计算成功，但未调用 complete_plan_step，Agent 正确返回 partial。该结果验证状态防护，却揭示计划未随真实工具证据更新。
+
+新增**显式验证绑定**：propose_plan/revise_plan 的 steps 在向后兼容字符串步骤基础上可传对象 `{goal,expected_tool,expected_arguments}`。仅受支持的只读工具支持绑定，真实执行观察同时满足 `ok=true`、工具名完全一致、参数精确一致，并且**只有唯一一个 pending 步骤匹配**，才由 PlanLedger 自动记录 completed。没有绑定的旧字符串步骤绝不会被工具成功自动推断完成。相同绑定对应多步骤时拒绝自动完成，避免模糊认领。提示词应引导模型对可验证步骤使用绑定结构。
+
+重规划保留 completed 步骤；修订请求可省略 expected_revision，由可信执行层使用当前 Revision；如显式提供过期值仍予拒绝。失败时附当前 Revision 与重试引导，继续采用模型自行决定是否/如何局部重规划。新增整条 AgentLoop 的模拟决策 E2E：计划→参考查询成功→错误计算→局部修订→正确计算→最终 completed，及失败/歧义证据负例。
+
+**仍待真实 Qwen 复验**：模型是否实际提供结构化绑定并成功调用 `revise_plan` 由本地 Qwen Trace 决定；通过 pytest/CI 不能冒充真实模型成功率。证据绑定是窄域参数匹配，不是通用目标语义验证；跨对话计划持续性和任务变更仍属于 S2-D 后续工作。

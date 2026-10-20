@@ -14,15 +14,25 @@ class PlanLedger:
             return {"ok": False, "error": "plan_already_exists"}
         if not self._valid(steps):
             return {"ok": False, "error": "invalid_plan"}
-        self.steps = [{"id": i + 1, "goal": title, "status": "pending"}
-                      for i, title in enumerate(steps)]
+        self.steps = [self._step(i + 1, item) for i, item in enumerate(steps)]
         self.revision = 1
         self.events.append({"event": "plan_created", "revision": 1})
         return {"ok": True, "revision": 1, "steps": self.snapshot()}
 
-    def observe(self, tool_name: str, result: dict) -> None:
+    def observe(self, tool_name: str, result: dict, arguments: dict | None = None) -> None:
         # Execution evidence does NOT automatically mark a goal completed;
         # the model must name an explicitly verified step.
+        if result.get("ok") is True and isinstance(arguments, dict):
+            matches = [step for step in self.steps
+                       if step["status"] == "pending"
+                       and step.get("expected_tool") == tool_name
+                       and step.get("expected_arguments") == arguments]
+            if len(matches) == 1:
+                step = matches[0]
+                step["status"] = "completed"
+                step["evidence_tool"] = tool_name
+                self.events.append({"event": "step_completed", "id": step["id"],
+                                    "tool": tool_name, "source": "verified_binding"})
         if not result.get("ok"):
             self.events.append({"event": "tool_failed", "tool": tool_name,
                                 "error": result.get("error", "unknown")})
@@ -54,7 +64,7 @@ class PlanLedger:
                     "plan_revision": self.revision}
         preserved = [dict(step) for step in self.steps if step["status"] == "completed"]
         self.steps = preserved + [
-            {"id": len(preserved) + i + 1, "goal": goal, "status": "pending"}
+            self._step(len(preserved) + i + 1, goal)
             for i, goal in enumerate(pending_steps)]
         self.revision += 1
         self.events.append({"event": "plan_revised", "revision": self.revision,
@@ -65,6 +75,30 @@ class PlanLedger:
         return [dict(s) for s in self.steps]
 
     @staticmethod
-    def _valid(items: list[str]) -> bool:
-        return isinstance(items, list) and 1 <= len(items) <= MAX_ITEMS and all(
-            isinstance(x, str) and 1 <= len(x.strip()) <= 160 for x in items)
+    def _step(step_id: int, item: str | dict) -> dict:
+        if isinstance(item, str):
+            return {"id": step_id, "goal": item, "status": "pending"}
+        return {"id": step_id, "goal": item["goal"], "status": "pending",
+                "expected_tool": item["expected_tool"],
+                "expected_arguments": item["expected_arguments"]}
+
+    @staticmethod
+    def _valid(items: list) -> bool:
+        if not isinstance(items, list) or not 1 <= len(items) <= MAX_ITEMS:
+            return False
+        for item in items:
+            if isinstance(item, str):
+                if not 1 <= len(item.strip()) <= 160:
+                    return False
+            elif isinstance(item, dict):
+                if set(item) != {"goal", "expected_tool", "expected_arguments"}:
+                    return False
+                if not isinstance(item["goal"], str) or not 1 <= len(item["goal"].strip()) <= 160:
+                    return False
+                if item["expected_tool"] not in ("calculate", "mcp_reference_lookup", "utc_time", "list_tasks", "recall_memory"):
+                    return False
+                if not isinstance(item["expected_arguments"], dict):
+                    return False
+            else:
+                return False
+        return True

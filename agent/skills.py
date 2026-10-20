@@ -47,7 +47,7 @@ INSTRUCTIONS = {
     "tasks": "Use create_task/list_tasks; tasks belong to the current conversation.",
     "memory": "Use recall_memory for exact keys; saving requires current-turn consent.",
     "reference": "Use mcp_reference_lookup for terms present in the trusted reference catalog.",
-    "planning": "For complex multi-step work use propose_plan, revise pending steps after failed observations, and only complete_plan_step with successful tool evidence.",
+    "planning": "For complex multi-step work use propose_plan, revise pending steps after failed observations, and define verifiable steps as {goal,expected_tool,expected_arguments}; exact successful observations auto-complete uniquely bound steps. Unbound steps require explicit complete_plan_step.",
 }
 SKILL_VERSION = "s2c-skills-v1"
 
