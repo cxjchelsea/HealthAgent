@@ -164,9 +164,9 @@ class AgentLoop:
         # Conservative guard for explicit arithmetic replacement, not additive goals.
         # No automatic evidence deletion: the model must invalidate via revise_plan.
         superseded_step_ids = []
-        correction = re.search(r"不是\\s*([0-9]+\\s*[*+/-]\\s*[0-9]+)\\s*[,，；;。]?\\s*而是", goal)
+        correction = re.search(r"不是\s*([0-9]+\s*[*+/-]\s*[0-9]+)\s*[,，；;。]?\s*而是", goal)
         if correction:
-            old_expression = re.sub(r"\\s+", "", correction.group(1))
+            old_expression = re.sub(r"\s+", "", correction.group(1))
             superseded_step_ids = [
                 step["id"] for step in resumed.snapshot()
                 if step["status"] == "completed"
