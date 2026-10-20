@@ -84,3 +84,13 @@ python -m evals.s2d_live_recovery --strategy dynamic
 python -m evals.s2d_live_recovery --strategy all
 ```
 测试成功前不得将真实重规划记为 PASS。CI 仅覆盖细分错误码和敏感信息不回显等确定性验证；策略间结果不做统计显著性宣称。
+
+## 2026-10-20 首次空决策的兼容诊断与一次重试
+
+用户真实 Qwen3:14b 两组数据 Dynamic 与 All 均在第一次决策发生 `empty_decision`，未产生工具 Trace。该错误只证明 Tool Call 适配器未收到可用 `content` 或 `tool_calls`，不能推断模型完全没有生成输出。
+
+`agent/decision.py` 增加且仅针对**完全空决策**的一次受控重新请求（最多两次模型决策 HTTP 请求；绝不重试已观察到的 Tool Call，也不自动重试 malformed、超时、HTTP 等其他错误）。第二次依旧空时 fail-closed，返回 `ToolDecisionError("empty_decision")`。同时记录最后一次响应的**脱敏结构指标**：message 是否存在、content 字符数、tool_call 数、thinking 是否非空、白名单化 done_reason、重试次数。绝不读取、保存或将 thinking 视为最终回答/工具调用；不在日志内暴露思维内容、原始响应正文、网关 URL 或密钥。
+
+`evals/s2d_live_recovery.py` 对此报错写入 `provider_failure.response_shape`。自动化覆盖空后成功、连续两次仅 thinking 的 fail-closed、Malformed Tool Call 不重试。CI 成功仅表示适配器行为可靠，不表示用户本地模型真实失败恢复已经通过。
+
+复验：`$env:RUN_S2D_LIVE="1"` 后分别执行 `python -m evals.s2d_live_recovery --strategy dynamic` 与 `python -m evals.s2d_live_recovery --strategy all`，检查生成的 v2 JSON。只有真正进入工具执行并看到受控失败→模型重规划→成功恢复的证据才算 PASS。

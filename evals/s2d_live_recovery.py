@@ -42,6 +42,8 @@ class DiagnosticDecider:
                             "exception_type": type(cause).__name__ if cause else type(exc).__name__}
             if isinstance(exc, ToolDecisionError):
                 self.failure["reason_code"] = exc.code
+                if exc.metadata:
+                    self.failure["response_shape"] = exc.metadata
             if isinstance(cause, httpx.HTTPStatusError):
                 self.failure["http_status"] = cause.response.status_code
             raise
