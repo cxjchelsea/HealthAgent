@@ -131,3 +131,11 @@ python -m evals.s2d_provider_compatibility
 **证据限制**：失败事件报告为 `invalid_arguments`，当前保存的 Trace 并未包含失败调用的原始参数，因此只能验证真实工具失败→模型修订→成功恢复，不能断言实际触发了算术除零异常或精确判断原始错误参数。单次成功不代表可靠性百分比或复杂任务泛化；这不是正式 Conversation API 跨轮数据库一致性测试。此前长指令导致 `empty_decision` 的具体模型/Proxy 根因尚未确认，不能将简化测试目标描述为 Provider 根因修复。
 
 此项真实模型恢复链路可标记 **PASS（单次受控实验）**，但 S2-D 整体仍 **IN PROGRESS**。下一步仅在必要时检查失败调用参数是否确为 `8/0`、错误语义，再选择下一项实际纵向功能，不启动新 Runtime 架构。对应先前代码 HEAD `8d0cb23d38807754283cbcf8d078c1c89e300c30` 的 CI #39384712114 SUCCESS。
+
+## 同一会话并发 Turn 准入保护（2026-10-20）
+
+正式 `POST /conversations/{cid}/agent/messages` 原实现会允许两个并发请求同时加载相同 `ConversationPlanStore` Checkpoint，并分别写回最后完成的快照，存在“旧计划覆盖新计划”的真实竞态。
+
+新增 `0005_active_turn_guard`：在现有 `turns` 表创建仅对 `state='running'` 生效的 `conversation_id` 部分唯一索引（SQLite / PostgreSQL），利用数据库事务中的 Turn 插入实现跨进程原子准入。同一会话已有 running turn 时，新的独立请求在加载 Checkpoint / 执行 Agent 前返回 HTTP 409 `conversation_turn_in_progress`；不同会话可并行，已结束状态释放索引位置。已有 request_id 幂等冲突继续使用 `duplicate_request_id`。测试验证同会话拒绝、跨会话允许、终态释放后重入。
+
+**限制与部署风险**：这是一项“拒绝同会话并发”，不是请求排队或全链路原子持久化。异常中断后遗留的 `running` Turn 可能阻止新请求；当前没有 TTL / 后台恢复机制，需运维审查并治理停滞的 Turn。迁移前如存在多个相同会话的 `running` Turn，数据库将拒绝创建唯一索引；不得自动删除或改写未核查的历史记录。SQLite 单写者争用仍可能表现为 database locked，而不是始终为 409。工具的外部副作用和 Plan Checkpoint、assistant 消息仍未实现同一事务提交。S2-D 继续 IN PROGRESS；CI PASS 不代表多 worker + 真实 Qwen 物理并发测试已执行。
