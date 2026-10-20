@@ -90,7 +90,7 @@ def grade(case_id, outcome):
     return checks
 
 
-async def measure(strategy, case, settings):
+async def measure(strategy, case, settings, *, inspect_ambiguity=False):
     case_id, goal, _, _ = case
     started = time.monotonic()
     try:
@@ -100,6 +100,8 @@ async def measure(strategy, case, settings):
         ).run(goal, include_evidence=True)
         audit = outcome.get("audit", [])
         checks = grade(case_id, outcome)
+        if inspect_ambiguity and case_id == "math_ambiguous":
+            print(f"AMBIGUITY REVIEW [{strategy}]: {outcome['answer']}")
         return {"id": case_id, "strategy": strategy, "passed": all(checks.values()),
                 "checks": checks, "status": outcome["status"],
                 "tools": [item["name"] for item in audit],
@@ -116,7 +118,7 @@ async def measure(strategy, case, settings):
                 "error": type(exc).__name__}
 
 
-async def evaluate(repeats=2, cases=CASES):
+async def evaluate(repeats=2, cases=CASES, *, inspect_ambiguity=False):
     if os.getenv("RUN_S2C_LIVE") != "1":
         raise RuntimeError("Set RUN_S2C_LIVE=1 to authorize provider calls")
     settings = Settings()
@@ -127,7 +129,8 @@ async def evaluate(repeats=2, cases=CASES):
         for case in cases:
             order = ("all", "dynamic") if repeat % 2 else ("dynamic", "all")
             for strategy in order:
-                rows.append(await measure(strategy, case, settings))
+                rows.append(await measure(strategy, case, settings,
+                                          inspect_ambiguity=inspect_ambiguity))
     summary = {}
     for strategy in ("all", "dynamic"):
         group = [r for r in rows if r["strategy"] == strategy]
@@ -150,12 +153,14 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--repeats", type=int, default=2)
     parser.add_argument("--math-only", action="store_true")
+    parser.add_argument("--inspect-ambiguity", action="store_true")
     parser.add_argument("--output", default="evals/results/s2c/live-comparison-v2.json")
     args = parser.parse_args()
     if not 1 <= args.repeats <= 10:
         parser.error("repeats must be 1..10")
     cases = tuple(c for c in CASES if c[0].startswith("math_")) if args.math_only else CASES
-    report = asyncio.run(evaluate(args.repeats, cases))
+    report = asyncio.run(evaluate(args.repeats, cases,
+                                  inspect_ambiguity=args.inspect_ambiguity))
     path = Path(args.output)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")

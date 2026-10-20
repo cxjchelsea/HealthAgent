@@ -55,3 +55,13 @@ python -m uvicorn apps.api.main:app --reload
 `evals/s2c_live_benchmark.py` v2 将单个数学歧义题拆为三项：`math_explicit`（先加再乘，结果 126）、`math_precedence`（按运算优先级，结果 90）和 `math_ambiguous`（应先要求澄清而非擅自计算）。前两项分别检查工具成功、**实际工具返回数字**与答案数值；后一项检查未调用算术工具并提出澄清。新增 `checks` 细项与仅包含算术表达式、数值、错误码的诊断记录，不写入记忆/参考工具的原始观察或模型全文。歧义澄清自动判分仅为启发式，必须结合人工判断。
 
 回归执行：`python -m pytest -q`；真实 Qwen 定向复验：`$env:RUN_S2C_LIVE='1'` 后 `python -m evals.s2c_live_benchmark --math-only --repeats 2`；完整对照 `python -m evals.s2c_live_benchmark --repeats 2`。默认写入 `evals/results/s2c/live-comparison-v2.json`。本阶段**没有在 CI 中远程运行用户的 Qwen 服务**，等待本地上传真实报告之后复核，暂不将 S2-C 关闭。
+
+## 最终收口候选：歧义澄清与证据边界（2026-10-20）
+
+真实 Qwen v2 全量对照（由用户本机提供）为 40 次运行：all 18/20、dynamic 18/20；明确计算顺序的 126/90、MCP、双工具执行均通过。四个失败仅集中于 `math_ambiguous`：两种策略均未调用计算工具，但自动判断 `clarification_requested=false`，此前报告**未保留最终回答全文**，不能排除澄清措辞导致的误判。
+
+本次对现有版本提示词增加一条**通用歧义处理规则**：没有明确运算顺序且存在重大歧义时先询问，而明确括号或运算优先级的算术任务照常调用计算工具。新增静态/判分回归测试。评测器新增 `--inspect-ambiguity`：仅在显式打开时把该样例的真实回答打印到**本地终端**，不会写入 JSON 报告或 Git；使用时不要公开终端中可能的敏感内容。
+
+复验命令：`$env:RUN_S2C_LIVE='1'; python -m evals.s2c_live_benchmark --math-only --repeats 2 --inspect-ambiguity --output evals/results/s2c/math-closure.json`。需人工核查原文确实向用户提出澄清，不能仅靠关键词判分推断。之后可运行不带 `--math-only` 的完整 40 次对照。实际 Qwen 复验尚需用户本机执行，不能写成已通过。
+
+此处拟收口的是 **S2-C 第一版 Skills/固定 stdio MCP/Harness**，不是通用任意 MCP Server、多租户生产安全、完全模型可靠性或语义规划。自研 MCP Client + 官方 SDK 的 stdio 子集互操作已在 CI 检查；动态暴露带有关键词误过滤风险，尚未证明显著优于 all。**只有 CI、人工歧义澄清复核与最终 PR 审查完成后，才可批准合并并在 main 后验收 CLOSED**。
