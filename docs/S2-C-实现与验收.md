@@ -39,3 +39,11 @@ python -m uvicorn apps.api.main:app --reload
 `evals/s2c_benchmark.py` 对十条固定目标运行 `all` 与 `dynamic`，比较预期工具覆盖率、暴露工具数量、Schema 字符开销、已加载 Skill 文本长度及选择器执行时间；`python -m evals.s2c_benchmark` 输出 `evals/results/s2c/selection-v1.json`。**这不是 LLM 准确率、token 价格或真实端到端延迟比较。** `tests/test_s2c_integration.py` 包含 stdio 握手+查询、非法输入、预算边界和对照指标断言。
 
 最终 S2-C CLOSED 前，还需要真实 Qwen 多场景 dynamic/all 对照、真实 MCP SDK 互操作性及安全异常测评。本阶段文档持续维护，不增加第二份子阶段验收文件。
+
+## S2-C 增补：第三方 SDK 互操作与真实模型对照
+
+官方 MCP Python SDK 独立客户端校验命令：`python -m evals.s2c_mcp_sdk_verify`。使用官方 `stdio_client` 和 `ClientSession` 启动现有独立 MCP 子进程，走初始化、list_tools、成功调用和失败返回，独立于自研 StdioMCPClient。CI 添加该互操作校验，并将 `mcp>=1.20,<2` 加入开发依赖。该证据覆盖特定 SDK 版本区间和 stdio 单工具子集，不等于 MCP 完整规范符合性。
+
+真实 Qwen 对照脚本：`RUN_S2C_LIVE=1 python -m evals.s2c_live_benchmark --repeats 2`（Windows PowerShell 在命令前用 `$env:RUN_S2C_LIVE='1'`）。两种策略 all/dynamic 都调用真实供应商及原 AgentLoop，复测多工具、隐含意图、参考工具负例、禁用 shell 等 8 种场景，交错策略顺序，统计任务检查通过率、Tool Calls 和中位耗时。输出 `evals/results/s2c/live-comparison-v1.json`，不写入用户原始问题或完整模型回答；需要真实服务配置，CI 不替代用户本地运行。此脚本的有限关键词判分还需人工抽样核对，不能宣称等于真实任务质量或统计显著结论。
+
+在本地真实运行并收到证据前，S2-C 保持 **IN PROGRESS**；不得仅凭 SDK / CI 成功声称 Qwen all/dynamic 实验已完成。
