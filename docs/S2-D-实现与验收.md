@@ -174,3 +174,9 @@ python -m evals.s2d_conversation_api_live
 本地真实 `qwen-conversation-api-v1.json` 为 8/9 PASS：两轮 HTTP 200，`propose_plan → calculate` 与 `revise_plan → calculate` 均执行，checkpoint Revision 1→2，9*9 步骤完成；唯一失败项为 `old_calculation_invalidated=false`，说明旧 8*8 completed 证据仍在最终 checkpoint。v1 报告没有修订的 invalidated / preserved 详情，不能据此直接确定是模型漏传 `invalidate_step_ids`，还是执行层故障。
 
 修复 E731 测试语法并将报告升级为 v2，增加脱敏的 `revision_diagnostics`（revision、invalidated、preserved）和 `final_plan_steps`（id、status、expected_tool、expected_arguments）。不改变核心 `PlanLedger` 的默认保留已完成步骤机制，避免为了测试通过而自动废止历史证据。Windows 更新分支后运行 `$env:RUN_S2D_LIVE="1"; python -m evals.s2d_conversation_api_live`，读取 `evals/results/s2d/qwen-conversation-api-v2.json`。在 v2 实证出来之前继续标记多轮更正最终验收 FAIL / S2-D IN PROGRESS。
+
+## 2026-10-20 真实 Qwen 多轮更正 v2 根因收窄
+
+用户上传的 `qwen-conversation-api-v2.json` 再次显示 8/9 PASS。第一次 `propose_plan → calculate(8*8)`，第二次 `revise_plan → calculate(9*9)`；Checkpoint Revision 1→2。修订事件 `invalidated=[]`、`preserved=1`，最终仍有 completed 的 8*8 和 9*9 两步。因此可确定执行结果未废止旧完成步骤，但报告未含原始模型工具参数，不能独立断言模型确切传了空数组或省略字段。
+
+现有 core Prompt 已包含 `invalidate_step_ids` 的原则说明；此轮只在按目标选取的 Planning Skill 指令中补充“用户明确替换已完成目标时应传被替换步骤 ID，其他步骤保留”，并增加静态回归测试；不改变 `PlanLedger.revise()` 默认保留完成证据的规则，也不让 Harness 自动注入废止 ID。**尚未做真实 Qwen 复验，不能标记缺口已解决。** 使用已有 `python -m evals.s2d_conversation_api_live` 和 `qwen-conversation-api-v2.json` 作为下一次真实测试。单次生成不同结果也不代表稳定性已经建立。
