@@ -7,6 +7,9 @@ from langgraph.graph import END, StateGraph
 from agent.decision import NativeToolDecision
 from agent.tools import TOOL_SCHEMAS, execute_tool
 from agent.skills import exposed_tools, load_instructions, SKILL_VERSION
+from agent.planning import PlanLedger
+from agent.tools import SCHEMAS
+from pydantic import ValidationError
 
 PROMPT_VERSION = "s2a-core-v1"
 PROMPT = (Path(__file__).parent / "prompts" / "s2a_core_v1.md").read_text(encoding="utf-8")
@@ -21,6 +24,8 @@ class AgentState(TypedDict):
     audit_enabled: bool
     audit: list[dict]
     allowed_tools: list[dict]
+    plan: PlanLedger
+    last_success: dict | None
 
 class AgentLoop:
     def __init__(self, decider: Any, max_steps: int = 6, clock=None, task_store=None, memory_store=None, mcp_client=None, skill_strategy='dynamic', skill_budget_chars=600):
@@ -80,10 +85,30 @@ class AgentLoop:
             name = function.get("name")
             if name not in {tool["function"]["name"] for tool in state["allowed_tools"]}:
                 result = {"ok": False, "error": "tool_not_exposed"}
+            elif name in {"propose_plan", "revise_plan", "complete_plan_step"}:
+                try:
+                    args = SCHEMAS[name].model_validate(function.get("arguments")).model_dump()
+                    ledger = state["plan"]
+                    if name == "propose_plan":
+                        result = ledger.propose(args["steps"])
+                    elif name == "revise_plan":
+                        result = ledger.revise(args["expected_revision"],
+                                               args["pending_steps"], args["reason"])
+                    else:
+                        result = ledger.complete(args["step_id"], args["evidence_tool"],
+                                                 state["last_success"])
+                except (ValidationError, TypeError, ValueError):
+                    result = {"ok": False, "error": "invalid_arguments"}
             else:
                 result = execute_tool(name, function.get("arguments"), tasks, self.clock,
                                       task_store=self.task_store, memory_store=self.memory_store,
                                       mcp_client=self.mcp_client)
+            if name not in {"propose_plan", "revise_plan", "complete_plan_step"}:
+                state["plan"].observe(name, result)
+                if result.get("ok"):
+                    state["last_success"] = {"name": name, **result}
+                else:
+                    state["last_success"] = None
             observations.append({"role": "tool", "tool_name": name,
                                  "tool_call_id": call["id"],
                                  "content": json.dumps(result, ensure_ascii=False)})
@@ -93,7 +118,8 @@ class AgentLoop:
                 audit.append({"step": state["iterations"], "name": name,
                               "arguments": function.get("arguments"), "observation": result})
         return {"messages": state["messages"] + observations,
-                "tasks": tasks, "traces": traces, "audit": audit}
+                "tasks": tasks, "traces": traces, "audit": audit,
+                "plan": state["plan"], "last_success": state["last_success"]}
 
     async def run(self, goal: str, *, include_evidence: bool = False,
                   history: list[dict] | None = None) -> dict:
@@ -111,7 +137,8 @@ class AgentLoop:
             *clean_history, {"role": "user", "content": goal}],
             "traces": [], "tasks": [], "final": "", "status": "running", "iterations": 0,
             "audit_enabled": include_evidence, "audit": [],
-            "allowed_tools": exposed_tools(goal, TOOL_SCHEMAS, strategy=self.skill_strategy)}
+            "allowed_tools": exposed_tools(goal, TOOL_SCHEMAS, strategy=self.skill_strategy),
+            "plan": PlanLedger(), "last_success": None}
         try:
             outcome = await self.graph.ainvoke(initial, config={"recursion_limit": 2 * self.max_steps + 4})
         except Exception as exc:
@@ -122,7 +149,9 @@ class AgentLoop:
             raise
         result = {"run_id": run_id, "status": outcome["status"],
                   "answer": outcome["final"], "trace": outcome["traces"],
-                  "prompt_version": PROMPT_VERSION, "steps": outcome["iterations"]}
+                  "prompt_version": PROMPT_VERSION, "steps": outcome["iterations"],
+                  "plan": outcome["plan"].snapshot(), "plan_revision": outcome["plan"].revision,
+                  "plan_events": list(outcome["plan"].events)}
         if include_evidence:
             result["audit"] = outcome["audit"]
             result["tasks"] = outcome["tasks"]

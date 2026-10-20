@@ -25,6 +25,7 @@ jobs:
       - run: python -m evals.s2a_benchmark
       - run: python -m evals.s2b5_benchmark
       - run: python -m evals.s2c_benchmark
+      - run: python -m evals.s2d_benchmark
       - run: python -m evals.s2c_mcp_sdk_verify
       - run: python -m compileall -q apps agent services evals
       # Block correctness errors now; format and full strict typing are tracked separately.
