@@ -124,11 +124,11 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                 raise HTTPException(409, "conversation_turn_in_progress") from exc
             raise
         plan_store = ConversationPlanStore(Session, cid)
-        existing_checkpoint = plan_store.load()
         began = time.monotonic()
         status, answer = "provider_error", ""
         result = None
         try:
+            existing_checkpoint = plan_store.load()
             decider = agent_decider if agent_decider is not None else NativeToolDecision(settings)
             result = await AgentLoop(decider, task_store=ConversationTaskStore(Session, cid),
                 memory_store=MemoryStore(Session, uid, write_allowed=body.memory_write_consent),
@@ -137,23 +137,30 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                       plan_checkpoint=existing_checkpoint)
             if result["status"] in {"completed", "partial"}:
                 answer, status = result["answer"], result["status"]
-                if result.get("plan_checkpoint"):
-                    plan_store.save(result["plan_checkpoint"])
             else:
                 status = result["status"]
         except Exception as exc:
             log.warning("conversation Agent failed turn=%s class=%s", turn_id, type(exc).__name__)
-            status = "provider_error"
-        finally:
+            status, answer = "provider_error", ""
+        # Atomic local DB commit: never expose a successful message separately
+        # from its corresponding plan checkpoint and turn terminal state.
+        # External tool effects remain outside this transaction.
+        try:
             with Session.begin() as db:
                 response = db.get(Message, assistant_id)
                 turn = db.get(Turn, turn_id)
-                if response is not None and turn is not None:
-                    response.content = answer
-                    response.status = status
-                    turn.state = status
-                    turn.output_chars = len(answer)
-                    turn.duration_ms = int((time.monotonic()-began)*1000)
+                if response is None or turn is None or turn.state != "running":
+                    raise RuntimeError("turn_finalization_conflict")
+                if status in {"completed", "partial"} and result.get("plan_checkpoint"):
+                    plan_store.save_in_session(db, result["plan_checkpoint"])
+                response.content = answer
+                response.status = status
+                turn.state = status
+                turn.output_chars = len(answer)
+                turn.duration_ms = int((time.monotonic() - began) * 1000)
+        except Exception:
+            log.exception("conversation turn finalization failed turn=%s", turn_id)
+            raise HTTPException(503, "turn_finalization_failed")
         if status not in {"completed", "partial"}:
             raise HTTPException(503, "Agent run did not complete")
         return {**result, "conversation_id": cid, "message_id": assistant_id}
