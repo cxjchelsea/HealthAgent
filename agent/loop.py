@@ -110,9 +110,16 @@ class AgentLoop:
                     if name == "propose_plan":
                         result = ledger.propose(args["steps"])
                     elif name == "revise_plan":
-                        result = ledger.revise(args["expected_revision"] or ledger.revision,
-                                               args["pending_steps"], args["reason"],
-                                               args["invalidate_step_ids"])
+                        required = set(state["superseded_step_ids"])
+                        supplied = set(args["invalidate_step_ids"])
+                        if required and not required.issubset(supplied):
+                            result = {"ok": False, "error": "missing_required_invalidation",
+                                      "required_step_ids": sorted(required - supplied),
+                                      "plan_revision": ledger.revision}
+                        else:
+                            result = ledger.revise(args["expected_revision"] or ledger.revision,
+                                                   args["pending_steps"], args["reason"],
+                                                   args["invalidate_step_ids"])
                     else:
                         result = ledger.complete(args["step_id"], args["evidence_tool"],
                                                  state["last_success"])
@@ -138,7 +145,12 @@ class AgentLoop:
             if name == "propose_plan" and result.get("ok"):
                 result["guidance"] = "Plan revision is 1; use bound steps with expected_tool/expected_arguments for verified automatic progress."
             if name == "revise_plan" and not result.get("ok"):
-                result["guidance"] = "Retry with current revision or omit expected_revision, preserving verified steps."
+                if result.get("error") == "missing_required_invalidation":
+                    result["guidance"] = ("User replaced an already completed goal. "
+                                          "Retry revise_plan with required_step_ids included "
+                                          "in invalidate_step_ids; preserve other completed steps.")
+                else:
+                    result["guidance"] = "Retry with current revision or omit expected_revision, preserving verified steps."
             observations.append({"role": "tool", "tool_name": name,
                                  "tool_call_id": call["id"],
                                  "content": json.dumps(result, ensure_ascii=False)})
