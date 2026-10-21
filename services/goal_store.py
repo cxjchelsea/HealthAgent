@@ -23,9 +23,12 @@ class ConversationGoalStore:
         if result.status != "understood":
             return
         if kind in {"add", "revise", "clarify_response"}:
-            if previous.get("goal") is None or result.goal is None:
+            base = previous.get("goal")
+            if base is None and kind == "clarify_response":
+                base = (previous.get("pending") or {}).get("goal")
+            if base is None or result.goal is None:
                 raise UnderstandingError("missing_confirmed_goal")
-            old = GoalSpec.model_validate(previous["goal"])
+            old = GoalSpec.model_validate(base)
             proposed = result.goal
             prior = {(entry.name, entry.scope): entry.value for entry in old.constraints
                      if entry.source in {"explicit", "confirmed"}}
@@ -56,6 +59,8 @@ class ConversationGoalStore:
                 goal = result.goal.model_dump(mode="json") if result.goal else None
                 pending = None
             elif kind in {"add", "revise", "clarify_response"}:
+                if goal is None and kind == "clarify_response":
+                    goal = (pending or {}).get("goal")
                 if goal is None or result.goal is None:
                     raise UnderstandingError("missing_confirmed_goal")
                 # The model proposes the complete updated target; host verifies
