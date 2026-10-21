@@ -238,7 +238,7 @@ class AgentLoop:
                 and step.get("expected_arguments") == {"expression": old_expression}]
         # Explicit saved-memory questions use a trusted, owner-scoped read.
         # Do not leave correctness to optional model tool choice.
-        if (self.memory_store is not None and any(phrase in goal for phrase in (
+        if (understanding_result is None and self.memory_store is not None and any(phrase in goal for phrase in (
                 "还记得", "记得我", "之前保存", "之前记住", "保存的",
                 "记住的", "测试偏好是什么", "测试偏好吗"))):
             records = self.memory_store.list()
@@ -280,7 +280,7 @@ class AgentLoop:
             "更正", "修改计划", "改成", "换成", "不是", "新增", "增加", "取消", "替换"))
         outstanding = [step for step in resumed.snapshot()
                        if step["status"] == "pending"]
-        if (continuation and not changed_goal and outstanding
+        if (understanding_result is None and continuation and not changed_goal and outstanding
                 and all(step.get("expected_tool") in
                         {"calculate", "mcp_reference_lookup", "utc_time", "list_tasks",
                          "recall_memory"}
@@ -364,7 +364,7 @@ class AgentLoop:
                           "; steps: " + json.dumps(resumed.snapshot(), ensure_ascii=False)
                           if resumed.revision else "")
         # A bounded re-decision only for explicit saved-memory requests.
-        recall_required = any(phrase in goal for phrase in (
+        recall_required = understanding_result is None and any(phrase in goal for phrase in (
             "还记得", "记得我", "之前保存", "之前记住", "保存的",
             "记住的", "测试偏好是什么", "测试偏好吗"))
         bounded_first_step = bool(
