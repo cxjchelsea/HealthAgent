@@ -287,6 +287,7 @@ class AgentLoop:
                         for step in outstanding)):
             trace = []
             audit = []
+            delivered = []
             for step in outstanding:
                 name = step["expected_tool"]
                 arguments = step["expected_arguments"]
@@ -295,6 +296,26 @@ class AgentLoop:
                     self.clock, task_store=self.task_store,
                     memory_store=self.memory_store, mcp_client=self.mcp_client)
                 resumed.observe(name, result, arguments)
+                # Preserve only the bounded, tool-observed output for delivery.
+                # Never synthesize results for previously completed steps.
+                if result.get("ok"):
+                    if name == "calculate" and "value" in result:
+                        detail = str(result["value"])
+                    elif name == "mcp_reference_lookup":
+                        detail = ("来源：" + str(result.get("source", "未提供"))
+                                  + "；资料：" + str(result.get("definition",
+                                      result.get("value", "工具未提供可展示内容"))))
+                    elif name == "utc_time":
+                        detail = str(result.get("utc", "工具未提供时间"))
+                    elif name == "list_tasks":
+                        detail = json.dumps(result.get("tasks", []), ensure_ascii=False)
+                    elif name == "recall_memory":
+                        detail = (str(result.get("value"))
+                                  if result.get("found") else "没有找到此 Key")
+                    else:
+                        detail = "工具成功，但没有可展示结果"
+                    delivered.append({"step_id": step["id"], "goal": step["goal"],
+                                      "tool": name, "result": detail[:1200]})
                 trace.append({"step": len(trace) + 1, "type": "tool",
                               "name": name, "ok": result["ok"]})
                 if include_evidence:
@@ -307,9 +328,20 @@ class AgentLoop:
             completed = [step["id"] for step in resumed.snapshot()
                          if step["status"] == "completed"]
             status = "partial" if remaining else "completed"
-            answer = ("已验证完成步骤：" + "、".join(map(str, completed)) +
-                      ("；未完成步骤：" + "、".join(map(str, remaining)) if remaining
-                       else "；计划全部步骤已验证完成。"))
+            lines = ["计划执行结果："]
+            for step in resumed.snapshot():
+                item = next((d for d in delivered if d["step_id"] == step["id"]), None)
+                if item is not None:
+                    lines.append("步骤 " + str(step["id"]) + "（" +
+                                 step["goal"] + "）： " + item["result"])
+                elif step["status"] == "completed":
+                    lines.append("步骤 " + str(step["id"]) +
+                                 "：此前已验证完成；本次没有其原始输出，不能重述具体结果。")
+                else:
+                    lines.append("步骤 " + str(step["id"]) + "：尚未完成。")
+            lines.append("计划全部步骤已验证完成。" if not remaining else
+                         "仍有未完成步骤：" + "、".join(map(str, remaining)) + "。")
+            answer = "\\n".join(lines)
             output = {"run_id": run_id, "status": status, "answer": answer,
                       "trace": [{"step": 0, "type": "plan_resume_execution"}, *trace],
                       "prompt_version": PROMPT_VERSION,
