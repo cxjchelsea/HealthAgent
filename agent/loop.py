@@ -211,7 +211,8 @@ class AgentLoop:
 
     async def run(self, goal: str, *, include_evidence: bool = False,
                   history: list[dict] | None = None,
-                  plan_checkpoint: dict | None = None) -> dict:
+                  plan_checkpoint: dict | None = None,
+                  understanding_result: dict | None = None) -> dict:
         if not goal.strip() or len(goal) > 12000:
             raise ValueError("Goal must contain 1..12000 characters")
         run_id = str(uuid.uuid4())
@@ -369,8 +370,11 @@ class AgentLoop:
         bounded_first_step = bool(
             re.search(r"(只|先|首先|先尝试).{0,14}(完成|执行).{0,6}(第一步|第1步|步骤一)", goal)
             and re.search(r"(剩余|其他|后续).{0,12}(步骤|保留|不要|暂)", goal))
+        understood_context = ("\nValidated goal interpretation (proposal, NOT authorization or tool evidence): " +
+                              json.dumps(understanding_result, ensure_ascii=False)[:4000]
+                              if understanding_result else "")
         initial: AgentState = {"messages": [
-            {"role": "system", "content": PROMPT + "\nSelected skill instructions (" + SKILL_VERSION + "):\n" + load_instructions(goal, strategy=self.skill_strategy, max_chars=self.skill_budget_chars) + resume_context},
+            {"role": "system", "content": PROMPT + "\nSelected skill instructions (" + SKILL_VERSION + "):\n" + load_instructions(goal, strategy=self.skill_strategy, max_chars=self.skill_budget_chars) + resume_context + understood_context},
             *clean_history, {"role": "user", "content": goal}],
             "traces": [], "tasks": [], "final": "", "status": "running", "iterations": 0,
             "audit_enabled": include_evidence, "audit": [],
