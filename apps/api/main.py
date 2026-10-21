@@ -16,6 +16,7 @@ from agent.context import build_context
 from services.task_store import ConversationTaskStore
 from services.memory_store import MemoryStore
 from services.plan_store import ConversationPlanStore
+from services.goal_store import ConversationGoalStore
 from services.db import Conversation, Message, Turn, database
 
 log=logging.getLogger("healthagent")
@@ -160,6 +161,9 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                 raise HTTPException(409, "conversation_turn_in_progress") from exc
             raise
         plan_store = ConversationPlanStore(Session, cid)
+        goal_store = ConversationGoalStore(Session, cid)
+        previous_goal = None
+        parsed_result = None
         began = time.monotonic()
         status, answer = "provider_error", ""
         result = None
@@ -171,6 +175,7 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
             if settings.understanding_strategy not in {"direct", "structured"}:
                 raise UnderstandingError("invalid_understanding_strategy")
             if settings.understanding_strategy == "structured":
+                previous_goal = goal_store.load()
                 service = UnderstandingService(
                     HTTPUnderstandingModel(settings.model_provider, settings.model_base_url,
                                            settings.model_api_key, settings.model_timeout_seconds,
@@ -183,8 +188,12 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                     for item in (existing_checkpoint or {}).get("steps", [])[:8]]
                 parsed = await service.understand(UnderstandingContext(
                     current_message=body.content, recent_completed_messages=context,
-                    current_plan_summary=summary))
-                interpretation = parsed["result"].model_dump()
+                    current_plan_summary=summary,
+                    active_goal=previous_goal['goal'],
+                    confirmed_constraints=previous_goal['goal'].get('constraints', []) if previous_goal['goal'] else [],
+                    outstanding_clarification=(previous_goal['pending'] or {}).get('clarification', {}).get('question')))
+                parsed_result = parsed["result"]
+                interpretation = parsed_result.model_dump()
                 if parsed["result"].clarification.required:
                     result = {"run_id": turn_id, "status": "partial",
                               "answer": parsed["result"].clarification.question,
@@ -222,6 +231,8 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                     raise RuntimeError("turn_finalization_conflict")
                 if status in {"completed", "partial"} and result.get("plan_checkpoint"):
                     plan_store.save_in_session(db, result["plan_checkpoint"])
+                if status in {"completed", "partial"} and parsed_result is not None and previous_goal is not None:
+                    goal_store.save_in_session(db, parsed_result, previous_goal)
                 response.content = answer
                 response.status = status
                 turn.state = status
