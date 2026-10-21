@@ -241,3 +241,18 @@ LoopOutcome:
 6. 是否批准下一轮在本文件设计经审查通过后，再启动 **Step 4 实现**？（本次不构成授权）
 
 **本轮结论：Step 1/2/3 DESIGN REVIEW REQUIRED；Step 4/5/6 NOT STARTED。**
+
+---
+
+## Step 4 — 第一轮渐进实现日志（2026-10-21）
+
+> 此节为用户批准设计后开始的真实实施记录。Step 1/2/3 的设计基线不被追认成运行证据。本轮只实现**统一退出原因最小切片**，不是整个 S25-02 已实现。
+
+- 在原 `agent/loop.py` 增加 `termination_reason`，沿用唯一 AgentLoop、LangGraph `decide ↔ tools`、原生 Tool Calling 和正式 API；不增加独立入口、新 Runtime 或 DB 表。
+- 区分直接回复 `model_final`、仍有计划步骤 `pending_plan_steps`、旧完成证据冲突 `superseded_evidence`、记忆不可验证 `memory_recall_unverified`、模型决策预算耗尽 `decision_budget_exhausted`、工具扇出过限 `tool_fanout_exceeded`、第一步有界执行 `bounded_partial_execution`、Provider 精确失败码等原因。
+- 现有 API 响应透传 `AgentLoop.run()` 字段；仍保留旧 `status` 和 API 对非完成状态返回 503 的行为，**未声称完成需要 API 状态迁移的澄清/暂停/拒绝/取消功能**。
+- 新增 `tests/test_s25_02_loop_termination.py`，覆盖直接回答、pending checkpoint、过量工具、模型步数和 Provider 空决策；这些使用受控决策器而非真实模型。
+- 下一切片优先评估可信澄清/暂停动作与 API 生命周期兼容；必须先与 S25-01 的 Understanding 结果对齐，不在本阶段临时增加关键词识别。
+- Step 5 真实 Qwen / 正式 API E2E、Step 6 完成判定**尚未开始**。CI 要绑定最新精确 HEAD 单独核验，不把新测试文件存在当作已通过。
+
+**实施状态：IMPLEMENTING（Step 4 started, incremental slice 1）。**
