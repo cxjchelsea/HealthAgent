@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from agent.config import Settings
-from agent.understanding import GoalIntake, understand
+from agent.understanding import UnderstandingContext, UnderstandingService, HTTPUnderstandingModel, UnderstandingError
 from agent.decision import NativeToolDecision
 from agent.loop import AgentLoop
 from agent.mcp_stdio_client import StdioMCPClient
@@ -62,9 +62,23 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
             raise HTTPException(404,"Conversation not found")
         return c
 
-    @app.post("/understanding", response_model=GoalIntake)
-    def understand_goal(body: GoalIn, uid=Depends(user_id)):
-        return understand(body.content)
+    @app.post("/understanding")
+    async def understand_goal(body: GoalIn, uid=Depends(user_id)):
+        """S25-01: one typed understanding service, never a rule-based classifier."""
+        if settings.model_provider == "fake":
+            raise HTTPException(503, {"code": "understanding_requires_real_model"})
+        service = UnderstandingService(
+            HTTPUnderstandingModel(settings.model_provider, settings.model_base_url,
+                                   settings.model_api_key, settings.model_timeout_seconds,
+                                   settings.model_max_output_tokens),
+            settings.understanding_light_model, settings.understanding_strong_model)
+        try:
+            outcome = await service.understand(UnderstandingContext(current_message=body.content))
+            return {"understanding": outcome["result"].model_dump(),
+                    "model_role": outcome["model_role"], "model": outcome["model"],
+                    "duration_ms": outcome["duration_ms"], "escalated": outcome["escalated"]}
+        except UnderstandingError as exc:
+            raise HTTPException(503, {"code": exc.code}) from exc
 
     class MemoryInput(BaseModel):
         value: str = Field(min_length=1, max_length=500)
