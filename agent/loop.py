@@ -33,6 +33,7 @@ class AgentState(TypedDict):
     memory_recall_observed: bool
     memory_recall_retry: bool
     recall_retry_pending: bool
+    stop_after_first_verified_step: bool
 
 class AgentLoop:
     def __init__(self, decider: Any, max_steps: int = 6, clock=None, task_store=None, memory_store=None, mcp_client=None, skill_strategy='dynamic', skill_budget_chars=600):
@@ -51,7 +52,7 @@ class AgentLoop:
         flow.add_node("tools", self._tools)
         flow.set_entry_point("decide")
         flow.add_conditional_edges("decide", self._next, {"tools": "tools", "done": END, "retry": "decide"})
-        flow.add_edge("tools", "decide")
+        flow.add_conditional_edges("tools", self._after_tools, {"done": END, "decide": "decide"})
         self.graph = flow.compile()
 
     async def _decide(self, state: AgentState) -> dict:
@@ -115,6 +116,9 @@ class AgentLoop:
         if state["status"] != "running":
             return "done"
         return "retry" if state["recall_retry_pending"] else "tools"
+
+    def _after_tools(self, state: AgentState) -> str:
+        return "done" if state["status"] != "running" else "decide"
 
     async def _tools(self, state: AgentState) -> dict:
         last = state["messages"][-1]
@@ -186,10 +190,24 @@ class AgentLoop:
             if state["audit_enabled"]:
                 audit.append({"step": state["iterations"], "name": name,
                               "arguments": function.get("arguments"), "observation": result})
-        return {"messages": state["messages"] + observations,
-                "tasks": tasks, "traces": traces, "audit": audit,
-                "plan": state["plan"], "last_success": state["last_success"],
-                "memory_recall_observed": state["memory_recall_observed"]}
+        update = {"messages": state["messages"] + observations,
+                  "tasks": tasks, "traces": traces, "audit": audit,
+                  "plan": state["plan"], "last_success": state["last_success"],
+                  "memory_recall_observed": state["memory_recall_observed"]}
+        # Stop only for an explicitly limited first step with verified evidence.
+        steps = state["plan"].snapshot()
+        if (state["stop_after_first_verified_step"] and len(steps) >= 2
+                and steps[0]["status"] == "completed"
+                and any(step["status"] == "pending" for step in steps[1:])):
+            remaining = [step["id"] for step in steps if step["status"] == "pending"]
+            update.update({
+                "status": "partial",
+                "final": ("已验证完成计划的第一步；其余步骤 "
+                          + "、".join(str(i) for i in remaining)
+                          + " 尚未完成，已保留在计划中。"),
+                "traces": traces + [{"step": state["iterations"],
+                                     "type": "partial_first_step_verified"}]})
+        return update
 
     async def run(self, goal: str, *, include_evidence: bool = False,
                   history: list[dict] | None = None,
@@ -265,6 +283,9 @@ class AgentLoop:
         recall_required = any(phrase in goal for phrase in (
             "还记得", "记得我", "之前保存", "之前记住", "保存的",
             "记住的", "测试偏好是什么", "测试偏好吗"))
+        bounded_first_step = bool(
+            re.search(r"(只|先|首先|先尝试).{0,14}(完成|执行).{0,6}(第一步|第1步|步骤一)", goal)
+            and re.search(r"(剩余|其他|后续).{0,12}(步骤|保留|不要|暂)", goal))
         initial: AgentState = {"messages": [
             {"role": "system", "content": PROMPT + "\nSelected skill instructions (" + SKILL_VERSION + "):\n" + load_instructions(goal, strategy=self.skill_strategy, max_chars=self.skill_budget_chars) + resume_context},
             *clean_history, {"role": "user", "content": goal}],
@@ -276,7 +297,8 @@ class AgentLoop:
             "superseded_expression": superseded_expression,
             "memory_recall_required": recall_required and self.memory_store is not None,
             "memory_recall_observed": False, "memory_recall_retry": False,
-            "recall_retry_pending": False}
+            "recall_retry_pending": False,
+            "stop_after_first_verified_step": bounded_first_step}
         try:
             outcome = await self.graph.ainvoke(initial, config={"recursion_limit": 2 * self.max_steps + 4})
         except Exception as exc:
