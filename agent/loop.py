@@ -270,6 +270,57 @@ class AgentLoop:
                                      "observation": {"ok": True, "matches": len(matches),
                                                      "total": len(records)}}]
             return result
+        # Resume an unchanged, fully tool-bound pending plan without asking the
+        # model to recreate or revise it. A changed goal follows the ordinary loop.
+        continuation = bool(re.search(
+            r"(继续|接着).{0,20}(完成|执行|处理).{0,24}(剩余|未完成|计划)|"
+            r"(继续|接着).{0,12}(剩余|未完成).{0,12}(步骤|任务)", goal))
+        changed_goal = any(word in goal for word in (
+            "更正", "修改计划", "改成", "换成", "不是", "新增", "增加", "取消", "替换"))
+        outstanding = [step for step in resumed.snapshot()
+                       if step["status"] == "pending"]
+        if (continuation and not changed_goal and outstanding
+                and all(step.get("expected_tool") in
+                        {"calculate", "mcp_reference_lookup", "utc_time", "list_tasks",
+                         "recall_memory"}
+                        and isinstance(step.get("expected_arguments"), dict)
+                        for step in outstanding)):
+            trace = []
+            audit = []
+            for step in outstanding:
+                name = step["expected_tool"]
+                arguments = step["expected_arguments"]
+                result = execute_tool(
+                    name, arguments, [],
+                    self.clock, task_store=self.task_store,
+                    memory_store=self.memory_store, mcp_client=self.mcp_client)
+                resumed.observe(name, result, arguments)
+                trace.append({"step": len(trace) + 1, "type": "tool",
+                              "name": name, "ok": result["ok"]})
+                if include_evidence:
+                    audit.append({"name": name, "arguments": arguments,
+                                  "observation": result})
+                if not result["ok"]:
+                    break
+            remaining = [step["id"] for step in resumed.snapshot()
+                         if step["status"] == "pending"]
+            completed = [step["id"] for step in resumed.snapshot()
+                         if step["status"] == "completed"]
+            status = "partial" if remaining else "completed"
+            answer = ("已验证完成步骤：" + "、".join(map(str, completed)) +
+                      ("；未完成步骤：" + "、".join(map(str, remaining)) if remaining
+                       else "；计划全部步骤已验证完成。"))
+            output = {"run_id": run_id, "status": status, "answer": answer,
+                      "trace": [{"step": 0, "type": "plan_resume_execution"}, *trace],
+                      "prompt_version": PROMPT_VERSION,
+                      "steps": len(trace), "plan": resumed.snapshot(),
+                      "plan_revision": resumed.revision,
+                      "plan_events": list(resumed.events),
+                      "plan_checkpoint": resumed.checkpoint()}
+            if include_evidence:
+                output["audit"] = audit
+                output["tasks"] = []
+            return output
         selected_tools = exposed_tools(goal, TOOL_SCHEMAS, strategy=self.skill_strategy)
         if resumed.revision:
             names = {t["function"]["name"] for t in selected_tools}
