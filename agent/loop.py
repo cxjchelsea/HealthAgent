@@ -341,7 +341,7 @@ class AgentLoop:
                     lines.append("步骤 " + str(step["id"]) + "：尚未完成。")
             lines.append("计划全部步骤已验证完成。" if not remaining else
                          "仍有未完成步骤：" + "、".join(map(str, remaining)) + "。")
-            answer = "\\n".join(lines)
+            answer = "\n".join(lines)
             output = {"run_id": run_id, "status": status, "answer": answer,
                       "trace": [{"step": 0, "type": "plan_resume_execution"}, *trace],
                       "prompt_version": PROMPT_VERSION,
