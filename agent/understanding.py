@@ -147,7 +147,7 @@ class UnderstandingService:
         messages = [{"role": "system", "content": POLICY},
                     {"role": "user", "content": json.dumps(compact, ensure_ascii=False)}]
         models = [self.strong_model] if use_strong else [self.light_model, self.strong_model]
-        failures = []
+        failures: list[str] = []
         for model_name in dict.fromkeys(models):
             start = time.monotonic()
             try:
