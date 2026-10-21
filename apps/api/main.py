@@ -167,18 +167,46 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
         decision_steps = 0
         try:
             existing_checkpoint = plan_store.load()
-            decider = agent_decider if agent_decider is not None else NativeToolDecision(settings)
-            result = await AgentLoop(decider, task_store=ConversationTaskStore(Session, cid),
-                memory_store=MemoryStore(Session, uid, write_allowed=body.memory_write_consent),
-                mcp_client=StdioMCPClient(), skill_strategy=settings.skill_strategy,
-                skill_budget_chars=settings.skill_budget_chars).run(body.content, history=context,
-                                      plan_checkpoint=existing_checkpoint)
+            interpretation = None
+            if settings.understanding_strategy not in {"direct", "structured"}:
+                raise UnderstandingError("invalid_understanding_strategy")
+            if settings.understanding_strategy == "structured":
+                service = UnderstandingService(
+                    HTTPUnderstandingModel(settings.model_provider, settings.model_base_url,
+                                           settings.model_api_key, settings.model_timeout_seconds,
+                                           settings.model_max_output_tokens),
+                    settings.understanding_light_model, settings.understanding_strong_model)
+                summary = [
+                    {"id": item.get("id"), "goal": item.get("goal"),
+                     "status": item.get("status"),
+                     "revision": existing_checkpoint.get("revision")}
+                    for item in (existing_checkpoint or {}).get("steps", [])[:8]]
+                parsed = await service.understand(UnderstandingContext(
+                    current_message=body.content, recent_completed_messages=context,
+                    current_plan_summary=summary))
+                interpretation = parsed["result"].model_dump()
+                if parsed["result"].clarification.required:
+                    result = {"run_id": turn_id, "status": "partial",
+                              "answer": parsed["result"].clarification.question,
+                              "trace": [{"step": 0, "type": "goal_clarification"}],
+                              "steps": 0}
+            if result is None:
+                decider = agent_decider if agent_decider is not None else NativeToolDecision(settings)
+                result = await AgentLoop(decider, task_store=ConversationTaskStore(Session, cid),
+                    memory_store=MemoryStore(Session, uid, write_allowed=body.memory_write_consent),
+                    mcp_client=StdioMCPClient(), skill_strategy=settings.skill_strategy,
+                    skill_budget_chars=settings.skill_budget_chars).run(body.content, history=context,
+                                          plan_checkpoint=existing_checkpoint,
+                                          understanding_result=interpretation)
             if result["status"] in {"completed", "partial"}:
                 answer, status = result["answer"], result["status"]
             else:
                 status = result["status"]
                 failure_code = result.get("failure_code") or status
             decision_steps = result.get("steps", 0)
+        except UnderstandingError as exc:
+            status, answer = "provider_error", ""
+            failure_code = exc.code
         except Exception as exc:
             log.warning("conversation Agent failed turn=%s class=%s", turn_id, type(exc).__name__)
             status, answer = "provider_error", ""
