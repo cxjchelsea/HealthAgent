@@ -70,3 +70,30 @@ def test_goal_state_change_requires_consistent_version(tmp_path):
         with Session.begin() as db:
             store.save_in_session(db, result, original)
     engine.dispose()
+
+def test_explicit_constraints_cannot_be_replaced_without_preflight(tmp_path):
+    from services.migrate import migrate
+    from services.db import Conversation
+    from agent.understanding import UnderstandingError
+    import pytest
+    url = f"sqlite:///{tmp_path/'constraint.db'}"
+    migrate(url)
+    engine, Session = database(url)
+    with Session.begin() as db:
+        conversation = Conversation(owner_id="owner")
+        db.add(conversation)
+        db.flush()
+        cid = conversation.id
+    store = ConversationGoalStore(Session, cid)
+    baseline = store.load()
+    original = UnderstandingResult.model_validate_json(proposal("new_goal", "安排三项", [
+        {"name": "limit", "value": "最多三项", "source": "explicit", "scope": "goal"}]))
+    with Session.begin() as db:
+        store.save_in_session(db, original, baseline)
+    current = store.load()
+    revision = UnderstandingResult.model_validate_json(proposal("revise", "安排两项", [
+        {"name": "limit", "value": "最多两项", "source": "explicit", "scope": "goal"}]))
+    with pytest.raises(UnderstandingError, match="goal_change_needs_confirmation"):
+        store.validate_before_execution(revision, current)
+    assert store.load() == current
+    engine.dispose()
