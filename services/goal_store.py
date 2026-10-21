@@ -17,6 +17,22 @@ class ConversationGoalStore:
                     "goal": json.loads(row.goal_json) if row.goal_json else None,
                     "pending": json.loads(row.pending_json) if row.pending_json else None}
 
+    def validate_before_execution(self, result: UnderstandingResult, previous: dict):
+        """Reject unsafe goal transitions before any Agent tool could run."""
+        kind = result.change.kind
+        if result.status != "understood":
+            return
+        if kind in {"add", "revise", "clarify_response"}:
+            if previous.get("goal") is None or result.goal is None:
+                raise UnderstandingError("missing_confirmed_goal")
+            old = GoalSpec.model_validate(previous["goal"])
+            proposed = result.goal
+            prior = {(entry.name, entry.scope): entry.value for entry in old.constraints
+                     if entry.source in {"explicit", "confirmed"}}
+            updated = {(entry.name, entry.scope): entry.value for entry in proposed.constraints}
+            if any(key not in updated or updated[key] != value for key, value in prior.items()):
+                raise UnderstandingError("goal_change_needs_confirmation")
+
     def save_in_session(self, db, result: UnderstandingResult, previous: dict):
         """Commit only validated proposals, CAS against the prior loaded revision.
 
