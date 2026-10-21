@@ -59,6 +59,8 @@ class Turn(Base):
     input_chars: Mapped[int] = mapped_column(Integer, default=0)
     output_chars: Mapped[int] = mapped_column(Integer, default=0)
     duration_ms: Mapped[int] = mapped_column(Integer, default=0)
+    failure_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    decision_steps: Mapped[int] = mapped_column(Integer, default=0)
 
 def engine_for(url):
     if url == "sqlite://":
