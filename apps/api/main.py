@@ -193,6 +193,7 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                     confirmed_constraints=previous_goal['goal'].get('constraints', []) if previous_goal['goal'] else [],
                     outstanding_clarification=(previous_goal['pending'] or {}).get('clarification', {}).get('question')))
                 parsed_result = parsed["result"]
+                goal_store.validate_before_execution(parsed_result, previous_goal)
                 interpretation = parsed_result.model_dump()
                 if parsed["result"].clarification.required:
                     result = {"run_id": turn_id, "status": "partial",
