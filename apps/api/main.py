@@ -127,6 +127,8 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
         began = time.monotonic()
         status, answer = "provider_error", ""
         result = None
+        failure_code = None
+        decision_steps = 0
         try:
             existing_checkpoint = plan_store.load()
             decider = agent_decider if agent_decider is not None else NativeToolDecision(settings)
@@ -139,9 +141,12 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                 answer, status = result["answer"], result["status"]
             else:
                 status = result["status"]
+                failure_code = result.get("failure_code") or status
+            decision_steps = result.get("steps", 0)
         except Exception as exc:
             log.warning("conversation Agent failed turn=%s class=%s", turn_id, type(exc).__name__)
             status, answer = "provider_error", ""
+            failure_code = "agent_exception"
         # Atomic local DB commit: never expose a successful message separately
         # from its corresponding plan checkpoint and turn terminal state.
         # External tool effects remain outside this transaction.
@@ -158,12 +163,33 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                 turn.state = status
                 turn.output_chars = len(answer)
                 turn.duration_ms = int((time.monotonic() - began) * 1000)
+                turn.failure_code = failure_code
+                turn.decision_steps = decision_steps
         except Exception:
             log.exception("conversation turn finalization failed turn=%s", turn_id)
             raise HTTPException(503, "turn_finalization_failed")
         if status not in {"completed", "partial"}:
-            raise HTTPException(503, "Agent run did not complete")
+            log.warning("Agent turn incomplete turn=%s status=%s reason=%s steps=%s duration_ms=%s",
+                        turn_id, status, failure_code or status, decision_steps,
+                        int((time.monotonic() - began) * 1000))
+            raise HTTPException(503, {"code": failure_code or status,
+                                      "turn_id": turn_id,
+                                      "status": status,
+                                      "decision_steps": decision_steps})
         return {**result, "conversation_id": cid, "message_id": assistant_id}
+
+    @app.get("/conversations/{cid}/turns/{turn_id}/diagnostics")
+    def turn_diagnostics(cid: str, turn_id: str, uid=Depends(user_id)):
+        """Owner-scoped bounded metadata, no prompts, messages or credentials."""
+        with Session() as db:
+            get_owned(db, cid, uid)
+            turn = db.get(Turn, turn_id)
+            if turn is None or turn.conversation_id != cid:
+                raise HTTPException(404, "Turn not found")
+            return {"turn_id": turn.id, "status": turn.state,
+                    "failure_code": turn.failure_code,
+                    "decision_steps": turn.decision_steps,
+                    "duration_ms": turn.duration_ms}
 
     @app.get("/healthz")
     def healthz():return {"status":"ok"}
