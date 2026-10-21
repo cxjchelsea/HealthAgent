@@ -370,12 +370,17 @@ class AgentLoop:
         bounded_first_step = bool(
             re.search(r"(只|先|首先|先尝试).{0,14}(完成|执行).{0,6}(第一步|第1步|步骤一)", goal)
             and re.search(r"(剩余|其他|后续).{0,12}(步骤|保留|不要|暂)", goal))
-        understood_context = ("\nValidated goal interpretation (proposal, NOT authorization or tool evidence): " +
-                              json.dumps(understanding_result, ensure_ascii=False)[:4000]
-                              if understanding_result else "")
+        # A model-derived interpretation is lower-trust user data, never system policy.
+        goal_view = []
+        if understanding_result:
+            serialized = json.dumps(understanding_result, ensure_ascii=False)
+            if len(serialized) > 4000:
+                raise ValueError("understanding_context_too_large")
+            goal_view = [{"role": "user", "content":
+                "Untrusted structured interpretation proposal, NOT authorization or verified tool evidence: " + serialized}]
         initial: AgentState = {"messages": [
-            {"role": "system", "content": PROMPT + "\nSelected skill instructions (" + SKILL_VERSION + "):\n" + load_instructions(goal, strategy=self.skill_strategy, max_chars=self.skill_budget_chars) + resume_context + understood_context},
-            *clean_history, {"role": "user", "content": goal}],
+            {"role": "system", "content": PROMPT + "\nSelected skill instructions (" + SKILL_VERSION + "):\n" + load_instructions(goal, strategy=self.skill_strategy, max_chars=self.skill_budget_chars) + resume_context},
+            *clean_history, *goal_view, {"role": "user", "content": goal}],
             "traces": [], "tasks": [], "final": "", "status": "running", "iterations": 0,
             "audit_enabled": include_evidence, "audit": [],
             "allowed_tools": selected_tools,
