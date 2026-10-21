@@ -43,8 +43,9 @@ def test_structured_understanding_passes_validated_goal_to_agent(tmp_path, monke
         assert response.status_code == 200
         assert response.json()["status"] == "completed"
         assert d.messages
-        assert "Validated goal interpretation" in d.messages[0]["content"]
-        assert "do not save" in d.messages[0]["content"]
+        assert "Untrusted structured interpretation proposal" in d.messages[-2]["content"]
+        assert d.messages[-2]["role"] == "user"
+        assert "do not save" in d.messages[-2]["content"]
 
 def test_structured_clarification_stops_before_agent_tools(tmp_path, monkeypatch):
     async def fake_complete(self, *, messages, model):
