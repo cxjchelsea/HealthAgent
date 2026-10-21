@@ -54,7 +54,7 @@ class UnderstandingResult(BaseModel):
     def consistent(self):
         if (self.status == "clarification_required") != self.clarification.required:
             raise ValueError("clarification_status_mismatch")
-        if self.status == "understood" and self.change.kind not in ("chat", "cancel_request", "query_status") and self.goal is None:
+        if self.status == "understood" and self.change.kind in ("new_goal", "add", "revise", "clarify_response") and self.goal is None:
             raise ValueError("missing_goal")
         return self
 
