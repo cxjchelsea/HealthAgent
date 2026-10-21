@@ -97,3 +97,38 @@ def test_explicit_constraints_cannot_be_replaced_without_preflight(tmp_path):
         store.validate_before_execution(revision, current)
     assert store.load() == current
     engine.dispose()
+
+def test_pending_clarification_can_be_resumed_with_goal(tmp_path):
+    from services.migrate import migrate
+    from services.db import Conversation
+    url = f"sqlite:///{tmp_path/'pending.db'}"
+    migrate(url)
+    engine, Session = database(url)
+    with Session.begin() as db:
+        convo = Conversation(owner_id="owner")
+        db.add(convo)
+        db.flush()
+        cid = convo.id
+    store = ConversationGoalStore(Session, cid)
+    pending = UnderstandingResult.model_validate({
+        "status": "clarification_required",
+        "goal": {"objective": "整理计划", "subgoals": [],
+                 "constraints": [], "success_criteria": []},
+        "change": {"kind": "new_goal", "target_goal_id": None, "delta": None},
+        "clarification": {"required": True, "reason_code": "missing_critical_constraint",
+                          "question": "具体是哪天？"},
+        "schema_version": "s25-01-v1"
+    })
+    with Session.begin() as db:
+        store.save_in_session(db, pending, store.load())
+    before = store.load()
+    assert before["pending"]["clarification"]["question"] == "具体是哪天？"
+    updated = UnderstandingResult.model_validate_json(
+        proposal("clarify_response", "整理明天计划"))
+    store.validate_before_execution(updated, before)
+    with Session.begin() as db:
+        store.save_in_session(db, updated, before)
+    after = store.load()
+    assert after["pending"] is None
+    assert after["goal"]["objective"] == "整理明天计划"
+    engine.dispose()
