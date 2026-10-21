@@ -282,8 +282,11 @@ class AgentLoop:
         except Exception as exc:
             from agent.providers import ModelUnavailable
             if isinstance(exc, ModelUnavailable):
+                from agent.decision import ToolDecisionError
+                safe_code = exc.code if isinstance(exc, ToolDecisionError) else "model_unavailable"
                 return {"run_id": run_id, "status": "provider_error", "answer": "",
-                        "trace": [], "prompt_version": PROMPT_VERSION}
+                        "trace": [], "prompt_version": PROMPT_VERSION,
+                        "failure_code": safe_code}
             raise
         result = {"run_id": run_id, "status": outcome["status"],
                   "answer": outcome["final"], "trace": outcome["traces"],
