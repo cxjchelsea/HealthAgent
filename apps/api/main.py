@@ -28,6 +28,7 @@ class ChatIn(BaseModel):
 
 class GoalIn(BaseModel):
     content: str = Field(min_length=1)
+    conversation_id: str | None = None
 
 class ConversationOut(BaseModel):
     id: str
@@ -73,7 +74,28 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                    settings.model_max_output_tokens),
             settings.understanding_light_model, settings.understanding_strong_model)
         try:
-            outcome = await service.understand(UnderstandingContext(current_message=body.content))
+            history = []
+            plan_summary = []
+            if body.conversation_id is not None:
+                with Session() as db:
+                    get_owned(db, body.conversation_id, uid)
+                    rows = db.scalars(select(Message).where(
+                        Message.conversation_id == body.conversation_id,
+                        Message.status == "completed"
+                    ).order_by(Message.created_at, Message.id)).all()
+                    history = build_context(rows, body.content,
+                        max_messages=settings.max_history_messages,
+                        max_chars=settings.context_max_chars)
+                snapshot = ConversationPlanStore(Session, body.conversation_id).load()
+                if snapshot:
+                    plan_summary = [
+                        {"id": step.get("id"), "goal": step.get("goal"),
+                         "status": step.get("status"), "revision": snapshot.get("revision")}
+                        for step in snapshot.get("steps", [])[:8]
+                    ]
+            outcome = await service.understand(UnderstandingContext(
+                current_message=body.content, recent_completed_messages=history,
+                current_plan_summary=plan_summary))
             return {"understanding": outcome["result"].model_dump(),
                     "model_role": outcome["model_role"], "model": outcome["model"],
                     "duration_ms": outcome["duration_ms"], "escalated": outcome["escalated"]}
