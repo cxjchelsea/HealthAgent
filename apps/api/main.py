@@ -169,9 +169,17 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
             log.exception("conversation turn finalization failed turn=%s", turn_id)
             raise HTTPException(503, "turn_finalization_failed")
         if status not in {"completed", "partial"}:
-            log.warning("Agent turn incomplete turn=%s status=%s reason=%s steps=%s duration_ms=%s",
+            # Only allowlisted metadata; never log messages, arguments or responses.
+            safe_trace = [
+                {"type": event.get("type"), "step": event.get("step"),
+                 "tool": event.get("name"), "ok": event.get("ok")}
+                for event in (result or {}).get("trace", [])[-20:]
+                if event.get("type") in {"decision", "tool", "step_limit",
+                                         "tool_limit", "partial_first_step_verified"}
+            ]
+            log.warning("Agent turn incomplete turn=%s status=%s reason=%s steps=%s duration_ms=%s trace=%s",
                         turn_id, status, failure_code or status, decision_steps,
-                        int((time.monotonic() - began) * 1000))
+                        int((time.monotonic() - began) * 1000), safe_trace)
             raise HTTPException(503, {"code": failure_code or status,
                                       "turn_id": turn_id,
                                       "status": status,
