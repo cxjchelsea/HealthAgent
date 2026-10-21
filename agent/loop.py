@@ -21,6 +21,7 @@ class AgentState(TypedDict):
     tasks: list[str]
     final: str
     status: str
+    termination_reason: str | None
     iterations: int
     audit_enabled: bool
     audit: list[dict]
@@ -75,7 +76,8 @@ class AgentLoop:
                 return {"iterations": iteration,
                         "final": "尚未核实长期记忆：模型未调用 recall_memory，"
                                  "不能据此断言已保存的信息不存在。请在记忆管理面板核对 Key。",
-                        "status": "partial", "traces": state["traces"] + [{
+                        "status": "partial", "termination_reason": "memory_recall_unverified",
+                        "traces": state["traces"] + [{
                             "step": iteration, "type": "memory_recall_unverified"}]}
             pending = [s["id"] for s in state["plan"].snapshot()
                        if s["status"] != "completed"]
@@ -93,15 +95,20 @@ class AgentLoop:
                 final = ("计划尚未完成（未验证步骤：" + ", ".join(map(str, pending)) +
                          "）。以下是模型当前回复，不代表全部完成。\n" + final)
             return {"iterations": iteration, "final": final,
-                    "status": "partial" if is_partial else "completed", "traces": state["traces"] + [
+                    "status": "partial" if is_partial else "completed",
+                    "termination_reason": ("superseded_evidence" if superseded else
+                                           "pending_plan_steps" if pending else "model_final"),
+                    "traces": state["traces"] + [
                         {"step": iteration, "type": "final", "chars": len(decision.content)}]}
         if iteration >= self.max_steps:
             return {"iterations": iteration, "final": "Agent reached its decision step limit.",
-                    "status": "step_limit", "traces": state["traces"] + [
+                    "status": "step_limit", "termination_reason": "decision_budget_exhausted",
+                "traces": state["traces"] + [
                         {"step": iteration, "type": "step_limit"}]}
         if len(decision.tool_calls) > 4:
             return {"iterations": iteration, "final": "Model requested too many tools.",
-                    "status": "tool_limit", "traces": state["traces"] + [
+                    "status": "tool_limit", "termination_reason": "tool_fanout_exceeded",
+                "traces": state["traces"] + [
                         {"step": iteration, "type": "tool_limit"}]}
         # OpenAI and Ollama support tool_call syntax but differ on tool result metadata.
         assistant_calls = [{"id": c["id"], "type": "function", "function": {
@@ -202,6 +209,7 @@ class AgentLoop:
             remaining = [step["id"] for step in steps if step["status"] == "pending"]
             update.update({
                 "status": "partial",
+                "termination_reason": "bounded_partial_execution",
                 "final": ("已验证完成计划的第一步；其余步骤 "
                           + "、".join(str(i) for i in remaining)
                           + " 尚未完成，已保留在计划中。"),
@@ -244,6 +252,7 @@ class AgentLoop:
             if len(records) > 100:
                 return {"run_id": run_id, "status": "partial",
                         "answer": "长期记忆条目过多，请在记忆管理面板按 Key 查询。",
+                        "termination_reason": "memory_lookup_limit",
                         "trace": [{"step": 1, "type": "memory_lookup_limit"}],
                         "prompt_version": PROMPT_VERSION}
             # Exact literal matches are authoritative; a fuzzy semantic match is not.
@@ -261,7 +270,8 @@ class AgentLoop:
                           "。请指定 Key 查询，或在记忆管理面板核对。")
             else:
                 answer = "已查询当前用户的长期记忆库，目前没有保存的记录。"
-            result = {"run_id": run_id, "status": "completed", "answer": answer,
+            result = {"run_id": run_id, "status": "completed",
+                      "termination_reason": "verified_memory_index", "answer": answer,
                       "trace": [{"step": 1, "type": "memory_index_lookup",
                                  "matches": len(matches), "total": len(records)}],
                       "prompt_version": PROMPT_VERSION}
@@ -342,7 +352,10 @@ class AgentLoop:
             lines.append("计划全部步骤已验证完成。" if not remaining else
                          "仍有未完成步骤：" + "、".join(map(str, remaining)) + "。")
             answer = "\n".join(lines)
-            output = {"run_id": run_id, "status": status, "answer": answer,
+            output = {"run_id": run_id, "status": status,
+                      "termination_reason": ("pending_plan_steps" if remaining else
+                                             "verified_plan_continuation"),
+                      "answer": answer,
                       "trace": [{"step": 0, "type": "plan_resume_execution"}, *trace],
                       "prompt_version": PROMPT_VERSION,
                       "steps": len(trace), "plan": resumed.snapshot(),
@@ -372,7 +385,8 @@ class AgentLoop:
         initial: AgentState = {"messages": [
             {"role": "system", "content": PROMPT + "\nSelected skill instructions (" + SKILL_VERSION + "):\n" + load_instructions(goal, strategy=self.skill_strategy, max_chars=self.skill_budget_chars) + resume_context},
             *clean_history, {"role": "user", "content": goal}],
-            "traces": [], "tasks": [], "final": "", "status": "running", "iterations": 0,
+            "traces": [], "tasks": [], "final": "", "status": "running",
+            "termination_reason": None, "iterations": 0,
             "audit_enabled": include_evidence, "audit": [],
             "allowed_tools": selected_tools,
             "plan": resumed, "last_success": None,
@@ -389,11 +403,13 @@ class AgentLoop:
             if isinstance(exc, ModelUnavailable):
                 from agent.decision import ToolDecisionError
                 safe_code = exc.code if isinstance(exc, ToolDecisionError) else "model_unavailable"
-                return {"run_id": run_id, "status": "provider_error", "answer": "",
+                return {"run_id": run_id, "status": "provider_error",
+                        "termination_reason": safe_code, "answer": "",
                         "trace": [], "prompt_version": PROMPT_VERSION,
                         "failure_code": safe_code}
             raise
         result = {"run_id": run_id, "status": outcome["status"],
+                  "termination_reason": outcome["termination_reason"],
                   "answer": outcome["final"], "trace": outcome["traces"],
                   "prompt_version": PROMPT_VERSION, "steps": outcome["iterations"],
                   "plan": outcome["plan"].snapshot(), "plan_revision": outcome["plan"].revision,
