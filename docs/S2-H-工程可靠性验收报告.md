@@ -13,7 +13,7 @@
 | H02 | 同一 `client_request_id` HTTP 409、不产生重复 Turn | `tests/test_s2_h_reliability_acceptance.py::test_h02_duplicate_id_does_not_create_second_turn` | SQLite API/DB 实证 |
 | H03 | 跨用户访问会话 404 | `tests/test_s2d_api_multiturn.py::test_api_multiturn_pending_and_completed_correction` | 两个测试身份 |
 | H04 | 认证关闭演示模式时无 token 返回 401 | `tests/test_s2_memory_management_ui.py::test_memory_management_api_exact_keys_and_isolation`、`tests/test_s2_turn_diagnostics.py` | 测试 Bearer 配置 |
-| H05 | 记忆写入需授权，不得以文本同意替代工具权限 | 既有 `tests/test_s2b5*` 及正式 Memory API 测试；正式用例须核对 consent=false 时 `save_memory` 的失败观察和 DB 不变 | 待精确收敛独立 H05 用例证据 |
+| H05 | 记忆写入需授权，不得以文本同意替代工具权限 | `tests/test_s2_h05_memory_consent.py`：真实 Conversation API 分别以 consent=false/true 调用 save_memory、验证 DB 不变/更新 | SQLite API，需最新 CI 验证 |
 | H06 | 计划持久化失败不可泄露成功/部分提交 | `tests/test_s2_h_reliability_acceptance.py::test_h06_checkpoint_commit_failure_never_leaks_success` | 故障注入 SQLite；失败后 Turn 仍 running，要求 H07 人工恢复，不是自动恢复 |
 | H07 | Worker 确认停止后，dry run 不修改数据库，apply 将超龄 running 标 interrupted，不重放 | `tests/test_s2_h_reliability_acceptance.py::test_h07_dry_run_then_manual_recovery_is_non_replaying` | 仿真遗留 running Turn；并非物理 kill -9 |
 | H08 | 拒绝无效/重复 ID、缺失成功证据的 Checkpoint | `tests/test_s2d_resume.py::test_invalid_checkpoint_fails_closed`、`tests/test_s2d_stable_step_ids.py` | PlanLedger 单元/SQLite |
@@ -37,5 +37,5 @@ python -m pytest -v tests/test_s2_h_reliability_acceptance.py tests/test_s2d_con
 - 最新 PR #14 的精确 HEAD CI 必须最终为 **SUCCESS** 才能确认自动化回归通过；不得以在途 CI 当作通过。
 - H01 PostgreSQL 真实竞争，以及 H07 真实进程崩溃/外部副作用不重放，仍为更高级物理验收范围。
 - H06 注入提交失败后留有 running Turn 是符合现有原子回滚的状态，但需要显式人工恢复；不是系统自动清理。
-- H05 不能只验证 `/memories` API 权限，还需验证 Agent 内保存记忆必须有请求级 consent，才能独立判定 H05 全项 PASS。
+- H05 独立用例覆盖请求级 consent 的数据库不变性；仍不能替代真实模型能否自主选择正确工具的评测。
 - S2 总体完成须结合 S2-A–D 真实模型与人工验收证据，不能仅凭 H 类自动化通过宣布 S2 CLOSED。
