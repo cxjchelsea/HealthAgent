@@ -37,6 +37,9 @@ def test_continue_pending_steps_without_replanning():
         plan_checkpoint=original_checkpoint(), include_evidence=True))
     assert out["status"] == "completed"
     assert out["plan_revision"] == 1
+    assert "retrieval-augmented generation" in out["answer"]
+    assert "81" in out["answer"]
+    assert "此前已验证完成" in out["answer"]
     assert [s["id"] for s in out["plan"]] == [1, 2, 3]
     assert all(s["status"] == "completed" for s in out["plan"])
     assert [t["name"] for t in out["trace"] if t["type"] == "tool"] == [
@@ -56,6 +59,8 @@ def test_failed_pending_tool_keeps_checkpoint_for_retry():
     assert out["status"] == "partial"
     assert [x["status"] for x in out["plan"]] == ["completed", "pending", "pending"]
     assert out["plan_revision"] == 1
+    assert "步骤 2：尚未完成" in out["answer"]
+    assert "81" not in out["answer"]
     assert "tool_failed" in [x["event"] for x in out["plan_events"]]
 
 
