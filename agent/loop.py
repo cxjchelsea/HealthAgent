@@ -33,6 +33,7 @@ class AgentState(TypedDict):
     memory_recall_observed: bool
     memory_recall_retry: bool
     recall_retry_pending: bool
+    stop_after_first_verified_step: bool
 
 class AgentLoop:
     def __init__(self, decider: Any, max_steps: int = 6, clock=None, task_store=None, memory_store=None, mcp_client=None, skill_strategy='dynamic', skill_budget_chars=600):
@@ -51,7 +52,7 @@ class AgentLoop:
         flow.add_node("tools", self._tools)
         flow.set_entry_point("decide")
         flow.add_conditional_edges("decide", self._next, {"tools": "tools", "done": END, "retry": "decide"})
-        flow.add_edge("tools", "decide")
+        flow.add_conditional_edges("tools", self._after_tools, {"done": END, "decide": "decide"})
         self.graph = flow.compile()
 
     async def _decide(self, state: AgentState) -> dict:
@@ -115,6 +116,9 @@ class AgentLoop:
         if state["status"] != "running":
             return "done"
         return "retry" if state["recall_retry_pending"] else "tools"
+
+    def _after_tools(self, state: AgentState) -> str:
+        return "done" if state["status"] != "running" else "decide"
 
     async def _tools(self, state: AgentState) -> dict:
         last = state["messages"][-1]
@@ -186,10 +190,24 @@ class AgentLoop:
             if state["audit_enabled"]:
                 audit.append({"step": state["iterations"], "name": name,
                               "arguments": function.get("arguments"), "observation": result})
-        return {"messages": state["messages"] + observations,
-                "tasks": tasks, "traces": traces, "audit": audit,
-                "plan": state["plan"], "last_success": state["last_success"],
-                "memory_recall_observed": state["memory_recall_observed"]}
+        update = {"messages": state["messages"] + observations,
+                  "tasks": tasks, "traces": traces, "audit": audit,
+                  "plan": state["plan"], "last_success": state["last_success"],
+                  "memory_recall_observed": state["memory_recall_observed"]}
+        # Stop only for an explicitly limited first step with verified evidence.
+        steps = state["plan"].snapshot()
+        if (state["stop_after_first_verified_step"] and len(steps) >= 2
+                and steps[0]["status"] == "completed"
+                and any(step["status"] == "pending" for step in steps[1:])):
+            remaining = [step["id"] for step in steps if step["status"] == "pending"]
+            update.update({
+                "status": "partial",
+                "final": ("已验证完成计划的第一步；其余步骤 "
+                          + "、".join(str(i) for i in remaining)
+                          + " 尚未完成，已保留在计划中。"),
+                "traces": traces + [{"step": state["iterations"],
+                                     "type": "partial_first_step_verified"}]})
+        return update
 
     async def run(self, goal: str, *, include_evidence: bool = False,
                   history: list[dict] | None = None,
@@ -252,6 +270,89 @@ class AgentLoop:
                                      "observation": {"ok": True, "matches": len(matches),
                                                      "total": len(records)}}]
             return result
+        # Resume an unchanged, fully tool-bound pending plan without asking the
+        # model to recreate or revise it. A changed goal follows the ordinary loop.
+        continuation = bool(re.search(
+            r"(继续|接着).{0,20}(完成|执行|处理).{0,24}(剩余|未完成|计划)|"
+            r"(继续|接着).{0,12}(剩余|未完成).{0,12}(步骤|任务)", goal))
+        changed_goal = any(word in goal for word in (
+            "更正", "修改计划", "改成", "换成", "不是", "新增", "增加", "取消", "替换"))
+        outstanding = [step for step in resumed.snapshot()
+                       if step["status"] == "pending"]
+        if (continuation and not changed_goal and outstanding
+                and all(step.get("expected_tool") in
+                        {"calculate", "mcp_reference_lookup", "utc_time", "list_tasks",
+                         "recall_memory"}
+                        and isinstance(step.get("expected_arguments"), dict)
+                        for step in outstanding)):
+            trace = []
+            audit = []
+            delivered = []
+            for step in outstanding:
+                name = step["expected_tool"]
+                arguments = step["expected_arguments"]
+                result = execute_tool(
+                    name, arguments, [],
+                    self.clock, task_store=self.task_store,
+                    memory_store=self.memory_store, mcp_client=self.mcp_client)
+                resumed.observe(name, result, arguments)
+                # Preserve only the bounded, tool-observed output for delivery.
+                # Never synthesize results for previously completed steps.
+                if result.get("ok"):
+                    if name == "calculate" and "value" in result:
+                        detail = str(result["value"])
+                    elif name == "mcp_reference_lookup":
+                        detail = ("来源：" + str(result.get("source", "未提供"))
+                                  + "；资料：" + str(result.get("definition",
+                                      result.get("value", "工具未提供可展示内容"))))
+                    elif name == "utc_time":
+                        detail = str(result.get("utc", "工具未提供时间"))
+                    elif name == "list_tasks":
+                        detail = json.dumps(result.get("tasks", []), ensure_ascii=False)
+                    elif name == "recall_memory":
+                        detail = (str(result.get("value"))
+                                  if result.get("found") else "没有找到此 Key")
+                    else:
+                        detail = "工具成功，但没有可展示结果"
+                    delivered.append({"step_id": step["id"], "goal": step["goal"],
+                                      "tool": name, "result": detail[:1200]})
+                trace.append({"step": len(trace) + 1, "type": "tool",
+                              "name": name, "ok": result["ok"]})
+                if include_evidence:
+                    audit.append({"name": name, "arguments": arguments,
+                                  "observation": result})
+                if not result["ok"]:
+                    break
+            remaining = [step["id"] for step in resumed.snapshot()
+                         if step["status"] == "pending"]
+            completed = [step["id"] for step in resumed.snapshot()
+                         if step["status"] == "completed"]
+            status = "partial" if remaining else "completed"
+            lines = ["计划执行结果："]
+            for step in resumed.snapshot():
+                item = next((d for d in delivered if d["step_id"] == step["id"]), None)
+                if item is not None:
+                    lines.append("步骤 " + str(step["id"]) + "（" +
+                                 step["goal"] + "）： " + item["result"])
+                elif step["status"] == "completed":
+                    lines.append("步骤 " + str(step["id"]) +
+                                 "：此前已验证完成；本次没有其原始输出，不能重述具体结果。")
+                else:
+                    lines.append("步骤 " + str(step["id"]) + "：尚未完成。")
+            lines.append("计划全部步骤已验证完成。" if not remaining else
+                         "仍有未完成步骤：" + "、".join(map(str, remaining)) + "。")
+            answer = "\n".join(lines)
+            output = {"run_id": run_id, "status": status, "answer": answer,
+                      "trace": [{"step": 0, "type": "plan_resume_execution"}, *trace],
+                      "prompt_version": PROMPT_VERSION,
+                      "steps": len(trace), "plan": resumed.snapshot(),
+                      "plan_revision": resumed.revision,
+                      "plan_events": list(resumed.events),
+                      "plan_checkpoint": resumed.checkpoint()}
+            if include_evidence:
+                output["audit"] = audit
+                output["tasks"] = []
+            return output
         selected_tools = exposed_tools(goal, TOOL_SCHEMAS, strategy=self.skill_strategy)
         if resumed.revision:
             names = {t["function"]["name"] for t in selected_tools}
@@ -265,6 +366,9 @@ class AgentLoop:
         recall_required = any(phrase in goal for phrase in (
             "还记得", "记得我", "之前保存", "之前记住", "保存的",
             "记住的", "测试偏好是什么", "测试偏好吗"))
+        bounded_first_step = bool(
+            re.search(r"(只|先|首先|先尝试).{0,14}(完成|执行).{0,6}(第一步|第1步|步骤一)", goal)
+            and re.search(r"(剩余|其他|后续).{0,12}(步骤|保留|不要|暂)", goal))
         initial: AgentState = {"messages": [
             {"role": "system", "content": PROMPT + "\nSelected skill instructions (" + SKILL_VERSION + "):\n" + load_instructions(goal, strategy=self.skill_strategy, max_chars=self.skill_budget_chars) + resume_context},
             *clean_history, {"role": "user", "content": goal}],
@@ -276,14 +380,18 @@ class AgentLoop:
             "superseded_expression": superseded_expression,
             "memory_recall_required": recall_required and self.memory_store is not None,
             "memory_recall_observed": False, "memory_recall_retry": False,
-            "recall_retry_pending": False}
+            "recall_retry_pending": False,
+            "stop_after_first_verified_step": bounded_first_step}
         try:
             outcome = await self.graph.ainvoke(initial, config={"recursion_limit": 2 * self.max_steps + 4})
         except Exception as exc:
             from agent.providers import ModelUnavailable
             if isinstance(exc, ModelUnavailable):
+                from agent.decision import ToolDecisionError
+                safe_code = exc.code if isinstance(exc, ToolDecisionError) else "model_unavailable"
                 return {"run_id": run_id, "status": "provider_error", "answer": "",
-                        "trace": [], "prompt_version": PROMPT_VERSION}
+                        "trace": [], "prompt_version": PROMPT_VERSION,
+                        "failure_code": safe_code}
             raise
         result = {"run_id": run_id, "status": outcome["status"],
                   "answer": outcome["final"], "trace": outcome["traces"],
