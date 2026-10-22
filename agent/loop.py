@@ -39,7 +39,7 @@ class AgentState(TypedDict):
     stop_after_first_verified_step: bool
 
 class AgentLoop:
-    def __init__(self, decider: Any, max_steps: int = 6, clock=None, task_store=None, memory_store=None, mcp_client=None, skill_strategy='dynamic', skill_budget_chars=600):
+    def __init__(self, decider: Any, max_steps: int = 6, clock=None, task_store=None, memory_store=None, mcp_client=None, skill_strategy='dynamic', skill_budget_chars=600, attempt_journal=None, attempt_session_factory=None, blocked_side_effects=False):
         if max_steps < 1 or max_steps > 20:
             raise ValueError("max_steps must be 1..20")
         self.decider = decider
@@ -50,6 +50,9 @@ class AgentLoop:
         self.mcp_client = mcp_client
         self.skill_strategy = skill_strategy
         self.skill_budget_chars = skill_budget_chars
+        self.attempt_journal = attempt_journal
+        self.attempt_session_factory = attempt_session_factory
+        self.blocked_side_effects = blocked_side_effects
         flow = StateGraph(AgentState)
         flow.add_node("decide", self._decide)
         flow.add_node("tools", self._tools)
@@ -134,7 +137,21 @@ class AgentLoop:
         for index, call in enumerate(last.get("tool_calls", [])[:4]):
             function = call["function"]
             name = function.get("name")
-            if name not in {tool["function"]["name"] for tool in state["allowed_tools"]}:
+            attempt_step_id = None
+            if name not in {"propose_plan", "revise_plan", "complete_plan_step"}:
+                match = [st for st in state["plan"].snapshot()
+                         if st.get("status") == "pending"
+                         and st.get("expected_tool") == name
+                         and st.get("expected_arguments") == function.get("arguments")]
+                if len(match) == 1:
+                    attempt_step_id = match[0]["id"]
+            prepared = make_attempt(state["run_id"], name, function.get("arguments"),
+                                    {"ok": False, "error": "unconfirmed"}, attempt_step_id)
+            if self.attempt_journal is not None:
+                self.attempt_journal.begin(self.attempt_session_factory, prepared)
+            if self.blocked_side_effects and name in {"create_task", "save_memory"}:
+                result = {"ok": False, "error": "unresolved_prior_side_effect"}
+            elif name not in {tool["function"]["name"] for tool in state["allowed_tools"]}:
                 result = {"ok": False, "error": "tool_not_exposed"}
             elif name in {"propose_plan", "revise_plan", "complete_plan_step"}:
                 try:
@@ -186,16 +203,12 @@ class AgentLoop:
                                           "in invalidate_step_ids; preserve other completed steps.")
                 else:
                     result["guidance"] = "Retry with current revision or omit expected_revision, preserving verified steps."
-            evidence_step_id = None
-            if name not in {"propose_plan", "revise_plan", "complete_plan_step"}:
-                matches = [st for st in state["plan"].snapshot()
-                           if st.get("expected_tool") == name
-                           and st.get("expected_arguments") == function.get("arguments")]
-                if len(matches) == 1:
-                    evidence_step_id = matches[0]["id"]
-            attempts.append(make_attempt(state["run_id"], name,
-                                         function.get("arguments"), result,
-                                         evidence_step_id))
+            finished = make_attempt(state["run_id"], name,
+                                    function.get("arguments"), result, attempt_step_id)
+            finished["attempt_id"] = prepared["attempt_id"]
+            if self.attempt_journal is not None:
+                self.attempt_journal.finish(self.attempt_session_factory, finished)
+            attempts.append(finished)
             observations.append({"role": "tool", "tool_name": name,
                                  "tool_call_id": call["id"],
                                  "content": json.dumps(result, ensure_ascii=False)})
@@ -308,12 +321,20 @@ class AgentLoop:
             for step in outstanding:
                 name = step["expected_tool"]
                 arguments = step["expected_arguments"]
+                prepared = make_attempt(run_id, name, arguments,
+                                        {"ok": False, "error": "unconfirmed"}, step["id"])
+                if self.attempt_journal is not None:
+                    self.attempt_journal.begin(self.attempt_session_factory, prepared)
                 result = execute_tool(
                     name, arguments, [],
                     self.clock, task_store=self.task_store,
                     memory_store=self.memory_store, mcp_client=self.mcp_client)
                 resumed.observe(name, result, arguments)
-                attempts.append(make_attempt(run_id, name, arguments, result, step["id"]))
+                finished = make_attempt(run_id, name, arguments, result, step["id"])
+                finished["attempt_id"] = prepared["attempt_id"]
+                if self.attempt_journal is not None:
+                    self.attempt_journal.finish(self.attempt_session_factory, finished)
+                attempts.append(finished)
                 # Preserve only the bounded, tool-observed output for delivery.
                 # Never synthesize results for previously completed steps.
                 if result.get("ok"):
