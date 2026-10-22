@@ -90,3 +90,41 @@ def test_native_loop_semantic_exposure_each_decision():
     assert len(exposures) == 2
     assert exposures[0]["strategy"] == "semantic"
     assert result["trace"][-1]["type"] == "final"
+
+
+def test_typed_unavailability_and_bound_step_candidates():
+    selection = select_tool_exposure(
+        "Please continue the previous task", TOOL_SCHEMAS, strategy="semantic",
+        active_step_tools=("mcp_reference_lookup", "create_task", "host_shell"),
+        unavailable_tools=("mcp_reference_lookup",),
+    )
+    assert "mcp_reference_lookup" not in _names(selection)
+    assert "create_task" not in _names(selection)
+    assert "host_shell" not in _names(selection)
+
+
+def test_unavailable_mcp_causes_next_decision_exposure_change():
+    import asyncio
+    from agent.decision import Decision
+    from agent.loop import AgentLoop
+
+    class Probe:
+        def __init__(self):
+            self.visible = []
+
+        async def decide(self, messages, tools):
+            names = tuple(t["function"]["name"] for t in tools)
+            self.visible.append(names)
+            if len(self.visible) == 1:
+                return Decision("", [{"id": "mcp1", "name": "mcp_reference_lookup",
+                                      "arguments": {"term": "MCP"}}])
+            return Decision("Reference service unavailable", [])
+
+    probe = Probe()
+    loop = AgentLoop(probe, skill_strategy="semantic", mcp_client=None)
+    output = asyncio.run(loop.run("Please find a reference for an engineering term"))
+    assert output["status"] == "completed"
+    assert "mcp_reference_lookup" in probe.visible[0]
+    assert "mcp_reference_lookup" not in probe.visible[1]
+    assert len([x for x in output["trace"] if x["type"] == "tool_exposure"]) == 2
+    assert any(x["type"] == "tool" and x["ok"] is False for x in output["trace"])
