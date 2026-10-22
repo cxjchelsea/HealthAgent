@@ -79,7 +79,7 @@ class ToolExposureDecision:
 def select_tool_exposure(
     goal: str, schemas: list[dict], *, strategy: str = "dynamic",
     prior_observation: dict[str, Any] | None = None,
-    required_tools: tuple[str, ...] = (),
+    authorized_write_tools: tuple[str, ...] = (),
 ) -> ToolExposureDecision:
     if strategy not in ("dynamic", "all", "semantic"):
         raise ValueError("Unsupported skill strategy")
@@ -93,12 +93,11 @@ def select_tool_exposure(
         legacy_names = {name for skill in select_skills(goal) for name in skill.tool_names}
         eligible &= legacy_names
     # The semantic trial exposes all currently registered read-only/plan tools
-    # and retains the existing guarded write exposure rule. This is an
+    # and requires trusted, explicit authorization for write exposure. This is an
     # experimental baseline, NOT learned semantic preselection.
     elif strategy == "semantic":
         guarded_writes = {"create_task", "save_memory"}
-        legacy_names = {name for skill in select_skills(goal) for name in skill.tool_names}
-        eligible -= guarded_writes - legacy_names
+        eligible -= guarded_writes - (guarded_writes & set(authorized_write_tools))
     selected = tuple(item["function"]["name"] for item in schemas
                      if item["function"]["name"] in eligible)
     active = tuple(skill.name for skill in SKILLS
