@@ -111,7 +111,6 @@ def diagnostic_projection(value):
     return {"kind": value.change.kind, "status": value.status,
             "clarification_required": value.clarification.required,
             "clarification_reason": value.clarification.reason_code,
-            "execution_intent": value.execution_intent,
             "constraint_count": len(goal.constraints) if goal else 0,
             "subgoal_count": len(goal.subgoals) if goal else 0,
             "success_criteria_count": len(goal.success_criteria) if goal else 0}
