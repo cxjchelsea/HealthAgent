@@ -71,7 +71,7 @@ def test_step_completion_links_only_real_matching_persisted_attempt(tmp_path):
             db, plan, "completed", None, [record])
     linked = AgentTaskStateStore("c1").history(Session)
     assert any(e["step_id"] == 1 and e["attempt_id"] == record["attempt_id"]
-               for e in linked)
+               for e in linked), linked
     engine.dispose()
 
 
