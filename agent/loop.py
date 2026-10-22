@@ -89,6 +89,14 @@ class AgentLoop:
                                  and s.get("expected_arguments") == {"expression": state["superseded_expression"]}
                                  for s in state["plan"].snapshot())]
             unresolved = state["unresolved_tool_failures"]
+            verified_replan = (state["plan"].revision > 1
+                               and bool(state["plan"].snapshot())
+                               and all(step["status"] == "completed"
+                                       for step in state["plan"].snapshot())
+                               and any(event.get("event") == "plan_revised"
+                                       for event in state["plan"].events))
+            if verified_replan:
+                unresolved = []
             is_partial = bool(pending or superseded or unresolved)
             final = decision.content
             if superseded:
