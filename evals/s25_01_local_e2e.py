@@ -45,6 +45,11 @@ def exercise(settings):
             for index, utterance in enumerate(turns):
                 start = time.perf_counter()
                 try:
+                    if index and details[-1].get("case") == group and details[-1].get("http_status") != 200:
+                        details.append({"case": group, "turn": index+1,
+                                        "elapsed_ms": 0, "status": "blocked_by_prior_failure",
+                                        "code": "prior_turn_failed", "skipped": True})
+                        continue
                     response = client.post(f"/conversations/{cid}/agent/messages", json={
                         "content": utterance,
                         "client_request_id": f"live-{settings.understanding_strategy}-{group}-{index:03d}",
@@ -67,7 +72,8 @@ def exercise(settings):
     durations = [r["elapsed_ms"] for r in details]
     return {"rows": details, "p50_ms": statistics.median(durations),
             "p95_ms": percentile(durations, .95),
-            "request_failures": sum("error" in r or r.get("http_status") != 200 for r in details)}
+            "request_failures": sum(not r.get("skipped") and ("error" in r or r.get("http_status") != 200) for r in details),
+            "blocked_followups": sum(bool(r.get("skipped")) for r in details)}
 
 def main():
     parser = argparse.ArgumentParser()
