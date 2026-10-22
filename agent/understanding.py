@@ -211,7 +211,8 @@ class UnderstandingService:
                     failures.append(reason)
                     attempts.append({"role": role,
                                      "duration_ms": int((time.monotonic() - start) * 1000),
-                                     "outcome": reason, "retry": retry})
+                                     "outcome": reason, "retry": retry,
+                                     "diagnostic": getattr(exc, "detail", None)})
                     if reason not in ("structured_schema_error", "structured_consistency_error"):
                         break
         raise UnderstandingError("understanding_unavailable", attempts=attempts)
