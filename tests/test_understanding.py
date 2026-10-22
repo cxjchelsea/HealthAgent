@@ -135,3 +135,18 @@ def test_missing_goal_retry_targets_invariant_without_fabricating_goal():
     assert result["attempts"][0]["diagnostic"] == "missing_goal"
     assert "UNSAVED" in model.messages_seen[1][-1]["content"]
     assert "goal=null" in model.messages_seen[1][-1]["content"]
+
+def test_generation_schema_mirrors_conditional_missing_goal_contract():
+    from agent.understanding import understanding_generation_schema
+    schema = understanding_generation_schema()
+    condition = schema["allOf"][0]
+    assert condition["if"]["properties"]["status"]["const"] == "understood"
+    assert set(condition["if"]["properties"]["change"]["properties"]["kind"]["enum"]) == {
+        "new_goal", "add", "revise", "clarify_response"}
+    assert condition["then"]["properties"]["goal"]["$ref"] == "#/$defs/GoalSpec"
+    assert "goal" in condition["then"]["required"]
+    assert UnderstandingResult.model_validate(payload()).goal is not None
+    with pytest.raises(ValidationError, match="missing_goal"):
+        UnderstandingResult.model_validate(payload(goal=False))
+    # Continue/cancel/clarification may legitimately have no new goal.
+    assert UnderstandingResult.model_validate(payload(kind="continue", goal=False)).goal is None
