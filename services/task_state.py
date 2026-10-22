@@ -57,8 +57,27 @@ class AgentTaskStateStore:
                         expected_revision: int | None, attempts: list[dict] | None = None):
         state, steps, plan_revision = project_task(checkpoint, status)
         data = json.dumps(steps, ensure_ascii=False)
-        successful_attempts = {a.get('step_id'): a.get('attempt_id') for a in (attempts or [])
-                               if a.get('status') == 'succeeded' and a.get('step_id') is not None}
+        # A model- or caller-provided attempt ID is never sufficient evidence.
+        # Bind only durable succeeded executor rows matching the current step.
+        from services.db import AgentAttempt
+        from services.evidence_store import arguments_digest
+        successful_attempts = {}
+        for attempt in attempts or []:
+            step_id = attempt.get("step_id")
+            step = next((step for step in steps if step["id"] == step_id), None)
+            if not step or step["status"] != "completed":
+                continue
+            if not step.get("expected_tool") or not isinstance(step.get("expected_arguments"), dict):
+                continue
+            row = db.get(AgentAttempt, attempt.get("attempt_id"))
+            if (row is None or row.conversation_id != self.conversation_id
+                    or row.status != "succeeded" or row.step_id != step_id
+                    or row.tool_name != step["expected_tool"]
+                    or row.arguments_digest != arguments_digest(step["expected_arguments"])
+                    or row.run_id != attempt.get("run_id")
+                    or row.turn_id != attempt.get("turn_id", row.turn_id)):
+                continue
+            successful_attempts[step_id] = row.id
         old = db.get(AgentTaskState, self.conversation_id)
         if expected_revision is None:
             if old is not None:
@@ -97,7 +116,7 @@ class AgentTaskStateStore:
             previous = before.get(step_id)
             previous_status = previous["status"] if previous else None
             if previous_status != step["status"]:
-                reason = "verified_step_completed" if step["status"] == "completed" else "step_state_changed"
+                reason = ("verified_step_completed" if step["status"] == "completed" and step_id in successful_attempts\n                          else "legacy_completion_unlinked" if step["status"] == "completed"\n                          else "step_state_changed")
                 self._transition(db, task_id, revision, "step", step_id,
                                  previous_status, step["status"], reason,
                                  successful_attempts.get(step_id) if step["status"] == "completed" else None)
