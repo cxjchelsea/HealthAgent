@@ -205,3 +205,37 @@ def test_model_clarification_cannot_confirm_pending_revision(tmp_path):
         store.validate_before_execution(disguised, before)
     assert store.load() == before
     engine.dispose()
+
+def test_add_cannot_rewrite_or_drop_prior_subgoals(tmp_path):
+    from services.migrate import migrate
+    from services.db import Conversation
+    from agent.understanding import UnderstandingError
+    import pytest
+    url = f"sqlite:///{tmp_path/'add_preserve.db'}"
+    migrate(url)
+    engine, Session = database(url)
+    with Session.begin() as db:
+        convo = Conversation(owner_id="owner")
+        db.add(convo)
+        db.flush()
+        cid = convo.id
+    store = ConversationGoalStore(Session, cid)
+    base = UnderstandingResult.model_validate_json(proposal("new_goal", "明日任务"))
+    base.goal.subgoals = ["审查资料", "完成计算", "整理总结"]
+    with Session.begin() as db:
+        store.save_in_session(db, base, store.load())
+    previous = store.load()
+
+    invalid = UnderstandingResult.model_validate_json(proposal("add", "明日任务"))
+    invalid.goal.subgoals = ["周末买菜"]
+    with pytest.raises(UnderstandingError, match="add_must_preserve_existing_goal"):
+        store.validate_before_execution(invalid, previous)
+    assert store.load() == previous
+
+    valid = UnderstandingResult.model_validate_json(proposal("add", "明日任务"))
+    valid.goal.subgoals = ["审查资料", "完成计算", "整理总结", "周末买菜"]
+    assert store.validate_before_execution(valid, previous) == "ok"
+    with Session.begin() as db:
+        store.save_in_session(db, valid, previous)
+    assert store.load()["goal"]["subgoals"] == valid.goal.subgoals
+    engine.dispose()
