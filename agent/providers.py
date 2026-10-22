@@ -5,6 +5,7 @@ import time
 from collections.abc import AsyncIterator
 from typing import Protocol
 import httpx
+from agent.http_policy import model_http_trust_env
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +89,7 @@ class OllamaProxyProvider:
         first_visible_at = None
         visible_parts = 0
         try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(self.timeout, connect=10)) as client:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(self.timeout, connect=10), trust_env=model_http_trust_env('ollama_proxy', self.base_url)) as client:
                 async with client.stream("POST", url, json=request_body) as response:
                     if response.status_code >= 400:
                         raise ModelUnavailable(f"Ollama gateway HTTP {response.status_code}")
