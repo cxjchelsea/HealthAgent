@@ -54,7 +54,16 @@ def test_step_completion_links_only_real_matching_persisted_attempt(tmp_path):
     journal = AttemptEvidenceStore("c1", "t1")
     journal.begin(Session, record)
     journal.finish(Session, record)
-    plan = {"revision": 1, "steps": [{
+    from services.db import AgentAttempt
+    with Session() as db:
+        stored = db.get(AgentAttempt, record["attempt_id"])
+        assert stored is not None
+        assert stored.status == "succeeded"
+        assert stored.tool_name == "calculate"
+        assert stored.step_id == 1
+        assert stored.run_id == record["run_id"]
+        assert stored.arguments_digest == record["arguments_digest"]
+        plan = {"revision": 1, "steps": [{
         "id": 1, "status": "completed", "evidence_tool": "calculate",
         "expected_tool": "calculate", "expected_arguments": {"expression": "8*8"}}]}
     with Session.begin() as db:
