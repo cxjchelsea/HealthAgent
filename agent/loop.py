@@ -29,6 +29,7 @@ class AgentState(TypedDict):
     plan: PlanLedger
     last_success: dict | None
     rejected_action_keys: list[str]
+    unresolved_tool_failures: list[str]
     superseded_step_ids: list[int]
     superseded_expression: str | None
     memory_recall_required: bool
@@ -87,18 +88,24 @@ class AgentLoop:
                                  and s.get("expected_tool") == "calculate"
                                  and s.get("expected_arguments") == {"expression": state["superseded_expression"]}
                                  for s in state["plan"].snapshot())]
-            is_partial = bool(pending or superseded)
+            unresolved = state["unresolved_tool_failures"]
+            is_partial = bool(pending or superseded or unresolved)
             final = decision.content
             if superseded:
                 final = ("目标更正尚未完成：旧步骤 " + ", ".join(map(str, superseded)) +
                          " 的完成证据仍有效，不能作为新目标的完成证明。\n" + final)
+            if unresolved:
+                final = ("工具执行仍有未经成功结果消除的失败：" +
+                         "、".join(unresolved) +
+                         "。模型回复不构成执行成功证明。\n" + final)
             if is_partial:
                 final = ("计划尚未完成（未验证步骤：" + ", ".join(map(str, pending)) +
                          "）。以下是模型当前回复，不代表全部完成。\n" + final)
             return {"iterations": iteration, "final": final,
                     "status": "partial" if is_partial else "completed",
                     "termination_reason": ("superseded_evidence" if superseded else
-                                           "pending_plan_steps" if pending else "model_final"),
+                                           "pending_plan_steps" if pending else
+                                           "unresolved_tool_failure" if unresolved else "model_final"),
                     "traces": state["traces"] + [
                         {"step": iteration, "type": "final", "chars": len(decision.content)}]}
         if iteration >= self.max_steps:
@@ -135,6 +142,7 @@ class AgentLoop:
         traces = list(state["traces"])
         audit = list(state["audit"])
         rejected_keys = list(state["rejected_action_keys"])
+        unresolved_failures = list(state["unresolved_tool_failures"])
         # A clarification is a turn-level control, never bundled with side effects.
         calls = last.get("tool_calls", [])[:4]
         if any(c["function"].get("name") == "request_clarification" for c in calls):
@@ -210,6 +218,11 @@ class AgentLoop:
                     and name not in {"propose_plan", "revise_plan", "complete_plan_step"}
                     and action_key not in rejected_keys):
                 rejected_keys.append(action_key)
+            if name not in {"propose_plan", "revise_plan", "complete_plan_step"}:
+                if result["ok"]:
+                    unresolved_failures = [item for item in unresolved_failures if item != name]
+                elif name not in unresolved_failures:
+                    unresolved_failures.append(name)
             if name == "recall_memory":
                 state["memory_recall_observed"] = True
             if name not in {"propose_plan", "revise_plan", "complete_plan_step"}:
@@ -239,7 +252,8 @@ class AgentLoop:
                   "tasks": tasks, "traces": traces, "audit": audit,
                   "plan": state["plan"], "last_success": state["last_success"],
                   "memory_recall_observed": state["memory_recall_observed"],
-                  "rejected_action_keys": rejected_keys}
+                  "rejected_action_keys": rejected_keys,
+                  "unresolved_tool_failures": unresolved_failures}
         # Stop only for an explicitly limited first step with verified evidence.
         steps = state["plan"].snapshot()
         if (state["stop_after_first_verified_step"] and len(steps) >= 2
@@ -433,6 +447,7 @@ class AgentLoop:
             "allowed_tools": selected_tools,
             "plan": resumed, "last_success": None,
             "rejected_action_keys": [],
+            "unresolved_tool_failures": [],
             "superseded_step_ids": superseded_step_ids,
             "superseded_expression": superseded_expression,
             "memory_recall_required": recall_required and self.memory_store is not None,
