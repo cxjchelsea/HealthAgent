@@ -206,7 +206,8 @@ class AgentLoop:
                                  "tool_call_id": call["id"],
                                  "content": json.dumps(result, ensure_ascii=False)})
             traces.append({"step": state["iterations"], "type": "tool",
-                           "name": name, "ok": result["ok"]})
+                           "name": name, "ok": result["ok"],
+                           "error_code": result.get("error") if not result["ok"] else None})
             if state["audit_enabled"]:
                 audit.append({"step": state["iterations"], "name": name,
                               "arguments": function.get("arguments"), "observation": result})
@@ -379,6 +380,10 @@ class AgentLoop:
         # Tool execution still requires the independent tool authorization and validation.
         tool_strategy = "all" if understanding_result is not None else self.skill_strategy
         selected_tools = exposed_tools(goal, TOOL_SCHEMAS, strategy=tool_strategy)
+        # A model-derived respond-only proposal can only REMOVE tool authority.
+        # The host never grants execution permissions from this declaration.
+        if understanding_result is not None and understanding_result.get("execution_intent") == "respond_only":
+            selected_tools = []
         if resumed.revision:
             names = {t["function"]["name"] for t in selected_tools}
             selected_tools += [t for t in TOOL_SCHEMAS if t["function"]["name"]
