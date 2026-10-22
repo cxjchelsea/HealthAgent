@@ -22,13 +22,13 @@ def _interpretation():
             "clarification": {"required": False, "reason_code": "none", "question": None}}
 
 
-def test_respond_only_retains_clarification_but_no_write_tools():
+def test_respond_only_does_not_expose_any_tools():
     decider = InspectDecider(Decision("Here is the explanation.", []))
     result = asyncio.run(AgentLoop(decider).run(
         "Explain this", understanding_result=_interpretation(),
         execution_mode="respond_only"))
     assert result["status"] == "completed"
-    assert decider.visible == [{"request_clarification"}]
+    assert decider.visible == [set()]
 
 
 def test_read_only_mode_keeps_clarification_and_blocks_write():
