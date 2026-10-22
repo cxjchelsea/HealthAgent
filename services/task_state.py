@@ -116,7 +116,9 @@ class AgentTaskStateStore:
             previous = before.get(step_id)
             previous_status = previous["status"] if previous else None
             if previous_status != step["status"]:
-                reason = ("verified_step_completed" if step["status"] == "completed" and step_id in successful_attempts\n                          else "legacy_completion_unlinked" if step["status"] == "completed"\n                          else "step_state_changed")
+                reason = ("verified_step_completed" if step["status"] == "completed" and step_id in successful_attempts
+                          else "legacy_completion_unlinked" if step["status"] == "completed"
+                          else "step_state_changed")
                 self._transition(db, task_id, revision, "step", step_id,
                                  previous_status, step["status"], reason,
                                  successful_attempts.get(step_id) if step["status"] == "completed" else None)
