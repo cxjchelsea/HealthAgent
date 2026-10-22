@@ -256,3 +256,9 @@ LoopOutcome:
 - Step 5 真实 Qwen / 正式 API E2E、Step 6 完成判定**尚未开始**。CI 要绑定最新精确 HEAD 单独核验，不把新测试文件存在当作已通过。
 
 **实施状态：IMPLEMENTING（Step 4 started, incremental slice 1）。**
+
+### Step 4 — 第二切片：同回合确定性失败动作防重复（2026-10-22）
+
+在现有 `AgentLoop._tools` 内登记单回合发生的不可重试工具错误（`invalid_arguments`、`reference_not_found`、`tool_not_exposed`、`mcp_tool_not_allowlisted`、`unknown_tool`）对应的工具名及精确参数。模型重复提交相同普通工具调用时不再次执行，返回 `repeated_nonretryable_action` 工具 Observation，允许模型修改参数或选择替代工具。成功工具调用不受该规则影响；每次新回合重新初始化记录。规划修订工具保持现有 Version/Invalidation 验证逻辑，不纳入此防重复规则，以免拦截合法计划状态变更后的修订。新增 `tests/test_s25_02_repeat_failure.py` 包含失败动作重复、变更参数成功、重复成功只读工具调用等受控决策测试。
+
+此切片不增加用户意图识别、审批、取消、长事务或跨回合幂等保证；不是对所有失败类型无条件禁止重试。自动化 CI 和真实 Qwen E2E 证据必须分别核验，S25-02 继续 **IMPLEMENTING**。
