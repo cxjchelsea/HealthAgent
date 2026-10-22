@@ -139,12 +139,22 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                     Turn.conversation_id == cid, Turn.request_id == body.client_request_id))
                 if prior:
                     raise HTTPException(409, "duplicate_request_id")
+                latest_turn = db.scalar(select(Turn).join(
+                    Message, Message.id == Turn.assistant_message_id).where(
+                    Turn.conversation_id == cid, Turn.state != "running")
+                    .order_by(Message.created_at.desc(), Message.id.desc()))
+                clarification_id = (latest_turn.assistant_message_id
+                    if latest_turn and latest_turn.state == "partial"
+                    and latest_turn.failure_code == "needs_input" else None)
                 history = db.scalars(select(Message).where(
-                    Message.conversation_id == cid, Message.status == "completed")
+                    Message.conversation_id == cid,
+                    ((Message.status == "completed") |
+                     (Message.id == clarification_id if clarification_id else False)))
                     .order_by(Message.created_at, Message.id)).all()
                 context = build_context(history, body.content,
                                         max_messages=settings.max_history_messages,
-                                        max_chars=settings.context_max_chars)
+                                        max_chars=settings.context_max_chars,
+                                        clarification_message_id=clarification_id)
                 user_message = Message(conversation_id=cid, role="user", content=body.content)
                 response_message = Message(conversation_id=cid, role="assistant",
                                            content="", status="pending")
@@ -274,6 +284,11 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                           execution_mode=execution_mode)
             if result["status"] in {"completed", "partial"}:
                 answer, status = result["answer"], result["status"]
+                if status == "partial" and (
+                    result.get("termination_reason") == "needs_input"
+                    or any(t.get("type") == "goal_clarification"
+                           for t in result.get("trace", []))):
+                    failure_code = "needs_input"
             else:
                 status = result["status"]
                 failure_code = result.get("failure_code") or status
