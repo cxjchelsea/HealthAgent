@@ -106,3 +106,14 @@ def test_strong_review_must_be_valid_and_never_falls_back_to_unverified_light():
             UnderstandingContext(current_message="安排明天任务")))
     assert error.value.code == "understanding_unavailable"
     assert error.value.attempts[0]["outcome"] == "semantic_review_required"
+
+def test_failed_attempts_include_safe_consistency_diagnostics():
+    sample = payload(kind="new_goal", goal=False)
+    stub = StubModel([json.dumps(sample), json.dumps(sample), json.dumps(sample)])
+    with pytest.raises(UnderstandingError) as error:
+        asyncio.run(UnderstandingService(stub, "small", "large").understand(
+            UnderstandingContext(current_message="请创建一个计划")))
+    assert error.value.code == "understanding_unavailable"
+    assert len(error.value.attempts) == 3
+    assert all(a["outcome"] == "structured_consistency_error" for a in error.value.attempts)
+    assert all(a["diagnostic"] == "missing_goal" for a in error.value.attempts)
