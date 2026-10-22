@@ -356,7 +356,7 @@ class AgentLoop:
                     historical = (prior_step_results or {}).get(step["id"])
                     if historical and historical.get("tool") == step.get("expected_tool"):
                         safe_value = historical.get("result", {})
-                        lines.append("步骤 " + str(step["id"]) + "：此前完成；可信保存的结果：" +
+                        lines.append("步骤 " + str(step["id"]) + "：此前已验证完成；可信保存的结果：" +
                                      json.dumps(safe_value, ensure_ascii=False)[:1200])
                     else:
                         lines.append("步骤 " + str(step["id"]) +
