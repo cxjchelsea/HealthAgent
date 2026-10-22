@@ -63,6 +63,8 @@ def exercise(settings):
                         "code": payload.get("detail", {}).get("code") if isinstance(payload.get("detail"), dict) else None,
                         "step_count": payload.get("steps"),
                         "trace_count": len(payload.get("trace", [])),
+                        "failure_trace": (payload.get("detail", {}).get("trace_summary", [])
+                                          if isinstance(payload.get("detail"), dict) else []),
                     })
                 except Exception as exc:
                     # Failures must remain visible; never silently count as successes.
