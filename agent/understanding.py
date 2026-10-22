@@ -59,6 +59,26 @@ class UnderstandingResult(BaseModel):
             raise ValueError("missing_goal")
         return self
 
+def understanding_generation_schema() -> dict:
+    """Derive the decoder contract from the same Pydantic model validated by Host.
+
+    Constrained JSON decoding should not treat goal=null as a valid shortcut for
+    a *completed* new/add/revise/clarify proposal. Other statuses retain null.
+    """
+    schema = UnderstandingResult.model_json_schema()
+    schema["allOf"] = [{
+        "if": {"properties": {
+            "status": {"const": "understood"},
+            "change": {"properties": {"kind": {"enum": [
+                "new_goal", "add", "revise", "clarify_response"]}},
+                       "required": ["kind"]}},
+               "required": ["status", "change"]},
+        "then": {"properties": {"goal": {"$ref": "#/$defs/GoalSpec"}},
+                 "required": ["goal"]}
+    }]
+    return schema
+
+
 class UnderstandingContext(BaseModel):
     model_config = ConfigDict(extra="forbid")
     current_message: str = Field(min_length=1, max_length=12000)
@@ -95,7 +115,7 @@ class HTTPUnderstandingModel:
         if self.provider == "ollama_proxy":
             url = self.base_url + "/chat"
             body = {"model": model, "messages": messages, "stream": False,
-                    "think": False, "format": response_schema or UnderstandingResult.model_json_schema(),
+                    "think": False, "format": response_schema or understanding_generation_schema(),
                     "options": {"temperature": 0, "num_predict": self.output_tokens}}
             headers = {}
         elif self.provider == "openai_compatible":
