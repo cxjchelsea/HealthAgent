@@ -90,11 +90,12 @@ class HTTPUnderstandingModel:
         self.provider, self.base_url, self.key = provider, base_url.rstrip("/"), key
         self.timeout, self.output_tokens = timeout, output_tokens
 
-    async def complete(self, *, messages: list[dict[str, str]], model: str) -> str:
+    async def complete(self, *, messages: list[dict[str, str]], model: str,
+                       response_schema: dict | None = None) -> str:
         if self.provider == "ollama_proxy":
             url = self.base_url + "/chat"
             body = {"model": model, "messages": messages, "stream": False,
-                    "think": False, "format": UnderstandingResult.model_json_schema(),
+                    "think": False, "format": response_schema or UnderstandingResult.model_json_schema(),
                     "options": {"temperature": 0, "num_predict": self.output_tokens}}
             headers = {}
         elif self.provider == "openai_compatible":
