@@ -73,6 +73,20 @@ class AgentTaskState(Base):
     step_states: Mapped[str] = mapped_column(Text)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
+class AgentStateTransition(Base):
+    """Append-only state change evidence; not authority to execute tools."""
+    __tablename__ = "agent_state_transitions"
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(ForeignKey("conversations.id"), index=True)
+    task_id: Mapped[str] = mapped_column(String(40))
+    revision: Mapped[int] = mapped_column(Integer)
+    entity_type: Mapped[str] = mapped_column(String(16))
+    step_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    from_state: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    to_state: Mapped[str] = mapped_column(String(24))
+    reason_code: Mapped[str] = mapped_column(String(40))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
 class AgentAttempt(Base):
     """Durable bounded record of a real tool invocation, not a model claim."""
     __tablename__ = "agent_attempts"
