@@ -226,7 +226,8 @@ class AgentLoop:
 
     async def run(self, goal: str, *, include_evidence: bool = False,
                   history: list[dict] | None = None,
-                  plan_checkpoint: dict | None = None) -> dict:
+                  plan_checkpoint: dict | None = None,
+                  prior_step_results: dict[int, dict] | None = None) -> dict:
         if not goal.strip() or len(goal) > 12000:
             raise ValueError("Goal must contain 1..12000 characters")
         run_id = str(uuid.uuid4())
@@ -352,8 +353,14 @@ class AgentLoop:
                     lines.append("步骤 " + str(step["id"]) + "（" +
                                  step["goal"] + "）： " + item["result"])
                 elif step["status"] == "completed":
-                    lines.append("步骤 " + str(step["id"]) +
-                                 "：此前已验证完成；本次没有其原始输出，不能重述具体结果。")
+                    historical = (prior_step_results or {}).get(step["id"])
+                    if historical and historical.get("tool") == step.get("expected_tool"):
+                        safe_value = historical.get("result", {})
+                        lines.append("步骤 " + str(step["id"]) + "：此前完成；可信保存的结果：" +
+                                     json.dumps(safe_value, ensure_ascii=False)[:1200])
+                    else:
+                        lines.append("步骤 " + str(step["id"]) +
+                                     "：此前已验证完成；没有可信的已保存结果，不重述具体数值。")
                 else:
                     lines.append("步骤 " + str(step["id"]) + "：尚未完成。")
             lines.append("计划全部步骤已验证完成。" if not remaining else
