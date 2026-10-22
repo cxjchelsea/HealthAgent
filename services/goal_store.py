@@ -39,6 +39,17 @@ class ConversationGoalStore:
                 existing = (pending or {}).get("goal")
             if existing is None or result.goal is None:
                 raise UnderstandingError("missing_confirmed_goal")
+            if kind == "add":
+                before = GoalSpec.model_validate(existing)
+                # The proposed new goal is a full candidate, never authority to
+                # silently replace old subgoals. A missing/changed old item is
+                # a revise, not an add. Preserve existing objective and order.
+                old_steps = before.subgoals
+                proposed = result.goal.subgoals
+                if (proposed[:len(old_steps)] != old_steps or
+                        len(proposed) <= len(old_steps) or
+                        result.goal.objective != before.objective):
+                    raise UnderstandingError("add_must_preserve_existing_goal")
             if self._constraint_change(GoalSpec.model_validate(existing), result.goal):
                 if kind == "revise":
                     return "confirmation_required"
