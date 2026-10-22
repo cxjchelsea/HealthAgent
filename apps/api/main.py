@@ -179,7 +179,8 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                         db, result.get("plan_checkpoint") if result and result.get("plan_checkpoint")
                         else existing_checkpoint, status,
                         prior_task_state["revision"] if prior_task_state else None,
-                        result.get("evidence_attempts", []) if result else [])
+                        result.get("evidence_attempts", []) if result else [],
+                        current_turn_id=turn_id)
                 if result and result.get("evidence_attempts"):
                     AttemptEvidenceStore(cid, turn_id).save_in_session(db, result["evidence_attempts"])
                 response.content = answer
