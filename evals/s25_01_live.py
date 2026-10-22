@@ -63,23 +63,54 @@ def context_for(case):
         ] if previous else [],
     )
 
+def semantic_evidence(case, value):
+    """Report the structured evidence used by each heuristic, without raw model text."""
+    goal = value.goal
+    fields = {
+        "constraints": [f"{x.name} {x.value}" for x in goal.constraints] if goal else [],
+        "success_criteria": list(goal.success_criteria) if goal else [],
+        "subgoals": list(goal.subgoals) if goal else [],
+        "objective": [goal.objective] if goal else [],
+    }
+    return fields
+
+
 def meets_expectations(case, result):
     value = result["result"]
-    correct_kind = value.change.kind in case["expected"]
-    correct_clarify = (not case.get("clarify") or value.clarification.required)
-    constraint_text = " ".join(
-        f"{x.name} {x.value}" for x in (value.goal.constraints if value.goal else [])
-    ).lower()
-    constraint_marker = case.get("constraint")
-    if constraint_marker == "save":
-        correct_constraint = any(word in constraint_text for word in
-                                 ("不保存", "不要保存", "不写入", "不落库", "do not save", "don't save", "no save"))
-    elif constraint_marker == "three":
-        correct_constraint = any(word in constraint_text for word in ("三", "3", "three"))
+    fields = semantic_evidence(case, value)
+    kind_ok = value.change.kind in case["expected"]
+    clarify_ok = not case.get("clarify") or value.clarification.required
+    marker = case.get("constraint")
+    if marker == "save":
+        # A negative persistence constraint must be explicit, rather than
+        # inferred from a successful JSON parse. Count only candidate fields
+        # with a clear prohibition; never assume silence means consent.
+        probes = ("不保存", "不要保存", "不写入", "不落库", "别落库",
+                  "无需保存", "禁止保存", "先别保存", "先别落库",
+                  "do not save", "don't save", "no save", "without saving")
+        text = " ".join(fields["constraints"] + fields["success_criteria"]).lower()
+        constraint_ok = any(word in text for word in probes)
+    elif marker == "three":
+        # A task cardinality may legitimately be a success criterion.
+        text = " ".join(fields["constraints"] + fields["success_criteria"] +
+                        fields["objective"]).lower()
+        constraint_ok = any(word in text for word in ("三项", "3项", "三条", "3条",
+                                                       "三个", "3个", "three"))
     else:
-        correct_constraint = True
-    return {"kind": correct_kind, "clarification": correct_clarify,
-            "constraint": correct_constraint}
+        constraint_ok = True
+    return {"kind": kind_ok, "clarification": clarify_ok,
+            "constraint": constraint_ok}
+
+
+def diagnostic_projection(value):
+    """Bounded non-content diagnostics: no model or personal text persisted."""
+    goal = value.goal
+    return {"kind": value.change.kind, "status": value.status,
+            "clarification_required": value.clarification.required,
+            "clarification_reason": value.clarification.reason_code,
+            "constraint_count": len(goal.constraints) if goal else 0,
+            "subgoal_count": len(goal.subgoals) if goal else 0,
+            "success_criteria_count": len(goal.success_criteria) if goal else 0}
 
 async def run_strategy(settings, name, service, case):
     started = time.monotonic()
@@ -88,6 +119,7 @@ async def run_strategy(settings, name, service, case):
         scores = meets_expectations(case, outcome)
         return {"case_id": case["id"], "strategy": name, "valid": True,
                 "passed": all(scores.values()), "checks": scores,
+                "diagnostics": diagnostic_projection(outcome["result"]),
                 "duration_ms": int((time.monotonic() - started) * 1000),
                 "attempts": outcome["attempts"], "model_role": outcome["model_role"],
                 "escalated": outcome["escalated"]}
