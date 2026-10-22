@@ -68,7 +68,7 @@ def test_step_completion_links_only_real_matching_persisted_attempt(tmp_path):
         "expected_tool": "calculate", "expected_arguments": {"expression": "8*8"}}]}
     with Session.begin() as db:
         AgentTaskStateStore("c1").save_in_session(
-            db, plan, "completed", None, [record])
+            db, plan, "completed", None, [record], current_turn_id="t1")
     linked = AgentTaskStateStore("c1").history(Session)
     assert any(e["step_id"] == 1 and e["attempt_id"] == record["attempt_id"]
                for e in linked), linked
@@ -97,7 +97,7 @@ def test_mismatched_arguments_never_link_attempt(tmp_path):
         "expected_tool": "calculate", "expected_arguments": {"expression": "9*9"}}]}
     with Session.begin() as db:
         AgentTaskStateStore("c1").save_in_session(
-            db, changed_plan, "completed", None, [attempt])
+            db, changed_plan, "completed", None, [attempt], current_turn_id="t1")
     assert all(e["attempt_id"] is None for e in
                AgentTaskStateStore("c1").history(Session))
     engine.dispose()
