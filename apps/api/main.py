@@ -101,7 +101,8 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                 current_plan_summary=plan_summary))
             return {"understanding": outcome["result"].model_dump(),
                     "model_role": outcome["model_role"], "model": outcome["model"],
-                    "duration_ms": outcome["duration_ms"], "escalated": outcome["escalated"]}
+                    "duration_ms": outcome["duration_ms"], "escalated": outcome["escalated"],
+                    "routing_attempts": outcome["attempts"]}
         except UnderstandingError as exc:
             raise HTTPException(503, {"code": exc.code}) from exc
 
