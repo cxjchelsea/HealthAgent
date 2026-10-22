@@ -134,6 +134,27 @@ class AttemptEvidenceStore:
                 )
             ).limit(1)) is not None
 
+    def verified_attempt_refs_for_checkpoint(self, session_factory, checkpoint: dict | None):
+        """Return durable success references for this turn and current binding only."""
+        if not checkpoint:
+            return []
+        from sqlalchemy import select
+        from services.db import AgentAttempt
+        bindings = {step["id"]: (step.get("expected_tool"),
+                    arguments_digest(step["expected_arguments"]))
+                    for step in checkpoint.get("steps", [])
+                    if step.get("status") == "completed"
+                    and isinstance(step.get("expected_arguments"), dict)}
+        with session_factory() as db:
+            rows = db.scalars(select(AgentAttempt).where(
+                AgentAttempt.conversation_id == self.conversation_id,
+                AgentAttempt.turn_id == self.turn_id,
+                AgentAttempt.status == "succeeded")).all()
+            return [{"attempt_id": row.id, "run_id": row.run_id,
+                     "step_id": row.step_id, "status": row.status}
+                    for row in rows if bindings.get(row.step_id) ==
+                    (row.tool_name, row.arguments_digest)]
+
     def reconcile_failed_turn_checkpoint(self, session_factory, checkpoint: dict | None) -> dict | None:
         """Recover ONLY verified, bound pending steps from durable successful attempts.
 
