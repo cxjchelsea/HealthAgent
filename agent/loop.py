@@ -466,8 +466,7 @@ class AgentLoop:
         if mode not in {None, "respond_only", "read_only", "execute"}:
             raise ValueError("invalid_execution_mode")
         if mode == "respond_only":
-            selected_tools = [t for t in selected_tools
-                              if t["function"]["name"] == "request_clarification"]
+            selected_tools = []
         elif mode == "read_only":
             read_tools = {"request_clarification", "calculate", "utc_time", "list_tasks",
                           "recall_memory", "mcp_reference_lookup"}
