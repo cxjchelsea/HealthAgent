@@ -118,6 +118,17 @@ class AttemptEvidenceStore:
                      "status": "unknown_outcome", "step_id": row.step_id}
                     for row in rows]
 
+    def has_unresolved_writes(self, session_factory) -> bool:
+        """Database EXISTS, not the first page of an unresolved list."""
+        from sqlalchemy import select
+        from services.db import AgentAttempt
+        with session_factory() as db:
+            return db.scalar(select(AgentAttempt.id).where(
+                AgentAttempt.conversation_id == self.conversation_id,
+                AgentAttempt.status == "prepared",
+                AgentAttempt.tool_name.in_(("create_task", "save_memory"))
+            ).limit(1)) is not None
+
     def completed_step_projections(self, session_factory, checkpoint: dict | None = None) -> dict[int, dict]:
         """Only previously recorded successful, tool-scoped projections in this conversation."""
         from sqlalchemy import select
