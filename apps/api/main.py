@@ -131,6 +131,8 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
         began = time.monotonic()
         status, answer = "provider_error", ""
         result = None
+        existing_checkpoint = None
+        prior_task_state = None
         failure_code = None
         decision_steps = 0
         try:
