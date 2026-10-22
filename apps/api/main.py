@@ -9,6 +9,7 @@ from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from agent.config import Settings
 from agent.understanding import UnderstandingContext, UnderstandingService, HTTPUnderstandingModel, UnderstandingError
+from agent.execution_policy import decide_execution_policy
 from agent.decision import NativeToolDecision
 from agent.loop import AgentLoop
 from agent.mcp_stdio_client import StdioMCPClient
@@ -37,7 +38,7 @@ class ConversationOut(BaseModel):
     id: str
     messages: list[dict]
 
-def create_app(settings: Settings | None=None, provider=None, agent_decider=None):
+def create_app(settings: Settings | None=None, provider=None, agent_decider=None, execution_policy=None):
     settings = settings or Settings()
     engine, Session=database(settings.database_url)
 
@@ -225,6 +226,18 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                               "answer": parsed["result"].clarification.question,
                               "trace": [{"step": 0, "type": "goal_clarification"}],
                               "steps": 0}
+            execution_mode = None
+            if result is None and interpretation is not None:
+                if execution_policy is not None:
+                    execution_mode = await execution_policy(body.content, interpretation)
+                elif agent_decider is None:
+                    execution_mode = await decide_execution_policy(
+                        HTTPUnderstandingModel(settings.model_provider, settings.model_base_url,
+                                               settings.model_api_key, settings.model_timeout_seconds,
+                                               settings.model_max_output_tokens),
+                        settings.understanding_strong_model, body.content, interpretation)
+                # Injected deciders in existing offline tests use legacy tool visibility;
+                # live requests and explicit policy injections exercise the new boundary.
             if result is None:
                 decider = agent_decider if agent_decider is not None else NativeToolDecision(settings)
                 result = await AgentLoop(decider, task_store=ConversationTaskStore(Session, cid),
@@ -232,7 +245,8 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                     mcp_client=StdioMCPClient(), skill_strategy=settings.skill_strategy,
                     skill_budget_chars=settings.skill_budget_chars).run(body.content, history=context,
                                           plan_checkpoint=existing_checkpoint,
-                                          understanding_result=interpretation)
+                                          understanding_result=interpretation,
+                                          execution_mode=execution_mode)
             if result["status"] in {"completed", "partial"}:
                 answer, status = result["answer"], result["status"]
             else:
