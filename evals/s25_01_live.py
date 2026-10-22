@@ -113,7 +113,7 @@ def summary(rows):
 
 async def main(output):
     settings = Settings()
-    if os.getenv("RUN_S25_01_LIVE") != "1":
+    if not settings.run_s25_01_live:
         raise SystemExit("Set RUN_S25_01_LIVE=1 explicitly; no fake score is generated.")
     if settings.model_provider not in {"ollama_proxy", "openai_compatible"}:
         raise SystemExit("A real model provider is required.")
