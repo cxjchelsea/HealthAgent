@@ -290,6 +290,8 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                 if (status in {"completed", "partial"} and parsed_result is not None
                         and execution_mode not in {"respond_only", "read_only"}
                         and previous_goal is not None
+                        and not any(item.get("type") == "goal_clarification"
+                                    for item in (result or {}).get("trace", []))
                         and not any(item.get("type") == "repeat_tool_stop"
                                     for item in (result or {}).get("trace", []))):
                     goal_store.save_in_session(db, parsed_result, previous_goal)
