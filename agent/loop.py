@@ -10,6 +10,7 @@ from agent.tools import TOOL_SCHEMAS, execute_tool
 from agent.skills import exposed_tools, load_instructions, SKILL_VERSION
 from agent.planning import PlanLedger
 from agent.tools import SCHEMAS
+from agent.argument_provenance import REQUIRED_USER_VALUES, user_supplied_value, clarification_question
 from pydantic import ValidationError
 
 PROMPT_VERSION = "s2a-core-v1"
@@ -41,6 +42,7 @@ class AgentState(TypedDict):
     repeated_tool_decisions: int
     structured_mode: bool
     failed_plan_attempts: int
+    user_request: str
 
 class AgentLoop:
     def __init__(self, decider: Any, max_steps: int = 6, clock=None, task_store=None, memory_store=None, mcp_client=None, skill_strategy='dynamic', skill_budget_chars=600):
@@ -189,6 +191,21 @@ class AgentLoop:
                                  "tool_call_id": calls[0]["id"], "content": json.dumps(issue)})
             return {"messages": state["messages"] + observations, "traces": traces + [
                 {"step": state["iterations"], "type": "tool", "name": "request_clarification", "ok": False}]}
+        # Preflight the whole batch before any persistent side effect. A
+        # synthetic model argument is not evidence the user supplied it.
+        if state["structured_mode"]:
+            for call in calls:
+                fn = call["function"]
+                tool = fn.get("name")
+                if (tool in REQUIRED_USER_VALUES
+                        and tool in {t["function"]["name"] for t in state["allowed_tools"]}
+                        and not user_supplied_value(
+                            tool, fn.get("arguments"), state["user_request"])):
+                    return {"status": "partial", "termination_reason": "needs_input",
+                            "final": clarification_question(tool),
+                            "traces": traces + [{"step": state["iterations"],
+                                                 "type": "argument_provenance_missing",
+                                                 "name": tool}]}
         # Limit fanout, never allow an arbitrary number of model tool calls.
         for index, call in enumerate(last.get("tool_calls", [])[:4]):
             function = call["function"]
@@ -519,6 +536,7 @@ class AgentLoop:
             "stop_after_first_verified_step": bounded_first_step,
             "last_tool_decision": None, "repeated_tool_decisions": 0,
             "structured_mode": understanding_result is not None,
+            "user_request": goal,
             "failed_plan_attempts": 0}
         try:
             outcome = await self.graph.ainvoke(initial, config={"recursion_limit": 2 * self.max_steps + 4})
