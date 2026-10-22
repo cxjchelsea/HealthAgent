@@ -65,3 +65,38 @@ def test_existing_finalized_attempt_not_duplicated_in_turn_commit(tmp_path):
     with Session() as db:
         assert db.get(AgentAttempt, attempt["attempt_id"]).status == "succeeded"
     engine.dispose()
+
+
+def test_succeeded_write_with_failed_turn_requires_reconciliation(tmp_path):
+    engine, Session = _setup(tmp_path)
+    store = AttemptEvidenceStore("cid", "turn")
+    attempt = make_attempt("run", "create_task", {"title": "already-created"},
+                           {"ok": True, "id": "item1"})
+    store.begin(Session, attempt)
+    store.finish(Session, attempt)
+    with Session.begin() as db:
+        db.get(Turn, "turn").state = "provider_error"
+    assert store.has_unresolved_writes(Session)
+    with Session.begin() as db:
+        db.get(Turn, "turn").state = "completed"
+    assert not store.has_unresolved_writes(Session)
+    engine.dispose()
+
+
+def test_unresolved_write_fence_not_limited_by_first_100_records(tmp_path):
+    engine, Session = _setup(tmp_path)
+    store = AttemptEvidenceStore("cid", "turn")
+    from services.db import AgentAttempt
+    with Session.begin() as db:
+        for i in range(110):
+            db.add(AgentAttempt(
+                id=f"read-{i}", conversation_id="cid", turn_id="turn",
+                run_id="run", step_id=None, tool_name="calculate",
+                arguments_digest="a" * 64, status="prepared"))
+        db.add(AgentAttempt(
+            id="write-last", conversation_id="cid", turn_id="turn",
+            run_id="run", step_id=None, tool_name="save_memory",
+            arguments_digest="b" * 64, status="prepared"))
+    assert len(store.unresolved(Session)) == 100
+    assert store.has_unresolved_writes(Session)
+    engine.dispose()
