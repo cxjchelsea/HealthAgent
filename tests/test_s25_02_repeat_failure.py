@@ -35,7 +35,8 @@ def test_repeated_nonretryable_failure_is_rejected_and_alternative_runs():
             "计算任务", include_evidence=True))
     observations = [x["observation"] for x in result["audit"]
                     if x["name"] == "calculate"]
-    assert result["status"] == "completed"
+    assert result["status"] == "partial"
+    assert result["termination_reason"] == "unresolved_tool_failure"
     assert observations[0]["error"] == "invalid_arguments"
     assert observations[1]["error"] == "repeated_nonretryable_action"
     assert observations[2]["ok"] is True
@@ -58,4 +59,4 @@ def test_rejection_feedback_uses_tool_observation_shape():
             "计算任务", include_evidence=True))
     trace = [t for t in result["trace"] if t["type"] == "tool"]
     assert [t["ok"] for t in trace] == [False, False, True]
-    assert result["termination_reason"] == "model_final"
+    assert result["termination_reason"] == "unresolved_tool_failure"
