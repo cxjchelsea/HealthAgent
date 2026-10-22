@@ -42,20 +42,23 @@ class AgentTaskStateStore:
                        AgentStateTransition.id).limit(min(max(limit, 1), 100))).all()
             return [{"revision": event.revision, "entity_type": event.entity_type,
                      "step_id": event.step_id, "from_state": event.from_state,
-                     "to_state": event.to_state, "reason_code": event.reason_code}
+                     "to_state": event.to_state, "reason_code": event.reason_code,
+                     "attempt_id": event.attempt_id}
                     for event in events]
 
-    def _transition(self, db, task_id, revision, kind, step_id, before, after, reason):
+    def _transition(self, db, task_id, revision, kind, step_id, before, after, reason, attempt_id=None):
         db.add(AgentStateTransition(
             id=str(uuid.uuid4()), conversation_id=self.conversation_id,
             task_id=task_id, revision=revision, entity_type=kind, step_id=step_id,
-            from_state=before, to_state=after, reason_code=reason,
+            from_state=before, to_state=after, reason_code=reason, attempt_id=attempt_id,
             created_at=now()))
 
     def save_in_session(self, db, checkpoint: dict | None, status: str,
-                        expected_revision: int | None):
+                        expected_revision: int | None, attempts: list[dict] | None = None):
         state, steps, plan_revision = project_task(checkpoint, status)
         data = json.dumps(steps, ensure_ascii=False)
+        successful_attempts = {a.get('step_id'): a.get('attempt_id') for a in (attempts or [])
+                               if a.get('status') == 'succeeded' and a.get('step_id') is not None}
         old = db.get(AgentTaskState, self.conversation_id)
         if expected_revision is None:
             if old is not None:
@@ -96,7 +99,8 @@ class AgentTaskStateStore:
             if previous_status != step["status"]:
                 reason = "verified_step_completed" if step["status"] == "completed" else "step_state_changed"
                 self._transition(db, task_id, revision, "step", step_id,
-                                 previous_status, step["status"], reason)
+                                 previous_status, step["status"], reason,
+                                 successful_attempts.get(step_id) if step["status"] == "completed" else None)
         if plan_revision > old_plan_revision:
             for step_id, previous in before.items():
                 if step_id not in after:
