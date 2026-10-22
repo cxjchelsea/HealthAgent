@@ -12,7 +12,7 @@ httpx 默认 trust_env=True，读取系统 HTTP_PROXY/HTTPS_PROXY/ALL_PROXY/NO_P
 - 为原生 Ollama loopback（localhost/127.0.0.1/::1）请求禁用 httpx 环境代理继承（trust_env=False），涵盖流式生成、工具决策、Understanding；不影响非本地服务与 OpenAI-compatible 远程服务的代理。
 - 统一 `agent/http_policy.py` 作决策；不需要用户在 PowerShell 手动设置 NO_PROXY，也不全局清空系统代理。
 - 使用 Ollama 原生 API 的 MODEL_BASE_URL=http://127.0.0.1:11434/api，适配器追加 /chat。
-- 对 Structured 单独增补机器可读 JSON Schema 请求、分层错误分类与有限重试；保持无关键词 fallback、不得绕过用户确认和目标授权。
+- 对 Structured 增补机器可读 JSON Schema 请求、分层错误分类与有限重试：4B 最多尝试一次，14B 遇 Schema/一致性错误时最多重试一次；对于伪造 goal ID 或传输异常不在同模型上重试。失败尝试仅记录错误类别与耗时，不记录原始用户文本或模型输出；保持无关键词 fallback、不得绕过用户确认和目标授权。
 
 ## 验证与判定
 确定性单元测试用于验证代理选择和 Structured 校验；真正的网络复现应在 Windows Docker Ollama 环境使用两模型重跑：
