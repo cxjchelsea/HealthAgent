@@ -27,6 +27,7 @@ class AgentState(TypedDict):
     audit: list[dict]
     allowed_tools: list[dict]
     exposure_goal: str
+    unavailable_tools: list[str]
     plan: PlanLedger
     last_success: dict | None
     superseded_step_ids: list[int]
@@ -61,6 +62,9 @@ class AgentLoop:
         if self.skill_strategy == "semantic":
             selection = select_tool_exposure(
                 state["exposure_goal"], TOOL_SCHEMAS, strategy="semantic",
+                active_step_tools=tuple(step.get("expected_tool") for step in state["plan"].snapshot()
+                                        if step.get("status") == "pending" and step.get("expected_tool")),
+                unavailable_tools=tuple(state["unavailable_tools"]),
             )
             refreshed = exposure_schemas(selection, TOOL_SCHEMAS)
             if state["plan"].revision:
@@ -187,6 +191,12 @@ class AgentLoop:
                 result = execute_tool(name, function.get("arguments"), tasks, self.clock,
                                       task_store=self.task_store, memory_store=self.memory_store,
                                       mcp_client=self.mcp_client)
+            if (self.skill_strategy == "semantic" and result.get("error") in
+                    {"mcp_unavailable", "memory_unavailable"}):
+                # Only the actual trusted executor's typed error changes
+                # availability. A freeform tool response is not a policy input.
+                if name not in state["unavailable_tools"]:
+                    state["unavailable_tools"].append(name)
             if name == "recall_memory":
                 state["memory_recall_observed"] = True
             if name not in {"propose_plan", "revise_plan", "complete_plan_step"}:
@@ -399,6 +409,7 @@ class AgentLoop:
             "audit_enabled": include_evidence, "audit": [],
             "allowed_tools": selected_tools,
             "exposure_goal": goal,
+            "unavailable_tools": [],
             "plan": resumed, "last_success": None,
             "superseded_step_ids": superseded_step_ids,
             "superseded_expression": superseded_expression,
