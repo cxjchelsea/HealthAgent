@@ -106,7 +106,7 @@ class AgentLoop:
                          " 的完成证据仍有效，不能作为新目标的完成证明。\n" + final)
             if unresolved:
                 final = ("工具仍有 " + str(len(unresolved)) + " 项未解决的失败；模型回复不是执行成功证明。\n" + final)
-            if is_partial:
+            if pending:
                 final = ("计划尚未完成（未验证步骤：" + ", ".join(map(str, pending)) +
                          "）。以下是模型当前回复，不代表全部完成。\n" + final)
             return {"iterations": iteration, "final": final,
