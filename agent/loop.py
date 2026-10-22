@@ -34,6 +34,10 @@ class AgentState(TypedDict):
     memory_recall_retry: bool
     recall_retry_pending: bool
     stop_after_first_verified_step: bool
+    last_tool_decision: str | None
+    repeated_tool_decisions: int
+    structured_mode: bool
+    failed_plan_attempts: int
 
 class AgentLoop:
     def __init__(self, decider: Any, max_steps: int = 6, clock=None, task_store=None, memory_store=None, mcp_client=None, skill_strategy='dynamic', skill_budget_chars=600):
@@ -95,6 +99,22 @@ class AgentLoop:
             return {"iterations": iteration, "final": final,
                     "status": "partial" if is_partial else "completed", "traces": state["traces"] + [
                         {"step": iteration, "type": "final", "chars": len(decision.content)}]}
+        # Stop a non-progressing model that repeats the same tool invocation.
+        # This is a *partial* result, never evidence of task completion.
+        signature = (json.dumps([{"name": call.get("name"),
+                                "arguments": call.get("arguments")}
+                               for call in decision.tool_calls],
+                               sort_keys=True, ensure_ascii=False, default=str)
+                     if decision.tool_calls else None)
+        repeats = (state["repeated_tool_decisions"] + 1
+                   if signature and signature == state["last_tool_decision"] else 0)
+        if state.get("structured_mode", False) and repeats >= 2:
+            return {"iterations": iteration, "status": "partial",
+                    "final": "连续多次收到相同工具请求，已停止重复执行；任务尚未验证完成。",
+                    "traces": state["traces"] + [
+                        {"step": iteration, "type": "repeat_tool_stop"}],
+                    "last_tool_decision": signature,
+                    "repeated_tool_decisions": repeats}
         if iteration >= self.max_steps:
             return {"iterations": iteration, "final": "Agent reached its decision step limit.",
                     "status": "step_limit", "traces": state["traces"] + [
@@ -109,6 +129,7 @@ class AgentLoop:
         return {"iterations": iteration, "messages": state["messages"] + [
             {"role": "assistant", "content": decision.content, "tool_calls": assistant_calls}],
             "recall_retry_pending": False,
+            "last_tool_decision": signature, "repeated_tool_decisions": repeats,
             "traces": state["traces"] + [{"step": iteration, "type": "decision",
                                          "tools": [c["name"] for c in decision.tool_calls]}]}
 
@@ -182,11 +203,15 @@ class AgentLoop:
                                           "in invalidate_step_ids; preserve other completed steps.")
                 else:
                     result["guidance"] = "Retry with current revision or omit expected_revision, preserving verified steps."
+            if name in {"propose_plan", "revise_plan", "complete_plan_step"}:
+                state["failed_plan_attempts"] = (state["failed_plan_attempts"] + 1
+                    if not result.get("ok") else 0)
             observations.append({"role": "tool", "tool_name": name,
                                  "tool_call_id": call["id"],
                                  "content": json.dumps(result, ensure_ascii=False)})
             traces.append({"step": state["iterations"], "type": "tool",
-                           "name": name, "ok": result["ok"]})
+                           "name": name, "ok": result["ok"],
+                           "error_code": result.get("error") if not result["ok"] else None})
             if state["audit_enabled"]:
                 audit.append({"step": state["iterations"], "name": name,
                               "arguments": function.get("arguments"), "observation": result})
@@ -194,6 +219,14 @@ class AgentLoop:
                   "tasks": tasks, "traces": traces, "audit": audit,
                   "plan": state["plan"], "last_success": state["last_success"],
                   "memory_recall_observed": state["memory_recall_observed"]}
+        # A rejected plan call is not progress. Permit one correction, then stop
+        # safely instead of consuming the whole decision budget.
+        if state.get("structured_mode", False) and state["failed_plan_attempts"] >= 2:
+            update.update({"status": "partial",
+                           "final": "计划工具连续失败，已停止重试；未生成有效执行计划。",
+                           "traces": traces + [{"step": state["iterations"],
+                                                 "type": "plan_tool_failure_stop"}]})
+            return update
         # Stop only for an explicitly limited first step with verified evidence.
         steps = state["plan"].snapshot()
         if (state["stop_after_first_verified_step"] and len(steps) >= 2
@@ -211,7 +244,9 @@ class AgentLoop:
 
     async def run(self, goal: str, *, include_evidence: bool = False,
                   history: list[dict] | None = None,
-                  plan_checkpoint: dict | None = None) -> dict:
+                  plan_checkpoint: dict | None = None,
+                  understanding_result: dict | None = None,
+                  execution_mode: str | None = None) -> dict:
         if not goal.strip() or len(goal) > 12000:
             raise ValueError("Goal must contain 1..12000 characters")
         run_id = str(uuid.uuid4())
@@ -226,7 +261,8 @@ class AgentLoop:
         # No automatic evidence deletion: the model must invalidate via revise_plan.
         superseded_step_ids = []
         superseded_expression = None
-        correction = re.search(r"不是\s*([0-9]+\s*[*+/-]\s*[0-9]+)\s*[,，；;。]?\s*而是", goal)
+        correction = (re.search(r"不是\s*([0-9]+\s*[*+/-]\s*[0-9]+)\s*[,，；;。]?\s*而是", goal)
+                      if understanding_result is None else None)
         if correction:
             old_expression = re.sub(r"\s+", "", correction.group(1))
             superseded_expression = old_expression
@@ -237,7 +273,7 @@ class AgentLoop:
                 and step.get("expected_arguments") == {"expression": old_expression}]
         # Explicit saved-memory questions use a trusted, owner-scoped read.
         # Do not leave correctness to optional model tool choice.
-        if (self.memory_store is not None and any(phrase in goal for phrase in (
+        if (understanding_result is None and self.memory_store is not None and any(phrase in goal for phrase in (
                 "还记得", "记得我", "之前保存", "之前记住", "保存的",
                 "记住的", "测试偏好是什么", "测试偏好吗"))):
             records = self.memory_store.list()
@@ -279,7 +315,7 @@ class AgentLoop:
             "更正", "修改计划", "改成", "换成", "不是", "新增", "增加", "取消", "替换"))
         outstanding = [step for step in resumed.snapshot()
                        if step["status"] == "pending"]
-        if (continuation and not changed_goal and outstanding
+        if (understanding_result is None and continuation and not changed_goal and outstanding
                 and all(step.get("expected_tool") in
                         {"calculate", "mcp_reference_lookup", "utc_time", "list_tasks",
                          "recall_memory"}
@@ -353,25 +389,59 @@ class AgentLoop:
                 output["audit"] = audit
                 output["tasks"] = []
             return output
-        selected_tools = exposed_tools(goal, TOOL_SCHEMAS, strategy=self.skill_strategy)
+        # Model-derived understanding must not be routed through a second keyword classifier.
+        # Tool execution still requires the independent tool authorization and validation.
+        tool_strategy = "all" if understanding_result is not None else self.skill_strategy
+        selected_tools = exposed_tools(goal, TOOL_SCHEMAS, strategy=tool_strategy)
         if resumed.revision:
             names = {t["function"]["name"] for t in selected_tools}
             selected_tools += [t for t in TOOL_SCHEMAS if t["function"]["name"]
                                in {"propose_plan", "revise_plan", "complete_plan_step"}
                                and t["function"]["name"] not in names]
+        # Execution policy is independent of goal understanding and can only
+        # narrow tool exposure. The host's ordinary tool checks remain active.
+        mode = execution_mode
+        if mode is None and understanding_result is not None:
+            mode = understanding_result.get("execution_intent")  # legacy callers
+        if mode not in {None, "respond_only", "read_only", "execute"}:
+            raise ValueError("invalid_execution_mode")
+        if mode == "respond_only":
+            selected_tools = []
+        elif mode == "read_only":
+            read_tools = {"calculate", "utc_time", "list_tasks",
+                          "recall_memory", "mcp_reference_lookup"}
+            selected_tools = [tool for tool in selected_tools
+                              if tool["function"]["name"] in read_tools]
         resume_context = ("\nTrusted checkpoint: revision " + str(resumed.revision) +
                           "; steps: " + json.dumps(resumed.snapshot(), ensure_ascii=False)
                           if resumed.revision else "")
         # A bounded re-decision only for explicit saved-memory requests.
-        recall_required = any(phrase in goal for phrase in (
+        recall_required = understanding_result is None and any(phrase in goal for phrase in (
             "还记得", "记得我", "之前保存", "之前记住", "保存的",
             "记住的", "测试偏好是什么", "测试偏好吗"))
         bounded_first_step = bool(
             re.search(r"(只|先|首先|先尝试).{0,14}(完成|执行).{0,6}(第一步|第1步|步骤一)", goal)
             and re.search(r"(剩余|其他|后续).{0,12}(步骤|保留|不要|暂)", goal))
+        # A model-derived interpretation is lower-trust user data, never system policy.
+        goal_view = []
+        if understanding_result:
+            serialized = json.dumps(understanding_result, ensure_ascii=False)
+            if len(serialized) > 4000:
+                raise ValueError("understanding_context_too_large")
+            goal_view = [{"role": "user", "content":
+                "Untrusted structured interpretation proposal, NOT authorization or verified tool evidence: " + serialized}]
+        structured_policy = (
+            "\nStructured understanding supplies a proposal, not authorization. "
+            "For requests asking only for a draft, explanation, or suggestions "
+            "without reading or writing external state, respond directly; "
+            "do not call plan, task, memory, or lookup tools merely because "
+            "they are available. Do not repeatedly propose the same plan "
+            "or retry a rejected tool action without a meaningful correction. "
+            "Use tools only where their verified observations are necessary."
+            if understanding_result is not None else "")
         initial: AgentState = {"messages": [
-            {"role": "system", "content": PROMPT + "\nSelected skill instructions (" + SKILL_VERSION + "):\n" + load_instructions(goal, strategy=self.skill_strategy, max_chars=self.skill_budget_chars) + resume_context},
-            *clean_history, {"role": "user", "content": goal}],
+            {"role": "system", "content": PROMPT + "\nSelected skill instructions (" + SKILL_VERSION + "):\n" + load_instructions(goal, strategy=self.skill_strategy, max_chars=self.skill_budget_chars) + resume_context + structured_policy},
+            *clean_history, *goal_view, {"role": "user", "content": goal}],
             "traces": [], "tasks": [], "final": "", "status": "running", "iterations": 0,
             "audit_enabled": include_evidence, "audit": [],
             "allowed_tools": selected_tools,
@@ -381,7 +451,10 @@ class AgentLoop:
             "memory_recall_required": recall_required and self.memory_store is not None,
             "memory_recall_observed": False, "memory_recall_retry": False,
             "recall_retry_pending": False,
-            "stop_after_first_verified_step": bounded_first_step}
+            "stop_after_first_verified_step": bounded_first_step,
+            "last_tool_decision": None, "repeated_tool_decisions": 0,
+            "structured_mode": understanding_result is not None,
+            "failed_plan_attempts": 0}
         try:
             outcome = await self.graph.ainvoke(initial, config={"recursion_limit": 2 * self.max_steps + 4})
         except Exception as exc:
@@ -399,6 +472,8 @@ class AgentLoop:
                   "plan": outcome["plan"].snapshot(), "plan_revision": outcome["plan"].revision,
                   "plan_events": list(outcome["plan"].events),
                   "plan_checkpoint": outcome["plan"].checkpoint() if outcome["plan"].revision else None}
+        if execution_mode is not None:
+            result["execution_mode"] = execution_mode
         if include_evidence:
             result["audit"] = outcome["audit"]
             result["tasks"] = outcome["tasks"]

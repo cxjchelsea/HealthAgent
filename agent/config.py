@@ -7,6 +7,10 @@ class Settings(BaseSettings):
     model_provider: str = "fake"
     model_base_url: str = "https://api.openai.com/v1"
     model_name: str = "gpt-4o-mini"
+    understanding_light_model: str = "qwen3:4b"
+    understanding_strong_model: str = "qwen3:14b"
+    run_s25_01_live: bool = False
+    understanding_strategy: str = "direct"  # direct or structured; benchmark before default switch
     model_api_key: str = ""
     model_timeout_seconds: float = Field(default=45, gt=0)
     model_max_output_tokens: int = Field(default=2048, ge=128, le=16384)

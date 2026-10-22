@@ -3,6 +3,7 @@ import json
 from dataclasses import dataclass
 from typing import Any
 import httpx
+from agent.http_policy import model_http_trust_env
 from agent.providers import ModelUnavailable
 
 @dataclass
@@ -58,7 +59,7 @@ class NativeToolDecision:
         # Retry one empty decision at most; never retry side-effecting tool calls.
         for attempt in range(2):
             try:
-                async with httpx.AsyncClient(timeout=s.model_timeout_seconds) as client:
+                async with httpx.AsyncClient(timeout=s.model_timeout_seconds, trust_env=model_http_trust_env(s.model_provider, s.model_base_url)) as client:
                     response = await client.post(url, json=body, headers=headers)
                     response.raise_for_status()
                     payload = response.json()

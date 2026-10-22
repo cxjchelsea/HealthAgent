@@ -48,6 +48,15 @@ class ConversationPlan(Base):
         ForeignKey("conversations.id"), primary_key=True)
     snapshot: Mapped[str] = mapped_column(Text, default="{}")
 
+class ConversationGoalState(Base):
+    """Versioned, owner-scoped via parent conversation, verified by caller."""
+    __tablename__ = "conversation_goal_states"
+    conversation_id: Mapped[str] = mapped_column(
+        ForeignKey("conversations.id"), primary_key=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    goal_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    pending_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
 class Turn(Base):
     __tablename__="turns"
     __table_args__=(UniqueConstraint("conversation_id", "request_id"),)

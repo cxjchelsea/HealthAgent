@@ -8,7 +8,8 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from agent.config import Settings
-from agent.understanding import GoalIntake, understand
+from agent.understanding import UnderstandingContext, UnderstandingService, HTTPUnderstandingModel, UnderstandingError
+from agent.execution_policy import decide_execution_policy_detail
 from agent.decision import NativeToolDecision
 from agent.loop import AgentLoop
 from agent.mcp_stdio_client import StdioMCPClient
@@ -16,6 +17,7 @@ from agent.context import build_context
 from services.task_store import ConversationTaskStore
 from services.memory_store import MemoryStore
 from services.plan_store import ConversationPlanStore
+from services.goal_store import ConversationGoalStore
 from services.db import Conversation, Message, Turn, database
 
 log=logging.getLogger("healthagent")
@@ -25,15 +27,18 @@ class ChatIn(BaseModel):
     content: str = Field(min_length=1)
     client_request_id: str = Field(min_length=8,max_length=120)
     memory_write_consent: bool = False
+    goal_confirmation: str | None = None
+    expected_goal_version: int | None = None
 
 class GoalIn(BaseModel):
     content: str = Field(min_length=1)
+    conversation_id: str | None = None
 
 class ConversationOut(BaseModel):
     id: str
     messages: list[dict]
 
-def create_app(settings: Settings | None=None, provider=None, agent_decider=None):
+def create_app(settings: Settings | None=None, provider=None, agent_decider=None, execution_policy=None):
     settings = settings or Settings()
     engine, Session=database(settings.database_url)
 
@@ -62,9 +67,46 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
             raise HTTPException(404,"Conversation not found")
         return c
 
-    @app.post("/understanding", response_model=GoalIntake)
-    def understand_goal(body: GoalIn, uid=Depends(user_id)):
-        return understand(body.content)
+    @app.post("/understanding")
+    async def understand_goal(body: GoalIn, uid=Depends(user_id)):
+        """S25-01: one typed understanding service, never a rule-based classifier."""
+        if settings.model_provider == "fake":
+            raise HTTPException(503, {"code": "understanding_requires_real_model"})
+        service = UnderstandingService(
+            HTTPUnderstandingModel(settings.model_provider, settings.model_base_url,
+                                   settings.model_api_key, settings.model_timeout_seconds,
+                                   settings.model_max_output_tokens),
+            settings.understanding_light_model, settings.understanding_strong_model,
+                    semantic_review=True)
+        try:
+            history = []
+            plan_summary = []
+            if body.conversation_id is not None:
+                with Session() as db:
+                    get_owned(db, body.conversation_id, uid)
+                    rows = db.scalars(select(Message).where(
+                        Message.conversation_id == body.conversation_id,
+                        Message.status == "completed"
+                    ).order_by(Message.created_at, Message.id)).all()
+                    history = build_context(rows, body.content,
+                        max_messages=settings.max_history_messages,
+                        max_chars=settings.context_max_chars)
+                snapshot = ConversationPlanStore(Session, body.conversation_id).load()
+                if snapshot:
+                    plan_summary = [
+                        {"id": step.get("id"), "goal": step.get("goal"),
+                         "status": step.get("status"), "revision": snapshot.get("revision")}
+                        for step in snapshot.get("steps", [])[:8]
+                    ]
+            outcome = await service.understand(UnderstandingContext(
+                current_message=body.content, recent_completed_messages=history,
+                current_plan_summary=plan_summary))
+            return {"understanding": outcome["result"].model_dump(),
+                    "model_role": outcome["model_role"], "model": outcome["model"],
+                    "duration_ms": outcome["duration_ms"], "escalated": outcome["escalated"],
+                    "routing_attempts": outcome["attempts"]}
+        except UnderstandingError as exc:
+            raise HTTPException(503, {"code": exc.code}) from exc
 
     class MemoryInput(BaseModel):
         value: str = Field(min_length=1, max_length=500)
@@ -124,6 +166,9 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                 raise HTTPException(409, "conversation_turn_in_progress") from exc
             raise
         plan_store = ConversationPlanStore(Session, cid)
+        goal_store = ConversationGoalStore(Session, cid)
+        previous_goal = None
+        parsed_result = None
         began = time.monotonic()
         status, answer = "provider_error", ""
         result = None
@@ -131,18 +176,111 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
         decision_steps = 0
         try:
             existing_checkpoint = plan_store.load()
-            decider = agent_decider if agent_decider is not None else NativeToolDecision(settings)
-            result = await AgentLoop(decider, task_store=ConversationTaskStore(Session, cid),
-                memory_store=MemoryStore(Session, uid, write_allowed=body.memory_write_consent),
-                mcp_client=StdioMCPClient(), skill_strategy=settings.skill_strategy,
-                skill_budget_chars=settings.skill_budget_chars).run(body.content, history=context,
-                                      plan_checkpoint=existing_checkpoint)
+            interpretation = None
+            if body.goal_confirmation is not None:
+                if (settings.understanding_strategy != "structured"
+                        or body.goal_confirmation not in {"accept", "reject"}
+                        or body.expected_goal_version is None):
+                    raise UnderstandingError("invalid_goal_confirmation")
+                previous_goal = goal_store.load()
+                if previous_goal["version"] != body.expected_goal_version:
+                    raise UnderstandingError("stale_goal_confirmation")
+                if not previous_goal.get("pending") or (
+                        previous_goal["pending"].get("change") or {}).get("kind") != "revise":
+                    raise UnderstandingError("no_pending_revision")
+                result = {"run_id": turn_id, "status": "completed",
+                          "answer": "目标更正已确认。" if body.goal_confirmation == "accept"
+                                    else "已拒绝目标更正，原目标保持不变。",
+                          "trace": [{"step": 0, "type": "goal_confirmation"}], "steps": 0}
+            if settings.understanding_strategy not in {"direct", "structured"}:
+                raise UnderstandingError("invalid_understanding_strategy")
+            if result is None and settings.understanding_strategy == "structured":
+                previous_goal = goal_store.load()
+                service = UnderstandingService(
+                    HTTPUnderstandingModel(settings.model_provider, settings.model_base_url,
+                                           settings.model_api_key, settings.model_timeout_seconds,
+                                           settings.model_max_output_tokens),
+                    settings.understanding_light_model, settings.understanding_strong_model)
+                summary = [
+                    {"id": item.get("id"), "goal": item.get("goal"),
+                     "status": item.get("status"),
+                     "revision": existing_checkpoint.get("revision")}
+                    for item in (existing_checkpoint or {}).get("steps", [])[:8]]
+                parsed = await service.understand(UnderstandingContext(
+                    current_message=body.content, recent_completed_messages=context,
+                    current_plan_summary=summary,
+                    active_goal=previous_goal['goal'],
+                    confirmed_constraints=previous_goal['goal'].get('constraints', []) if previous_goal['goal'] else [],
+                    outstanding_clarification=(previous_goal['pending'] or {}).get('clarification', {}).get('question')))
+                parsed_result = parsed["result"]
+                interpretation = parsed_result.model_dump()
+                if parsed["result"].clarification.required:
+                    result = {"run_id": turn_id, "status": "partial",
+                              "answer": parsed["result"].clarification.question,
+                              "trace": [{"step": 0, "type": "goal_clarification"}],
+                              "steps": 0}
+            execution_mode = None
+            execution_target = "goal_state"  # Legacy injected strategy conservatively preserves revisions.
+            if result is None and interpretation is not None:
+                if execution_policy is not None:
+                    policy_result = await execution_policy(body.content, interpretation)
+                    execution_mode = (policy_result.mode if hasattr(policy_result, "mode")
+                                      else policy_result)
+                    if hasattr(policy_result, "target"):
+                        execution_target = policy_result.target
+                elif agent_decider is None:
+                    policy_result = await decide_execution_policy_detail(
+                        HTTPUnderstandingModel(settings.model_provider, settings.model_base_url,
+                                               settings.model_api_key, settings.model_timeout_seconds,
+                                               settings.model_max_output_tokens),
+                        settings.understanding_strong_model, body.content, interpretation)
+                    execution_mode = policy_result.mode
+                    execution_target = policy_result.target
+                # Injected deciders in existing offline tests use legacy tool visibility;
+                # live requests and explicit policy injections exercise the new boundary.
+            # Only persistent execution proposals need a confirmed durable goal.
+            # A revision of an unsaved conversational draft must not require
+            # Goal Store state, but it must also never mutate that store.
+            if result is None and parsed_result is not None:
+                # Host-grounded absence of a durable referent is a clarification,
+                # not a provider outage. Never invent the missing target.
+                if (previous_goal is not None and previous_goal.get("goal") is None
+                        and parsed_result.status == "understood"
+                        and parsed_result.change.kind in {"revise", "add"}
+                        and execution_mode == "execute"
+                        and execution_target == "goal_state"):
+                    result = {"run_id": turn_id, "status": "partial",
+                              "answer": "当前没有已确认的目标。请说明要修改或追加的是哪份清单，以及具体修改内容。",
+                              "trace": [{"step": 0, "type": "goal_clarification"}],
+                              "steps": 0}
+                if (result is None and execution_mode not in {"respond_only", "read_only"}
+                        and execution_target == "goal_state"):
+                    transition = goal_store.validate_before_execution(
+                        parsed_result, previous_goal)
+                    if transition == "confirmation_required":
+                        result = {"run_id": turn_id, "status": "partial",
+                                  "answer": "原有约束发生更正，请确认或拒绝。",
+                                  "trace": [{"step": 0, "type": "goal_confirmation_required"}],
+                                  "steps": 0, "proposed_goal": parsed_result.goal.model_dump(),
+                                  "expected_goal_version": previous_goal["version"] + 1}
+            if result is None:
+                decider = agent_decider if agent_decider is not None else NativeToolDecision(settings)
+                result = await AgentLoop(decider, task_store=ConversationTaskStore(Session, cid),
+                    memory_store=MemoryStore(Session, uid, write_allowed=body.memory_write_consent),
+                    mcp_client=StdioMCPClient(), skill_strategy=settings.skill_strategy,
+                    skill_budget_chars=settings.skill_budget_chars).run(body.content, history=context,
+                                          plan_checkpoint=existing_checkpoint,
+                                          understanding_result=interpretation,
+                                          execution_mode=execution_mode)
             if result["status"] in {"completed", "partial"}:
                 answer, status = result["answer"], result["status"]
             else:
                 status = result["status"]
                 failure_code = result.get("failure_code") or status
             decision_steps = result.get("steps", 0)
+        except UnderstandingError as exc:
+            status, answer = "provider_error", ""
+            failure_code = exc.code
         except Exception as exc:
             log.warning("conversation Agent failed turn=%s class=%s", turn_id, type(exc).__name__)
             status, answer = "provider_error", ""
@@ -158,6 +296,19 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                     raise RuntimeError("turn_finalization_conflict")
                 if status in {"completed", "partial"} and result.get("plan_checkpoint"):
                     plan_store.save_in_session(db, result["plan_checkpoint"])
+                if (status in {"completed", "partial"} and parsed_result is not None
+                        and execution_mode not in {"respond_only", "read_only"}
+                        and execution_target == "goal_state"
+                        and previous_goal is not None
+                        and not any(item.get("type") == "goal_clarification"
+                                    for item in (result or {}).get("trace", []))
+                        and not any(item.get("type") == "repeat_tool_stop"
+                                    for item in (result or {}).get("trace", []))):
+                    goal_store.save_in_session(db, parsed_result, previous_goal)
+                if status == "completed" and body.goal_confirmation is not None and previous_goal is not None:
+                    goal_store.resolve_confirmation_in_session(
+                        db, previous_goal, body.expected_goal_version,
+                        body.goal_confirmation == "accept")
                 response.content = answer
                 response.status = status
                 turn.state = status
@@ -183,7 +334,8 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
             raise HTTPException(503, {"code": failure_code or status,
                                       "turn_id": turn_id,
                                       "status": status,
-                                      "decision_steps": decision_steps})
+                                      "decision_steps": decision_steps,
+                                      "trace_summary": safe_trace})
         return {**result, "conversation_id": cid, "message_id": assistant_id}
 
     @app.get("/conversations/{cid}/turns/{turn_id}/diagnostics")
