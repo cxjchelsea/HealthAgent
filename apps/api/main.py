@@ -17,6 +17,7 @@ from services.task_store import ConversationTaskStore
 from services.memory_store import MemoryStore
 from services.plan_store import ConversationPlanStore
 from services.evidence_store import AttemptEvidenceStore
+from services.task_state import AgentTaskStateStore
 from services.db import AgentAttempt
 import json
 from services.db import Conversation, Message, Turn, database
@@ -134,6 +135,7 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
         decision_steps = 0
         try:
             existing_checkpoint = plan_store.load()
+            prior_task_state = AgentTaskStateStore(cid).load(Session)
             prior_step_results = AttemptEvidenceStore(cid, turn_id).completed_step_projections(Session)
             decider = agent_decider if agent_decider is not None else NativeToolDecision(settings)
             result = await AgentLoop(decider, task_store=ConversationTaskStore(Session, cid),
@@ -163,6 +165,10 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                     raise RuntimeError("turn_finalization_conflict")
                 if status in {"completed", "partial"} and result.get("plan_checkpoint"):
                     plan_store.save_in_session(db, result["plan_checkpoint"])
+                if status in {"completed", "partial"} and result:
+                    AgentTaskStateStore(cid).save_in_session(
+                        db, result.get("plan_checkpoint"), status,
+                        prior_task_state["revision"] if prior_task_state else None)
                 if result and result.get("evidence_attempts"):
                     AttemptEvidenceStore(cid, turn_id).save_in_session(db, result["evidence_attempts"])
                 response.content = answer
@@ -194,6 +200,14 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
         safe_result = {k: v for k, v in result.items() if k != "evidence_attempts"}
         safe_result["attempt_refs"] = [a["attempt_id"] for a in result.get("evidence_attempts", [])]
         return {**safe_result, "conversation_id": cid, "message_id": assistant_id}
+
+    @app.get("/conversations/{cid}/agent/task-state")
+    def task_state(cid: str, uid=Depends(user_id)):
+        with Session() as db:
+            get_owned(db,cid,uid)
+        record = AgentTaskStateStore(cid).load(Session)
+        return record or {"task_id": None,"revision":0,"plan_revision":0,
+                          "state":"not_started","steps":[]}
 
     @app.get("/conversations/{cid}/turns/{turn_id}/evidence")
     def turn_evidence(cid: str, turn_id: str, uid=Depends(user_id)):
