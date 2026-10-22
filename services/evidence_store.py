@@ -120,13 +120,18 @@ class AttemptEvidenceStore:
 
     def has_unresolved_writes(self, session_factory) -> bool:
         """Database EXISTS, not the first page of an unresolved list."""
-        from sqlalchemy import select
-        from services.db import AgentAttempt
+        from sqlalchemy import select, and_, or_
+        from services.db import AgentAttempt, Turn
         with session_factory() as db:
-            return db.scalar(select(AgentAttempt.id).where(
+            return db.scalar(select(AgentAttempt.id).join(
+                Turn, Turn.id == AgentAttempt.turn_id).where(
                 AgentAttempt.conversation_id == self.conversation_id,
-                AgentAttempt.status == "prepared",
-                AgentAttempt.tool_name.in_(("create_task", "save_memory"))
+                AgentAttempt.tool_name.in_(("create_task", "save_memory")),
+                or_(
+                    AgentAttempt.status == "prepared",
+                    and_(AgentAttempt.status == "succeeded",
+                         Turn.state.not_in(("completed", "partial")))
+                )
             ).limit(1)) is not None
 
     def completed_step_projections(self, session_factory, checkpoint: dict | None = None) -> dict[int, dict]:
