@@ -99,9 +99,10 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                     raise HTTPException(409, "duplicate_request_id")
                 # Only the most recent successful turn may supply a pending clarification.
                 # Unrelated partial/error assistant replies remain excluded from context.
-                latest_turn = db.scalar(select(Turn).where(
+                latest_turn = db.scalar(select(Turn).join(
+                    Message, Message.id == Turn.assistant_message_id).where(
                     Turn.conversation_id == cid, Turn.state != "running")
-                    .order_by(Turn.created_at.desc(), Turn.id.desc()))
+                    .order_by(Message.created_at.desc(), Message.id.desc()))
                 clarification_id = (latest_turn.assistant_message_id
                     if latest_turn and latest_turn.state == "partial"
                     and latest_turn.failure_code == "needs_input" else None)
