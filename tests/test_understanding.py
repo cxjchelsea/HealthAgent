@@ -42,7 +42,7 @@ def test_malformed_small_result_escalates_once():
         UnderstandingContext(current_message="整理明天事项")))
     assert stub.calls == ["small", "large"]
     assert result["escalated"]
-    assert [a["outcome"] for a in result["attempts"]] == ["invalid_structured_result", "valid"]
+    assert [a["outcome"] for a in result["attempts"]] == ["structured_schema_error", "valid"]
     assert all(a["duration_ms"] >= 0 for a in result["attempts"])
 
 def test_invalid_both_models_fails_closed():
@@ -51,6 +51,8 @@ def test_invalid_both_models_fails_closed():
         asyncio.run(UnderstandingService(stub, "small", "large").understand(
             UnderstandingContext(current_message="替我存任务")))
     assert error.value.code == "understanding_unavailable"
+    assert len(error.value.attempts) == 2
+    assert all(a["outcome"] == "structured_schema_error" for a in error.value.attempts)
 
 def test_fabricated_goal_reference_is_not_accepted():
     candidate = payload()
