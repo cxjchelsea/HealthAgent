@@ -171,10 +171,14 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                     raise RuntimeError("turn_finalization_conflict")
                 if status in {"completed", "partial"} and result.get("plan_checkpoint"):
                     plan_store.save_in_session(db, result["plan_checkpoint"])
-                if status in {"completed", "partial"} and result:
+                # Preserve the previous trusted checkpoint on failed terminal turns.
+                # A failed model call is not evidence that the prior plan disappeared.
+                if result or prior_task_state:
                     AgentTaskStateStore(cid).save_in_session(
-                        db, result.get("plan_checkpoint"), status,
-                        prior_task_state["revision"] if prior_task_state else None)
+                        db, result.get("plan_checkpoint") if result and result.get("plan_checkpoint")
+                        else existing_checkpoint, status,
+                        prior_task_state["revision"] if prior_task_state else None,
+                        result.get("evidence_attempts", []) if result else [])
                 if result and result.get("evidence_attempts"):
                     AttemptEvidenceStore(cid, turn_id).save_in_session(db, result["evidence_attempts"])
                 response.content = answer
