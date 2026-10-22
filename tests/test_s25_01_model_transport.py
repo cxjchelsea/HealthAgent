@@ -1,7 +1,7 @@
 import asyncio
 import httpx
 from agent.http_policy import model_http_trust_env
-from agent.understanding import HTTPUnderstandingModel, UnderstandingResult
+from agent.understanding import HTTPUnderstandingModel, UnderstandingResult, understanding_generation_schema
 
 def test_local_ollama_ignores_system_proxy():
     for url in ("http://127.0.0.1:11434/api", "http://localhost:11434/api", "http://[::1]:11434/api"):
@@ -27,4 +27,4 @@ def test_ollama_requests_actual_schema_and_disables_local_proxy(monkeypatch):
     asyncio.run(model.complete(messages=[{"role":"user", "content":"hi"}], model="qwen3:4b"))
     assert captured["trust_env"] is False
     assert captured["url"].endswith("/api/chat")
-    assert captured["format"] == UnderstandingResult.model_json_schema()
+    assert captured["format"] == understanding_generation_schema()
