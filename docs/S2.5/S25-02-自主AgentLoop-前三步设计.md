@@ -268,3 +268,11 @@ LoopOutcome:
 在原生 Tool Calling 的统一 AgentLoop 中新增 `request_clarification(question)` 控制工具，使用 Pydantic 检验具体问题（1～500 字），所有 Skills 策略均可向模型暴露；**不通过关键词触发**。若模型独立调用此控制动作，Loop 立即返回 `status=partial`、`termination_reason=needs_input` 和具体问题，原会话 Assistant 消息按现有 API 路径持久化。若澄清与写工具一起批量提交，整批拒绝并反馈 `control_action_must_be_alone`，避免同一决策先发副作用再澄清；无效问题反馈 `invalid_arguments`，模型可在当前预算内重新决策。
 
 当前是**单回合主动澄清与用户可见等待提示**，不是已经完成独立 `NeedsInput` 持久任务状态、澄清引用绑定、授权等待/批准/取消或 S25-01 语义理解。下一轮用户答复仍由现有对话上下文处理；跨轮目标引用可信状态必须待 S25-01 / S25-03 接线后扩展。受控回归见 `tests/test_s25_02_clarification.py`，CI 和真实模型验证分别记录；不在此阶段宣称 S25-02 CLOSED。
+
+### Step 4 — 第四切片：澄清问题的跨轮上下文接线（2026-10-22）
+
+前轮 Clarification 控制动作的 API 响应维持 `partial`，并把可信 `termination_reason=needs_input` 写入所属 `Turn.failure_code`，同 `Message`、`Turn` 原事务提交。下一轮正式 Conversation API 仅在**最近已终止 Turn** 是 `partial + needs_input` 时，通过该 Turn 的 `assistant_message_id` 将相应的助手澄清问题放入有界 Context；其他 `partial`（计划未完成、记忆未核实等）和失败占位均不能以此途径进入模型上下文。下一轮成功终止后不再将旧澄清问题作为特殊部分消息重新注入。身份 Owner/并发/request_id 仍沿用正式 API 保护，无新数据库迁移或第二状态仓库。
+
+测试：`tests/test_s25_02_clarification_api.py` 覆盖“请求澄清 → 下一轮短回答 → 后续轮不再次注入”，并更新旧 `test_s2c_skills.py` 区分 Skill 工具与全局 Clarification 控制工具。此前 HEAD `9816ea0` CI 曾失败两项 Skills 断言（2 failed / 127 passed / 3 skipped），本轮已针对实际冲突修改；以新的精确 HEAD CI 结果为准。
+
+**限制**：当前仅提供最近一次澄清问题的可信上下文引用，不构成 S25-01 结构化 Goal/ChangeProposal、跨会话待澄清事务、独立持久目标续接或完整 Pause/Cancel 审批流程；尚需真实 Qwen E2E。
