@@ -60,3 +60,23 @@ class AttemptEvidenceStore:
                 status=item["status"], error_code=item.get("error_code"),
                 result_projection=json.dumps(item["result_projection"], ensure_ascii=False),
             ))
+
+    def completed_step_projections(self, session_factory) -> dict[int, dict]:
+        """Only previously recorded successful, tool-scoped projections in this conversation."""
+        from sqlalchemy import select
+        from services.db import AgentAttempt
+        with session_factory() as db:
+            records = db.scalars(select(AgentAttempt).where(
+                AgentAttempt.conversation_id == self.conversation_id,
+                AgentAttempt.status == "succeeded",
+                AgentAttempt.step_id.is_not(None)
+            ).order_by(AgentAttempt.created_at, AgentAttempt.id)).all()
+            evidence = {}
+            for row in records:
+                try:
+                    projection = json.loads(row.result_projection or "{}")
+                except (TypeError, ValueError):
+                    continue
+                if projection.get("ok") is True:
+                    evidence[row.step_id] = {"tool": row.tool_name, "result": projection}
+            return evidence
