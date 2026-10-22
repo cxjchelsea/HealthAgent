@@ -16,6 +16,9 @@ from agent.context import build_context
 from services.task_store import ConversationTaskStore
 from services.memory_store import MemoryStore
 from services.plan_store import ConversationPlanStore
+from services.evidence_store import AttemptEvidenceStore
+from services.db import AgentAttempt
+import json
 from services.db import Conversation, Message, Turn, database
 
 log=logging.getLogger("healthagent")
@@ -158,6 +161,8 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                     raise RuntimeError("turn_finalization_conflict")
                 if status in {"completed", "partial"} and result.get("plan_checkpoint"):
                     plan_store.save_in_session(db, result["plan_checkpoint"])
+                if result and result.get("evidence_attempts"):
+                    AttemptEvidenceStore(cid, turn_id).save_in_session(db, result["evidence_attempts"])
                 response.content = answer
                 response.status = status
                 turn.state = status
@@ -184,7 +189,27 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                       "turn_id": turn_id,
                                       "status": status,
                                       "decision_steps": decision_steps})
-        return {**result, "conversation_id": cid, "message_id": assistant_id}
+        safe_result = {k: v for k, v in result.items() if k != "evidence_attempts"}
+        safe_result["attempt_refs"] = [a["attempt_id"] for a in result.get("evidence_attempts", [])]
+        return {**safe_result, "conversation_id": cid, "message_id": assistant_id}
+
+    @app.get("/conversations/{cid}/turns/{turn_id}/evidence")
+    def turn_evidence(cid: str, turn_id: str, uid=Depends(user_id)):
+        """Bounded owner-scoped evidence from the actual executor, not model recollection."""
+        with Session() as db:
+            get_owned(db, cid, uid)
+            turn = db.get(Turn, turn_id)
+            if turn is None or turn.conversation_id != cid:
+                raise HTTPException(404, "Turn not found")
+            attempts = db.scalars(select(AgentAttempt).where(
+                AgentAttempt.conversation_id == cid, AgentAttempt.turn_id == turn_id)
+                .order_by(AgentAttempt.created_at, AgentAttempt.id).limit(50)).all()
+            return {"turn_id": turn_id, "attempts": [
+                {"attempt_id": a.id, "run_id": a.run_id,
+                 "step_id": a.step_id, "tool": a.tool_name,
+                 "status": a.status, "error_code": a.error_code,
+                 "result": json.loads(a.result_projection) if a.result_projection else None}
+                for a in attempts]}
 
     @app.get("/conversations/{cid}/turns/{turn_id}/diagnostics")
     def turn_diagnostics(cid: str, turn_id: str, uid=Depends(user_id)):
