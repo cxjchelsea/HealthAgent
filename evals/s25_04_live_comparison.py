@@ -79,7 +79,7 @@ def evaluate(repeats=2):
                     "tools_called": [e.get("name") for e in tool_events],
                     "success_tools": sorted(str(t) for t in actual),
                     "candidate_recall": recall,
-                    "tool_evidence_matched": expected <= actual,
+                    "tool_evidence_matched": (expected <= actual if expected else not tool_events),
                     "no_tool_violations": (len(tool_events) if not expected else 0),
                     "reason_code": (payload.get("detail", {}).get("code")
                                     if isinstance(payload.get("detail"), dict) else None),
