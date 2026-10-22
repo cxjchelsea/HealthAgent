@@ -175,3 +175,33 @@ def test_api_constraint_revision_requires_explicit_versioned_confirmation(tmp_pa
         assert final["pending"] is None
         assert len(calls) == 2
         engine.dispose()
+
+def test_model_clarification_cannot_confirm_pending_revision(tmp_path):
+    from services.migrate import migrate
+    from services.db import Conversation
+    from agent.understanding import UnderstandingError
+    import pytest
+    url = f"sqlite:///{tmp_path/'no-bypass.db'}"
+    migrate(url)
+    engine, Session = database(url)
+    with Session.begin() as db:
+        conversation = Conversation(owner_id="owner")
+        db.add(conversation)
+        db.flush()
+        cid = conversation.id
+    store = ConversationGoalStore(Session, cid)
+    initial = UnderstandingResult.model_validate_json(proposal("new_goal", "安排三项", [
+        {"name": "limit", "value": "最多三项", "source": "explicit", "scope": "goal"}]))
+    with Session.begin() as db:
+        store.save_in_session(db, initial, store.load())
+    revision = UnderstandingResult.model_validate_json(proposal("revise", "安排两项", [
+        {"name": "limit", "value": "最多两项", "source": "explicit", "scope": "goal"}]))
+    with Session.begin() as db:
+        store.save_in_session(db, revision, store.load())
+    before = store.load()
+    disguised = UnderstandingResult.model_validate_json(proposal("clarify_response", "安排两项", [
+        {"name": "limit", "value": "最多两项", "source": "explicit", "scope": "goal"}]))
+    with pytest.raises(UnderstandingError, match="pending_revision_requires_explicit_confirmation"):
+        store.validate_before_execution(disguised, before)
+    assert store.load() == before
+    engine.dispose()
