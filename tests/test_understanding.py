@@ -30,7 +30,7 @@ class StubModel:
 
 def test_model_driven_understanding_returns_constraints():
     stub = StubModel([json.dumps(payload(), ensure_ascii=False), json.dumps(payload(), ensure_ascii=False)])
-    service = UnderstandingService(stub, "small", "large")
+    service = UnderstandingService(stub, "small", "large", semantic_review=True)
     out = asyncio.run(service.understand(UnderstandingContext(current_message="明天最多安排三项")))
     assert out["result"].goal.constraints[0].value == "最多三项"
     assert stub.calls == ["small", "large"]
@@ -102,7 +102,7 @@ def test_light_nonmutating_understanding_does_not_require_strong_review():
 def test_strong_review_must_be_valid_and_never_falls_back_to_unverified_light():
     stub = StubModel([json.dumps(payload()), "{}", "{}"])
     with pytest.raises(UnderstandingError) as error:
-        asyncio.run(UnderstandingService(stub, "small", "large").understand(
+        asyncio.run(UnderstandingService(stub, "small", "large", semantic_review=True).understand(
             UnderstandingContext(current_message="安排明天任务")))
     assert error.value.code == "understanding_unavailable"
     assert error.value.attempts[0]["outcome"] == "semantic_review_required"
