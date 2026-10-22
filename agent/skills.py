@@ -80,6 +80,7 @@ def select_tool_exposure(
     prior_observation: dict[str, Any] | None = None,
     authorized_write_tools: tuple[str, ...] = (),
     active_step_tools: tuple[str, ...] = (),
+    unavailable_tools: tuple[str, ...] = (),
 ) -> ToolExposureDecision:
     if strategy not in ("dynamic", "all", "semantic"):
         raise ValueError("Unsupported skill strategy")
@@ -103,6 +104,10 @@ def select_tool_exposure(
     if strategy == "semantic":
         eligible |= (registered & declared & set(active_step_tools)
                      - {"create_task", "save_memory"})
+    # Trusted executor reports unavailability; never infer it from freeform
+    # text in external tool results or from a model-generated suggestion.
+    if strategy == "semantic":
+        eligible -= set(unavailable_tools)
     selected = tuple(item["function"]["name"] for item in schemas
                      if item["function"]["name"] in eligible)
     active = tuple(skill.name for skill in SKILLS
