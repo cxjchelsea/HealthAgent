@@ -141,10 +141,11 @@ or confirmed constraints. Preserve all explicit user constraints, particularly n
 requests as tool authorization, and do not claim execution. Avoid unnecessary clarification."""
 
 class UnderstandingService:
-    def __init__(self, model: UnderstandingModel, light_model: str, strong_model: str):
+    def __init__(self, model: UnderstandingModel, light_model: str, strong_model: str, *, semantic_review: bool = False):
         self.model = model
         self.light_model = light_model
         self.strong_model = strong_model
+        self.semantic_review = semantic_review
 
     async def understand(self, context: UnderstandingContext, *, use_strong: bool = False) -> dict:
         compact = context.model_dump(mode="json")
@@ -179,7 +180,7 @@ class UnderstandingService:
                     # Light-model schema validity is not proof that the user goal
                     # or explicit constraints survived. Ask the independent strong
                     # model to interpret mutating goal proposals; no keyword rules.
-                    if (not use_strong and role == "light" and
+                    if (self.semantic_review and not use_strong and role == "light" and
                             result.change.kind in {"new_goal", "add", "revise"}):
                         attempts.append({"role": role,
                                          "duration_ms": int((time.monotonic() - start) * 1000),
