@@ -17,6 +17,7 @@ import statistics
 import tempfile
 import time
 from pathlib import Path
+from evals.s25_01_paths import report_path
 from fastapi.testclient import TestClient
 from agent.config import Settings
 from apps.api.main import create_app
@@ -97,7 +98,7 @@ def main():
                 understanding_strategy=strategy,
             )
             report["strategies"][strategy] = exercise(settings)
-    Path(args.output).write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    report_path(args.output).write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps({k: {label: v[label] for label in ("p50_ms", "p95_ms", "request_failures")}
                       for k, v in report["strategies"].items()}, ensure_ascii=False, indent=2))
     print("Saved:", args.output)
