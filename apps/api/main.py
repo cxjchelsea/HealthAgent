@@ -75,7 +75,8 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
             HTTPUnderstandingModel(settings.model_provider, settings.model_base_url,
                                    settings.model_api_key, settings.model_timeout_seconds,
                                    settings.model_max_output_tokens),
-            settings.understanding_light_model, settings.understanding_strong_model)
+            settings.understanding_light_model, settings.understanding_strong_model,
+                    semantic_review=True)
         try:
             history = []
             plan_summary = []
