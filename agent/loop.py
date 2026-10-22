@@ -171,7 +171,10 @@ class AgentLoop:
         unresolved_failures = list(state["unresolved_tool_failures"])
         calls = last.get("tool_calls", [])[:4]
         if any(c["function"].get("name") == "request_clarification" for c in calls):
-            if len(calls) != 1:
+            allowed_names = {tool["function"]["name"] for tool in state["allowed_tools"]}
+            if "request_clarification" not in allowed_names:
+                issue = {"ok": False, "error": "tool_not_exposed"}
+            elif len(calls) != 1:
                 issue = {"ok": False, "error": "control_action_must_be_alone"}
             else:
                 try:
