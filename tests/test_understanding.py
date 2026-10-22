@@ -117,3 +117,21 @@ def test_failed_attempts_include_safe_consistency_diagnostics():
     assert len(error.value.attempts) == 3
     assert all(a["outcome"] == "structured_consistency_error" for a in error.value.attempts)
     assert all(a["diagnostic"] == "missing_goal" for a in error.value.attempts)
+
+class PromptCaptureModel:
+    def __init__(self):
+        self.messages_seen = []
+    async def complete(self, *, messages, model):
+        self.messages_seen.append(messages)
+        if len(self.messages_seen) == 1:
+            return json.dumps(payload(goal=False))
+        return json.dumps(payload())
+
+def test_missing_goal_retry_targets_invariant_without_fabricating_goal():
+    model = PromptCaptureModel()
+    result = asyncio.run(UnderstandingService(model, "small", "large").understand(
+        UnderstandingContext(current_message="请拟一个不保存的草案"), use_strong=True))
+    assert result["result"].goal.objective == "安排明天任务"
+    assert result["attempts"][0]["diagnostic"] == "missing_goal"
+    assert "UNSAVED" in model.messages_seen[1][-1]["content"]
+    assert "goal=null" in model.messages_seen[1][-1]["content"]
