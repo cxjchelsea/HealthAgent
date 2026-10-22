@@ -26,6 +26,7 @@ class AgentState(TypedDict):
     audit_enabled: bool
     audit: list[dict]
     allowed_tools: list[dict]
+    exposure_goal: str
     plan: PlanLedger
     last_success: dict | None
     superseded_step_ids: list[int]
@@ -57,6 +58,26 @@ class AgentLoop:
         self.graph = flow.compile()
 
     async def _decide(self, state: AgentState) -> dict:
+        if self.skill_strategy == "semantic":
+            selection = select_tool_exposure(
+                state["exposure_goal"], TOOL_SCHEMAS, strategy="semantic",
+            )
+            refreshed = exposure_schemas(selection, TOOL_SCHEMAS)
+            if state["plan"].revision:
+                included = {item["function"]["name"] for item in refreshed}
+                refreshed.extend(item for item in TOOL_SCHEMAS
+                                 if item["function"]["name"] in
+                                 {"propose_plan", "revise_plan", "complete_plan_step"}
+                                 and item["function"]["name"] not in included)
+            state["allowed_tools"] = refreshed
+            state["traces"].append({
+                "step": state["iterations"] + 1,
+                "type": "tool_exposure",
+                "strategy": selection.mode,
+                "version": selection.version,
+                "tool_names": [item["function"]["name"] for item in refreshed],
+                "excluded_count": len(selection.excluded_names),
+            })
         decision = await self.decider.decide(state["messages"], state["allowed_tools"])
         iteration = state["iterations"] + 1
         if not decision.tool_calls:
@@ -377,6 +398,7 @@ class AgentLoop:
             "traces": [], "tasks": [], "final": "", "status": "running", "iterations": 0,
             "audit_enabled": include_evidence, "audit": [],
             "allowed_tools": selected_tools,
+            "exposure_goal": goal,
             "plan": resumed, "last_success": None,
             "superseded_step_ids": superseded_step_ids,
             "superseded_expression": superseded_expression,
