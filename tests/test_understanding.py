@@ -29,12 +29,13 @@ class StubModel:
         return self.responses[len(self.calls) - 1]
 
 def test_model_driven_understanding_returns_constraints():
-    stub = StubModel([json.dumps(payload(), ensure_ascii=False)])
+    stub = StubModel([json.dumps(payload(), ensure_ascii=False), json.dumps(payload(), ensure_ascii=False)])
     service = UnderstandingService(stub, "small", "large")
     out = asyncio.run(service.understand(UnderstandingContext(current_message="明天最多安排三项")))
     assert out["result"].goal.constraints[0].value == "最多三项"
-    assert stub.calls == ["small"]
-    assert not out["escalated"]
+    assert stub.calls == ["small", "large"]
+    assert out["escalated"]
+    assert out["attempts"][0]["outcome"] == "semantic_review_required"
 
 def test_malformed_small_result_escalates_once():
     stub = StubModel(["invalid", json.dumps(payload(), ensure_ascii=False)])
@@ -89,3 +90,19 @@ def test_does_not_retry_untrusted_goal_id():
             UnderstandingContext(current_message="继续"), use_strong=True))
     assert stub.calls == ["large"]
     assert caught.value.attempts[0]["outcome"] == "unverified_goal_reference"
+
+def test_light_nonmutating_understanding_does_not_require_strong_review():
+    stub = StubModel([json.dumps(payload(kind="continue", goal=False))])
+    output = asyncio.run(UnderstandingService(stub, "small", "large").understand(
+        UnderstandingContext(current_message="继续处理")))
+    assert stub.calls == ["small"]
+    assert output["model_role"] == "light"
+
+
+def test_strong_review_must_be_valid_and_never_falls_back_to_unverified_light():
+    stub = StubModel([json.dumps(payload()), "{}", "{}"])
+    with pytest.raises(UnderstandingError) as error:
+        asyncio.run(UnderstandingService(stub, "small", "large").understand(
+            UnderstandingContext(current_message="安排明天任务")))
+    assert error.value.code == "understanding_unavailable"
+    assert error.value.attempts[0]["outcome"] == "semantic_review_required"
