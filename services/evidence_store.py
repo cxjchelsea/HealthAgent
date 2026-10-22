@@ -52,6 +52,14 @@ class AttemptEvidenceStore:
     def save_in_session(self, db, attempts: list[dict]):
         from services.db import AgentAttempt
         for item in attempts:
+            existing = db.get(AgentAttempt, item["attempt_id"])
+            if existing is not None:
+                if (existing.conversation_id != self.conversation_id or
+                    existing.turn_id != self.turn_id or
+                    existing.status != item["status"] or
+                    existing.arguments_digest != item["arguments_digest"]):
+                    raise RuntimeError("attempt_outcome_conflict")
+                continue
             db.add(AgentAttempt(
                 id=item["attempt_id"], conversation_id=self.conversation_id,
                 turn_id=self.turn_id, run_id=item["run_id"],
@@ -60,6 +68,52 @@ class AttemptEvidenceStore:
                 status=item["status"], error_code=item.get("error_code"),
                 result_projection=json.dumps(item["result_projection"], ensure_ascii=False),
             ))
+
+    def begin(self, session_factory, attempt: dict):
+        """Commit a prepared attempt BEFORE invoking an external tool.
+
+        An abandoned prepared attempt is NOT proof that the tool never ran.
+        Recovery must reconcile it before any non-idempotent retry.
+        """
+        from services.db import AgentAttempt
+        with session_factory.begin() as db:
+            db.add(AgentAttempt(
+                id=attempt["attempt_id"], conversation_id=self.conversation_id,
+                turn_id=self.turn_id, run_id=attempt["run_id"],
+                step_id=attempt.get("step_id"), tool_name=attempt["tool_name"],
+                arguments_digest=attempt["arguments_digest"], status="prepared",
+                result_projection=None,
+            ))
+            db.flush()
+
+    def finish(self, session_factory, attempt: dict):
+        """Persist the observed outcome; cannot overwrite another terminal outcome."""
+        from services.db import AgentAttempt
+        from sqlalchemy import update
+        with session_factory.begin() as db:
+            changed = db.execute(update(AgentAttempt).where(
+                AgentAttempt.id == attempt["attempt_id"],
+                AgentAttempt.conversation_id == self.conversation_id,
+                AgentAttempt.turn_id == self.turn_id,
+                AgentAttempt.status == "prepared"
+            ).values(status=attempt["status"],
+                     error_code=attempt.get("error_code"),
+                     result_projection=json.dumps(attempt["result_projection"], ensure_ascii=False)))
+            if changed.rowcount != 1:
+                raise RuntimeError("attempt_outcome_conflict")
+
+    def unresolved(self, session_factory) -> list[dict]:
+        """Read-only unknown execution outcomes; never re-dispatch from here."""
+        from sqlalchemy import select
+        from services.db import AgentAttempt
+        with session_factory() as db:
+            rows = db.scalars(select(AgentAttempt).where(
+                AgentAttempt.conversation_id == self.conversation_id,
+                AgentAttempt.status == "prepared").order_by(
+                AgentAttempt.created_at, AgentAttempt.id).limit(100)).all()
+            return [{"attempt_id": row.id, "tool": row.tool_name,
+                     "status": "unknown_outcome", "step_id": row.step_id}
+                    for row in rows]
 
     def completed_step_projections(self, session_factory, checkpoint: dict | None = None) -> dict[int, dict]:
         """Only previously recorded successful, tool-scoped projections in this conversation."""
