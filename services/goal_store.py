@@ -32,11 +32,7 @@ class ConversationGoalStore:
         pending = previous.get("pending")
         if kind == "clarify_response" and pending and (
                 (pending.get("change") or {}).get("kind") == "revise"):
-            # Only the exact stored proposal may be confirmed; no new mutation
-            # can be smuggled into the confirmation turn.
-            if result.goal is None or result.goal.model_dump(mode="json") != pending.get("goal"):
-                raise UnderstandingError("confirmation_proposal_mismatch")
-            return "ok"
+            raise UnderstandingError("pending_revision_requires_explicit_confirmation")
         if kind in {"add", "revise", "clarify_response"}:
             existing = previous.get("goal")
             if existing is None and kind == "clarify_response":
