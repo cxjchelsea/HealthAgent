@@ -235,7 +235,17 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
             # A revision of an unsaved conversational draft must not require
             # Goal Store state, but it must also never mutate that store.
             if result is None and parsed_result is not None:
-                if execution_mode not in {"respond_only", "read_only"}:
+                # Host-grounded absence of a durable referent is a clarification,
+                # not a provider outage. Never invent the missing target.
+                if (previous_goal is not None and previous_goal.get("goal") is None
+                        and parsed_result.status == "understood"
+                        and parsed_result.change.kind in {"revise", "add"}
+                        and execution_mode == "execute"):
+                    result = {"run_id": turn_id, "status": "partial",
+                              "answer": "当前没有已确认的目标。请说明要修改或追加的是哪份清单，以及具体修改内容。",
+                              "trace": [{"step": 0, "type": "goal_clarification"}],
+                              "steps": 0}
+                if result is None and execution_mode not in {"respond_only", "read_only"}:
                     transition = goal_store.validate_before_execution(
                         parsed_result, previous_goal)
                     if transition == "confirmation_required":
