@@ -157,7 +157,7 @@ async def main(output):
     if settings.understanding_light_model == settings.understanding_strong_model:
         raise SystemExit("Light/strong models must differ for a tier comparison.")
     service = UnderstandingService(provider, settings.understanding_light_model,
-                                   settings.understanding_strong_model)
+                                   settings.understanding_strong_model, semantic_review=True)
     rows = []
     for case in CASES:
         for name in ("light_then_strong", "strong"):
