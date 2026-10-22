@@ -42,7 +42,7 @@ CASES = (
     {"id": "cancel", "message": "先停止刚才那个计划，别继续执行",
      "expected": ("cancel_request",), "has_context": True},
     {"id": "clarification", "message": "帮我处理一下那个",
-     "expected": ("new_goal", "continue", "revise", "chat"), "clarify": True},
+     "expected": ("new_goal", "continue", "revise", "chat", "query_status", "clarify_response"), "clarify": True},
     {"id": "cross_language", "message": "Please draft tomorrow's top three tasks. Don't save anything.",
      "expected": ("new_goal",), "constraint": "save"},
 )
@@ -79,7 +79,10 @@ def meets_expectations(case, result):
     value = result["result"]
     fields = semantic_evidence(case, value)
     kind_ok = value.change.kind in case["expected"]
-    clarify_ok = not case.get("clarify") or value.clarification.required
+    clarify_ok = (not case.get("clarify") or
+                  (value.status == "clarification_required" and value.clarification.required
+                   and value.clarification.reason_code != "none" and
+                   bool(value.clarification.question)))
     marker = case.get("constraint")
     if marker == "save":
         # A negative persistence constraint must be explicit, rather than
@@ -108,6 +111,7 @@ def diagnostic_projection(value):
     return {"kind": value.change.kind, "status": value.status,
             "clarification_required": value.clarification.required,
             "clarification_reason": value.clarification.reason_code,
+            "execution_intent": value.execution_intent,
             "constraint_count": len(goal.constraints) if goal else 0,
             "subgoal_count": len(goal.subgoals) if goal else 0,
             "success_criteria_count": len(goal.success_criteria) if goal else 0}
