@@ -202,6 +202,7 @@ class AgentLoop:
                         and not user_supplied_value(
                             tool, fn.get("arguments"), state["user_request"])):
                     return {"status": "partial", "termination_reason": "needs_input",
+                            "pending_action": tool,
                             "final": clarification_question(tool),
                             "traces": traces + [{"step": state["iterations"],
                                                  "type": "argument_provenance_missing",
@@ -552,6 +553,7 @@ class AgentLoop:
             raise
         result = {"run_id": run_id, "status": outcome["status"],
                   "termination_reason": outcome.get("termination_reason") or outcome["status"],
+                  "pending_action": outcome.get("pending_action"),
                   "answer": outcome["final"], "trace": outcome["traces"],
                   "prompt_version": PROMPT_VERSION, "steps": outcome["iterations"],
                   "plan": outcome["plan"].snapshot(), "plan_revision": outcome["plan"].revision,
