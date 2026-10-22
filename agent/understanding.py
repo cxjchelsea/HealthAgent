@@ -178,9 +178,14 @@ class UnderstandingService:
                         code = ("structured_consistency_error" if "value_error" in types
                                 else "structured_schema_error")
                         # Finite allowlisted diagnostic; no raw model text or field values.
-                        detail = "model_level_consistency" if "value_error" in types else (
+                        causes = {str(item.get("ctx", {}).get("error", "")) for item in
+                                  exc.errors() if item["type"] == "value_error"}
+                        reason_tags = {"missing_goal", "clarification_status_mismatch",
+                                       "clarification_requires_reason_and_question"}
+                        known_cause = next((s for s in sorted(reason_tags) if s in causes), None)
+                        detail = known_cause or ("model_level_consistency" if "value_error" in types else (
                             "field:" + str(issues[0]["loc"][0])[:40] if issues and issues[0]["loc"]
-                            else "json_or_structure")
+                            else "json_or_structure"))
                         raise UnderstandingError(code, detail=detail) from exc
                     if result.change.target_goal_id is not None:
                         raise UnderstandingError("unverified_goal_reference")
