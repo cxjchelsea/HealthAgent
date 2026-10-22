@@ -138,7 +138,9 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
             prior_task_state = AgentTaskStateStore(cid).load(Session)
             prior_step_results = AttemptEvidenceStore(cid, turn_id).completed_step_projections(Session, existing_checkpoint)
             attempt_journal = AttemptEvidenceStore(cid, turn_id)
-            blocked_side_effects = bool(attempt_journal.unresolved(Session))
+            blocked_side_effects = any(
+                attempt["tool"] in {"create_task", "save_memory"}
+                for attempt in attempt_journal.unresolved(Session))
             decider = agent_decider if agent_decider is not None else NativeToolDecision(settings)
             result = await AgentLoop(decider, task_store=ConversationTaskStore(Session, cid),
                 memory_store=MemoryStore(Session, uid, write_allowed=body.memory_write_consent),
