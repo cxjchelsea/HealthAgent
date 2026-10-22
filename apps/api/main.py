@@ -169,8 +169,11 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                 turn = db.get(Turn, turn_id)
                 if response is None or turn is None or turn.state != "running":
                     raise RuntimeError("turn_finalization_conflict")
-                if status in {"completed", "partial"} and result.get("plan_checkpoint"):
-                    plan_store.save_in_session(db, result["plan_checkpoint"])
+                # A returned checkpoint is a potentially valid state even if the
+                # model's final answer failed. Never discard verified progress.
+                checkpoint_to_save = (result or {}).get("plan_checkpoint")
+                if checkpoint_to_save:
+                    plan_store.save_in_session(db, checkpoint_to_save)
                 # Preserve the previous trusted checkpoint on failed terminal turns.
                 # A failed model call is not evidence that the prior plan disappeared.
                 if result or prior_task_state:
