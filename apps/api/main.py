@@ -158,6 +158,18 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
             log.warning("conversation Agent failed turn=%s class=%s", turn_id, type(exc).__name__)
             status, answer = "provider_error", ""
             failure_code = "agent_exception"
+        # R01/R03: A graph exception can lose its in-memory ledger. Recover only
+        # successful tool results matching the prior trusted plan and this turn.
+        # Unknown attempts remain unresolved; never infer an unrecorded plan.
+        if status not in {"completed", "partial"} and existing_checkpoint:
+            recovered_checkpoint = AttemptEvidenceStore(
+                cid, turn_id).reconcile_failed_turn_checkpoint(Session, existing_checkpoint)
+            if not (result or {}).get("plan_checkpoint"):
+                if result is None:
+                    result = {"plan_checkpoint": recovered_checkpoint,
+                              "evidence_attempts": []}
+                else:
+                    result["plan_checkpoint"] = recovered_checkpoint
         # Atomic local DB commit: never expose a successful message separately
         # from its corresponding plan checkpoint and turn terminal state.
         # External tool effects remain outside this transaction.
