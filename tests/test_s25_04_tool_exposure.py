@@ -60,3 +60,33 @@ def test_invalid_strategy_and_budget_fail_closed():
         exposure_instructions(selection, max_chars=-1)
     with pytest.raises(ValueError):
         exposure_instructions(selection, max_chars=1)
+
+
+def test_native_loop_semantic_exposure_each_decision():
+    import asyncio
+    from agent.decision import Decision
+    from agent.loop import AgentLoop
+
+    class Probe:
+        def __init__(self):
+            self.visible = []
+
+        async def decide(self, messages, tools):
+            self.visible.append(tuple(t["function"]["name"] for t in tools))
+            if messages[-1]["role"] == "tool":
+                return Decision("Result observed", [])
+            return Decision("", [{"id": "read_1", "name": "list_tasks", "arguments": {}}])
+
+    probe = Probe()
+    loop = AgentLoop(probe, skill_strategy="semantic")
+    result = asyncio.run(loop.run("What remains unfinished?"))
+    assert result["status"] == "completed"
+    assert len(probe.visible) == 2
+    assert "list_tasks" in probe.visible[0]
+    assert "create_task" not in probe.visible[0]
+    assert "save_memory" not in probe.visible[1]
+    exposures = [event for event in result["trace"]
+                 if event["type"] == "tool_exposure"]
+    assert len(exposures) == 2
+    assert exposures[0]["strategy"] == "semantic"
+    assert result["trace"][-1]["type"] == "final"
