@@ -213,14 +213,7 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                     confirmed_constraints=previous_goal['goal'].get('constraints', []) if previous_goal['goal'] else [],
                     outstanding_clarification=(previous_goal['pending'] or {}).get('clarification', {}).get('question')))
                 parsed_result = parsed["result"]
-                transition = goal_store.validate_before_execution(parsed_result, previous_goal)
                 interpretation = parsed_result.model_dump()
-                if transition == "confirmation_required":
-                    result = {"run_id": turn_id, "status": "partial",
-                              "answer": "原有约束发生更正，请确认或拒绝。",
-                              "trace": [{"step": 0, "type": "goal_confirmation_required"}],
-                              "steps": 0, "proposed_goal": parsed_result.goal.model_dump(),
-                              "expected_goal_version": previous_goal["version"] + 1}
                 if parsed["result"].clarification.required:
                     result = {"run_id": turn_id, "status": "partial",
                               "answer": parsed["result"].clarification.question,
@@ -238,6 +231,19 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                         settings.understanding_strong_model, body.content, interpretation)
                 # Injected deciders in existing offline tests use legacy tool visibility;
                 # live requests and explicit policy injections exercise the new boundary.
+            # Only persistent execution proposals need a confirmed durable goal.
+            # A revision of an unsaved conversational draft must not require
+            # Goal Store state, but it must also never mutate that store.
+            if result is None and parsed_result is not None:
+                if execution_mode not in {"respond_only", "read_only"}:
+                    transition = goal_store.validate_before_execution(
+                        parsed_result, previous_goal)
+                    if transition == "confirmation_required":
+                        result = {"run_id": turn_id, "status": "partial",
+                                  "answer": "原有约束发生更正，请确认或拒绝。",
+                                  "trace": [{"step": 0, "type": "goal_confirmation_required"}],
+                                  "steps": 0, "proposed_goal": parsed_result.goal.model_dump(),
+                                  "expected_goal_version": previous_goal["version"] + 1}
             if result is None:
                 decider = agent_decider if agent_decider is not None else NativeToolDecision(settings)
                 result = await AgentLoop(decider, task_store=ConversationTaskStore(Session, cid),
