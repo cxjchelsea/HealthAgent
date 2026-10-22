@@ -12,6 +12,8 @@ from agent.understanding import UnderstandingContext, UnderstandingService, HTTP
 from agent.execution_policy import decide_execution_policy_detail
 from agent.decision import NativeToolDecision
 from agent.loop import AgentLoop
+from agent.tools import execute_tool, SCHEMAS
+from agent.argument_provenance import REQUIRED_USER_VALUES
 from agent.mcp_stdio_client import StdioMCPClient
 from agent.context import build_context
 from services.task_store import ConversationTaskStore
@@ -143,9 +145,17 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                     Message, Message.id == Turn.assistant_message_id).where(
                     Turn.conversation_id == cid, Turn.state != "running")
                     .order_by(Message.created_at.desc(), Message.id.desc()))
+                clarification_reason = (latest_turn.failure_code
+                    if latest_turn and latest_turn.state == "partial" else None)
                 clarification_id = (latest_turn.assistant_message_id
-                    if latest_turn and latest_turn.state == "partial"
-                    and latest_turn.failure_code == "needs_input" else None)
+                    if clarification_reason and clarification_reason.startswith("needs_input") else None)
+                pending_action = (clarification_reason.split(":", 1)[1]
+                    if clarification_reason and clarification_reason.startswith("needs_input:")
+                    else None)
+                if pending_action not in REQUIRED_USER_VALUES:
+                    pending_action = None
+                pending_question = (db.get(Message, clarification_id).content
+                    if clarification_id else None)
                 history = db.scalars(select(Message).where(
                     Message.conversation_id == cid,
                     ((Message.status == "completed") |
@@ -221,7 +231,8 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                     current_plan_summary=summary,
                     active_goal=previous_goal['goal'],
                     confirmed_constraints=previous_goal['goal'].get('constraints', []) if previous_goal['goal'] else [],
-                    outstanding_clarification=(previous_goal['pending'] or {}).get('clarification', {}).get('question')))
+                    outstanding_clarification=(pending_question or
+                        (previous_goal['pending'] or {}).get('clarification', {}).get('question'))))
                 parsed_result = parsed["result"]
                 interpretation = parsed_result.model_dump()
                 if parsed["result"].clarification.required:
@@ -229,6 +240,48 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                               "answer": parsed["result"].clarification.question,
                               "trace": [{"step": 0, "type": "goal_clarification"}],
                               "steps": 0}
+            # Resume only a trustworthy, latest-turn missing-argument request.
+            # Semantic change classification remains S25-01's responsibility.
+            # The *current user's own reply* is the only source for the new value.
+            if (result is None and pending_action in REQUIRED_USER_VALUES
+                    and parsed_result is not None
+                    and parsed_result.status == "understood"
+                    and parsed_result.change.kind == "clarify_response"
+                    and body.goal_confirmation is None):
+                field, question = REQUIRED_USER_VALUES[pending_action]
+                candidate = body.content.strip()
+                try:
+                    validated = SCHEMAS[pending_action].model_validate({field: candidate})
+                except ValueError:
+                    result = {"run_id": turn_id, "status": "partial",
+                              "termination_reason": "needs_input", "pending_action": pending_action,
+                              "answer": question, "trace": [{"step": 0, "type": "argument_clarification"}],
+                              "steps": 0}
+                else:
+                    # A pending clarification is not fresh execution authorization.
+                    # For a task creation, the previous request explicitly authorized
+                    # the operation; the reply supplies only its missing title.
+                    # Reference lookup is read-only. These are the only two allowed
+                    # resumable tool types, not an arbitrary model-supplied tool name.
+                    if pending_action == "create_task":
+                        observed = execute_tool(pending_action, validated.model_dump(), [],
+                            task_store=ConversationTaskStore(Session, cid))
+                    else:
+                        observed = execute_tool(pending_action, validated.model_dump(), [],
+                            mcp_client=StdioMCPClient())
+                    result = {"run_id": turn_id,
+                              "status": "completed" if observed.get("ok") else "partial",
+                              "termination_reason": ("verified_clarification_execution"
+                                    if observed.get("ok") else "clarification_tool_failed"),
+                              "answer": ("已创建任务：" + candidate if pending_action == "create_task"
+                                  and observed.get("ok") else
+                                  "已查询词条：" + candidate + "。" + str(
+                                      observed.get("definition", observed.get("value", "")))
+                                  if pending_action == "mcp_reference_lookup" and observed.get("ok")
+                                  else "工具执行未成功，请检查查询或任务服务。"),
+                              "trace": [{"step": 0, "type": "clarification_resumed",
+                                         "name": pending_action, "ok": bool(observed.get("ok"))}],
+                              "steps": 1}
             execution_mode = None
             execution_target = "goal_state"  # Legacy injected strategy conservatively preserves revisions.
             if result is None and interpretation is not None:
@@ -288,7 +341,9 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                     result.get("termination_reason") == "needs_input"
                     or any(t.get("type") == "goal_clarification"
                            for t in result.get("trace", []))):
-                    failure_code = "needs_input"
+                    failure_code = ("needs_input:" + result["pending_action"]
+                                    if result.get("pending_action") in REQUIRED_USER_VALUES
+                                    else "needs_input")
             else:
                 status = result["status"]
                 failure_code = result.get("failure_code") or status
