@@ -26,6 +26,8 @@ class ChatIn(BaseModel):
     content: str = Field(min_length=1)
     client_request_id: str = Field(min_length=8,max_length=120)
     memory_write_consent: bool = False
+    goal_confirmation: str | None = None
+    expected_goal_version: int | None = None
 
 class GoalIn(BaseModel):
     content: str = Field(min_length=1)
@@ -172,9 +174,24 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
         try:
             existing_checkpoint = plan_store.load()
             interpretation = None
+            if body.goal_confirmation is not None:
+                if (settings.understanding_strategy != "structured"
+                        or body.goal_confirmation not in {"accept", "reject"}
+                        or body.expected_goal_version is None):
+                    raise UnderstandingError("invalid_goal_confirmation")
+                previous_goal = goal_store.load()
+                if previous_goal["version"] != body.expected_goal_version:
+                    raise UnderstandingError("stale_goal_confirmation")
+                if not previous_goal.get("pending") or (
+                        previous_goal["pending"].get("change") or {}).get("kind") != "revise":
+                    raise UnderstandingError("no_pending_revision")
+                result = {"run_id": turn_id, "status": "completed",
+                          "answer": "目标更正已确认。" if body.goal_confirmation == "accept"
+                                    else "已拒绝目标更正，原目标保持不变。",
+                          "trace": [{"step": 0, "type": "goal_confirmation"}], "steps": 0}
             if settings.understanding_strategy not in {"direct", "structured"}:
                 raise UnderstandingError("invalid_understanding_strategy")
-            if settings.understanding_strategy == "structured":
+            if result is None and settings.understanding_strategy == "structured":
                 previous_goal = goal_store.load()
                 service = UnderstandingService(
                     HTTPUnderstandingModel(settings.model_provider, settings.model_base_url,
@@ -193,8 +210,14 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                     confirmed_constraints=previous_goal['goal'].get('constraints', []) if previous_goal['goal'] else [],
                     outstanding_clarification=(previous_goal['pending'] or {}).get('clarification', {}).get('question')))
                 parsed_result = parsed["result"]
-                goal_store.validate_before_execution(parsed_result, previous_goal)
+                transition = goal_store.validate_before_execution(parsed_result, previous_goal)
                 interpretation = parsed_result.model_dump()
+                if transition == "confirmation_required":
+                    result = {"run_id": turn_id, "status": "partial",
+                              "answer": "原有约束发生更正，请确认或拒绝。",
+                              "trace": [{"step": 0, "type": "goal_confirmation_required"}],
+                              "steps": 0, "proposed_goal": parsed_result.goal.model_dump(),
+                              "expected_goal_version": previous_goal["version"] + 1}
                 if parsed["result"].clarification.required:
                     result = {"run_id": turn_id, "status": "partial",
                               "answer": parsed["result"].clarification.question,
@@ -234,6 +257,10 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                     plan_store.save_in_session(db, result["plan_checkpoint"])
                 if status in {"completed", "partial"} and parsed_result is not None and previous_goal is not None:
                     goal_store.save_in_session(db, parsed_result, previous_goal)
+                if status == "completed" and body.goal_confirmation is not None and previous_goal is not None:
+                    goal_store.resolve_confirmation_in_session(
+                        db, previous_goal, body.expected_goal_version,
+                        body.goal_confirmation == "accept")
                 response.content = answer
                 response.status = status
                 turn.state = status
