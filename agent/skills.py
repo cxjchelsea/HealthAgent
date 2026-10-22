@@ -79,6 +79,7 @@ def select_tool_exposure(
     goal: str, schemas: list[dict], *, strategy: str = "dynamic",
     prior_observation: dict[str, Any] | None = None,
     authorized_write_tools: tuple[str, ...] = (),
+    active_step_tools: tuple[str, ...] = (),
 ) -> ToolExposureDecision:
     if strategy not in ("dynamic", "all", "semantic"):
         raise ValueError("Unsupported skill strategy")
@@ -97,6 +98,11 @@ def select_tool_exposure(
     elif strategy == "semantic":
         guarded_writes = {"create_task", "save_memory"}
         eligible -= guarded_writes - (guarded_writes & set(authorized_write_tools))
+    # Only trusted checkpoint bindings can request active-step inclusion.
+    # Never promote writes or names originating from Observation text.
+    if strategy == "semantic":
+        eligible |= (registered & declared & set(active_step_tools)
+                     - {"create_task", "save_memory"})
     selected = tuple(item["function"]["name"] for item in schemas
                      if item["function"]["name"] in eligible)
     active = tuple(skill.name for skill in SKILLS
