@@ -85,6 +85,7 @@ class AgentStateTransition(Base):
     from_state: Mapped[str | None] = mapped_column(String(24), nullable=True)
     to_state: Mapped[str] = mapped_column(String(24))
     reason_code: Mapped[str] = mapped_column(String(40))
+    attempt_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 class AgentAttempt(Base):
