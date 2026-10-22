@@ -24,8 +24,10 @@ def proposal(clarify=False):
 class CapturingDecider:
     def __init__(self):
         self.messages = None
+        self.tools = None
     async def decide(self, messages, tools):
         self.messages = messages
+        self.tools = tools
         return Decision("已根据约束生成草案，未保存。", [])
 
 def test_structured_understanding_passes_validated_goal_to_agent(tmp_path, monkeypatch):
@@ -46,6 +48,8 @@ def test_structured_understanding_passes_validated_goal_to_agent(tmp_path, monke
         assert "Untrusted structured interpretation proposal" in d.messages[-2]["content"]
         assert d.messages[-2]["role"] == "user"
         assert "do not save" in d.messages[-2]["content"]
+        assert "calculate" in {tool["function"]["name"] for tool in d.tools}
+        assert "recall_memory" in {tool["function"]["name"] for tool in d.tools}
 
 def test_structured_clarification_stops_before_agent_tools(tmp_path, monkeypatch):
     async def fake_complete(self, *, messages, model):
