@@ -148,6 +148,7 @@ class UnderstandingService:
                     {"role": "user", "content": json.dumps(compact, ensure_ascii=False)}]
         models = [self.strong_model] if use_strong else [self.light_model, self.strong_model]
         failures: list[str] = []
+        attempts: list[dict[str, Any]] = []
         for model_name in dict.fromkeys(models):
             start = time.monotonic()
             try:
@@ -156,11 +157,19 @@ class UnderstandingService:
                 if result.change.target_goal_id is not None:
                     # S25-03 owns durable goal IDs. A model cannot invent one from text.
                     raise UnderstandingError("unverified_goal_reference")
-                return {"result": result, "model_role": "strong" if model_name == self.strong_model else "light",
+                attempts.append({"role": "strong" if model_name == self.strong_model else "light",
+                                 "duration_ms": int((time.monotonic() - start) * 1000),
+                                 "outcome": "valid"})
+                return {"result": result, "attempts": attempts,
+                        "model_role": "strong" if model_name == self.strong_model else "light",
                         "model": model_name, "duration_ms": int((time.monotonic() - start) * 1000),
                         "escalated": bool(failures)}
             except (ValidationError, ValueError, UnderstandingError) as exc:
-                failures.append(getattr(exc, "code", "invalid_structured_result"))
+                reason = getattr(exc, "code", "invalid_structured_result")
+                failures.append(reason)
+                attempts.append({"role": "strong" if model_name == self.strong_model else "light",
+                                 "duration_ms": int((time.monotonic() - start) * 1000),
+                                 "outcome": reason})
         raise UnderstandingError("understanding_unavailable")
 
 # No rule-based fallback. Legacy code calling understand() must migrate explicitly.
