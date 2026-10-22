@@ -256,7 +256,10 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                     raise RuntimeError("turn_finalization_conflict")
                 if status in {"completed", "partial"} and result.get("plan_checkpoint"):
                     plan_store.save_in_session(db, result["plan_checkpoint"])
-                if status in {"completed", "partial"} and parsed_result is not None and previous_goal is not None:
+                if (status in {"completed", "partial"} and parsed_result is not None
+                        and previous_goal is not None
+                        and not any(item.get("type") == "repeat_tool_stop"
+                                    for item in (result or {}).get("trace", []))):
                     goal_store.save_in_session(db, parsed_result, previous_goal)
                 if status == "completed" and body.goal_confirmation is not None and previous_goal is not None:
                     goal_store.resolve_confirmation_in_session(
