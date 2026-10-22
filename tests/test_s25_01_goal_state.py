@@ -132,3 +132,47 @@ def test_pending_clarification_can_be_resumed_with_goal(tmp_path):
     assert after["pending"] is None
     assert after["goal"]["objective"] == "整理明天计划"
     engine.dispose()
+
+def test_api_constraint_revision_requires_explicit_versioned_confirmation(tmp_path, monkeypatch):
+    calls = []
+    async def fake_complete(self, *, messages, model):
+        calls.append(model)
+        if len(calls) == 1:
+            return proposal("new_goal", "安排三项", [
+                {"name": "limit", "value": "最多三项", "source": "explicit", "scope": "goal"}])
+        return proposal("revise", "安排两项", [
+            {"name": "limit", "value": "最多两项", "source": "explicit", "scope": "goal"}])
+    monkeypatch.setattr(HTTPUnderstandingModel, "complete", fake_complete)
+    settings = Settings(database_url=f"sqlite:///{tmp_path/'confirm.db'}",
+                        model_provider="ollama_proxy", understanding_strategy="structured")
+    with TestClient(create_app(settings, agent_decider=SimpleDecider())) as client:
+        cid = client.post("/conversations").json()["id"]
+        route = f"/conversations/{cid}/agent/messages"
+        first = client.post(route, json={"content": "安排最多三项",
+            "client_request_id": "revision-first-001"})
+        assert first.status_code == 200, first.text
+        second = client.post(route, json={"content": "改为最多两项",
+            "client_request_id": "revision-second-002"})
+        assert second.status_code == 200, second.text
+        result = second.json()
+        assert result["status"] == "partial"
+        assert result["expected_goal_version"] == 2
+        engine, Session = database(settings.database_url)
+        store = ConversationGoalStore(Session, cid)
+        pending = store.load()
+        assert pending["goal"]["constraints"][0]["value"] == "最多三项"
+        assert pending["pending"]["goal"]["constraints"][0]["value"] == "最多两项"
+        stale = client.post(route, json={"content": "我确认修改",
+            "client_request_id": "revision-stale-003",
+            "goal_confirmation": "accept", "expected_goal_version": 1})
+        assert stale.status_code == 503
+        assert store.load() == pending
+        confirm = client.post(route, json={"content": "我确认修改",
+            "client_request_id": "revision-confirm-004",
+            "goal_confirmation": "accept", "expected_goal_version": 2})
+        assert confirm.status_code == 200, confirm.text
+        final = store.load()
+        assert final["goal"]["constraints"][0]["value"] == "最多两项"
+        assert final["pending"] is None
+        assert len(calls) == 2
+        engine.dispose()
