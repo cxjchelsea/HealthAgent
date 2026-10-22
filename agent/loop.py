@@ -96,7 +96,7 @@ class AgentLoop:
                          " 的完成证据仍有效，不能作为新目标的完成证明。\n" + final)
             if unresolved:
                 final = ("工具执行仍有未经成功结果消除的失败：" +
-                         "、".join(unresolved) +
+                         str(len(unresolved)) + " 项" +
                          "。模型回复不构成执行成功证明。\n" + final)
             if is_partial:
                 final = ("计划尚未完成（未验证步骤：" + ", ".join(map(str, pending)) +
@@ -220,9 +220,9 @@ class AgentLoop:
                 rejected_keys.append(action_key)
             if name not in {"propose_plan", "revise_plan", "complete_plan_step"}:
                 if result["ok"]:
-                    unresolved_failures = [item for item in unresolved_failures if item != name]
-                elif name not in unresolved_failures:
-                    unresolved_failures.append(name)
+                    unresolved_failures = [item for item in unresolved_failures if item != action_key]
+                elif action_key not in unresolved_failures:
+                    unresolved_failures.append(action_key)
             if name == "recall_memory":
                 state["memory_recall_observed"] = True
             if name not in {"propose_plan", "revise_plan", "complete_plan_step"}:
