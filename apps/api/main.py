@@ -169,9 +169,14 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
             if not (result or {}).get("plan_checkpoint"):
                 if result is None:
                     result = {"plan_checkpoint": recovered_checkpoint,
-                              "evidence_attempts": []}
+                              "evidence_attempts": AttemptEvidenceStore(
+                                  cid, turn_id).verified_attempt_refs_for_checkpoint(
+                                      Session, recovered_checkpoint)}
                 else:
                     result["plan_checkpoint"] = recovered_checkpoint
+                    result["evidence_attempts"] = AttemptEvidenceStore(
+                        cid, turn_id).verified_attempt_refs_for_checkpoint(
+                            Session, recovered_checkpoint)
         # Atomic local DB commit: never expose a successful message separately
         # from its corresponding plan checkpoint and turn terminal state.
         # External tool effects remain outside this transaction.
