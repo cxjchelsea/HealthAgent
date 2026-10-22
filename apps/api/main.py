@@ -14,6 +14,7 @@ from agent.decision import NativeToolDecision
 from agent.loop import AgentLoop
 from agent.tools import execute_tool, SCHEMAS
 from agent.argument_provenance import REQUIRED_USER_VALUES
+from agent.pending_reply import classify_pending_reply
 from agent.mcp_stdio_client import StdioMCPClient
 from agent.context import build_context
 from services.task_store import ConversationTaskStore
@@ -214,6 +215,7 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                           "trace": [{"step": 0, "type": "goal_confirmation"}], "steps": 0}
             if settings.understanding_strategy not in {"direct", "structured"}:
                 raise UnderstandingError("invalid_understanding_strategy")
+            pending_reply_kind = None
             if result is None and settings.understanding_strategy == "structured":
                 previous_goal = goal_store.load()
                 service = UnderstandingService(
@@ -235,7 +237,19 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                         (previous_goal['pending'] or {}).get('clarification', {}).get('question'))))
                 parsed_result = parsed["result"]
                 interpretation = parsed_result.model_dump()
-                if parsed["result"].clarification.required:
+                if (pending_action in REQUIRED_USER_VALUES
+                        and parsed["result"].clarification.required
+                        and body.goal_confirmation is None):
+                    pending_reply_kind = await classify_pending_reply(
+                        HTTPUnderstandingModel(
+                            settings.model_provider, settings.model_base_url,
+                            settings.model_api_key, settings.model_timeout_seconds,
+                            settings.model_max_output_tokens),
+                        settings.understanding_strong_model,
+                        question=pending_question or REQUIRED_USER_VALUES[pending_action][1],
+                        reply=body.content, tool=pending_action)
+                if (parsed["result"].clarification.required
+                        and pending_reply_kind != "answer"):
                     result = {"run_id": turn_id, "status": "partial",
                               "answer": parsed["result"].clarification.question,
                               "trace": [{"step": 0, "type": "goal_clarification"}],
@@ -245,8 +259,9 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
             # The *current user's own reply* is the only source for the new value.
             if (result is None and pending_action in REQUIRED_USER_VALUES
                     and parsed_result is not None
-                    and parsed_result.status == "understood"
-                    and parsed_result.change.kind == "clarify_response"
+                    and ((parsed_result.status == "understood"
+                          and parsed_result.change.kind == "clarify_response")
+                         or pending_reply_kind == "answer")
                     and body.goal_confirmation is None):
                 field, question = REQUIRED_USER_VALUES[pending_action]
                 candidate = body.content.strip()
