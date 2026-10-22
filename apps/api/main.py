@@ -207,6 +207,13 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
         safe_result["attempt_refs"] = [a["attempt_id"] for a in result.get("evidence_attempts", [])]
         return {**safe_result, "conversation_id": cid, "message_id": assistant_id}
 
+    @app.get("/conversations/{cid}/agent/task-history")
+    def task_history(cid: str, uid=Depends(user_id)):
+        with Session() as db:
+            get_owned(db, cid, uid)
+        return {"conversation_id": cid,
+                "transitions": AgentTaskStateStore(cid).history(Session)}
+
     @app.get("/conversations/{cid}/agent/task-state")
     def task_state(cid: str, uid=Depends(user_id)):
         with Session() as db:
