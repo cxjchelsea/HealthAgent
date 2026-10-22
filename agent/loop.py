@@ -21,12 +21,15 @@ class AgentState(TypedDict):
     tasks: list[str]
     final: str
     status: str
+    termination_reason: str | None
     iterations: int
     audit_enabled: bool
     audit: list[dict]
     allowed_tools: list[dict]
     plan: PlanLedger
     last_success: dict | None
+    rejected_action_keys: list[str]
+    unresolved_tool_failures: list[str]
     superseded_step_ids: list[int]
     superseded_expression: str | None
     memory_recall_required: bool
@@ -75,7 +78,8 @@ class AgentLoop:
                 return {"iterations": iteration,
                         "final": "尚未核实长期记忆：模型未调用 recall_memory，"
                                  "不能据此断言已保存的信息不存在。请在记忆管理面板核对 Key。",
-                        "status": "partial", "traces": state["traces"] + [{
+                        "status": "partial", "termination_reason": "memory_recall_unverified",
+                        "traces": state["traces"] + [{
                             "step": iteration, "type": "memory_recall_unverified"}]}
             pending = [s["id"] for s in state["plan"].snapshot()
                        if s["status"] != "completed"]
@@ -84,24 +88,43 @@ class AgentLoop:
                                  and s.get("expected_tool") == "calculate"
                                  and s.get("expected_arguments") == {"expression": state["superseded_expression"]}
                                  for s in state["plan"].snapshot())]
-            is_partial = bool(pending or superseded)
+            unresolved = state["unresolved_tool_failures"]
+            verified_replan = (state["plan"].revision > 1
+                               and bool(state["plan"].snapshot())
+                               and all(step["status"] == "completed"
+                                       for step in state["plan"].snapshot())
+                               and any(event.get("event") == "plan_revised"
+                                       for event in state["plan"].events))
+            if verified_replan:
+                unresolved = []
+            is_partial = bool(pending or superseded or unresolved)
             final = decision.content
             if superseded:
                 final = ("目标更正尚未完成：旧步骤 " + ", ".join(map(str, superseded)) +
                          " 的完成证据仍有效，不能作为新目标的完成证明。\n" + final)
+            if unresolved:
+                final = ("工具执行仍有未经成功结果消除的失败：" +
+                         str(len(unresolved)) + " 项" +
+                         "。模型回复不构成执行成功证明。\n" + final)
             if is_partial:
                 final = ("计划尚未完成（未验证步骤：" + ", ".join(map(str, pending)) +
                          "）。以下是模型当前回复，不代表全部完成。\n" + final)
             return {"iterations": iteration, "final": final,
-                    "status": "partial" if is_partial else "completed", "traces": state["traces"] + [
+                    "status": "partial" if is_partial else "completed",
+                    "termination_reason": ("superseded_evidence" if superseded else
+                                           "pending_plan_steps" if pending else
+                                           "unresolved_tool_failure" if unresolved else "model_final"),
+                    "traces": state["traces"] + [
                         {"step": iteration, "type": "final", "chars": len(decision.content)}]}
         if iteration >= self.max_steps:
             return {"iterations": iteration, "final": "Agent reached its decision step limit.",
-                    "status": "step_limit", "traces": state["traces"] + [
+                    "status": "step_limit", "termination_reason": "decision_budget_exhausted",
+                "traces": state["traces"] + [
                         {"step": iteration, "type": "step_limit"}]}
         if len(decision.tool_calls) > 4:
             return {"iterations": iteration, "final": "Model requested too many tools.",
-                    "status": "tool_limit", "traces": state["traces"] + [
+                    "status": "tool_limit", "termination_reason": "tool_fanout_exceeded",
+                "traces": state["traces"] + [
                         {"step": iteration, "type": "tool_limit"}]}
         # OpenAI and Ollama support tool_call syntax but differ on tool result metadata.
         assistant_calls = [{"id": c["id"], "type": "function", "function": {
@@ -126,11 +149,43 @@ class AgentLoop:
         observations = []
         traces = list(state["traces"])
         audit = list(state["audit"])
+        rejected_keys = list(state["rejected_action_keys"])
+        unresolved_failures = list(state["unresolved_tool_failures"])
+        # A clarification is a turn-level control, never bundled with side effects.
+        calls = last.get("tool_calls", [])[:4]
+        if any(c["function"].get("name") == "request_clarification" for c in calls):
+            if len(calls) != 1:
+                observations.append({"role": "tool", "tool_name": "request_clarification",
+                                     "tool_call_id": calls[0]["id"],
+                                     "content": json.dumps({"ok": False, "error": "control_action_must_be_alone"})})
+                return {"messages": state["messages"] + observations,
+                        "traces": traces + [{"step": state["iterations"], "type": "tool",
+                                             "name": "request_clarification", "ok": False}]}
+            call = calls[0]
+            try:
+                args = SCHEMAS["request_clarification"].model_validate(
+                    call["function"].get("arguments"))
+            except ValidationError:
+                observations.append({"role": "tool", "tool_name": "request_clarification",
+                                     "tool_call_id": call["id"],
+                                     "content": json.dumps({"ok": False, "error": "invalid_arguments"})})
+                return {"messages": state["messages"] + observations,
+                        "traces": traces + [{"step": state["iterations"], "type": "tool",
+                                             "name": "request_clarification", "ok": False}]}
+            return {"status": "partial", "termination_reason": "needs_input",
+                    "final": args.question,
+                    "traces": traces + [{"step": state["iterations"],
+                                         "type": "clarification_requested"}]}
         # Limit fanout, never allow an arbitrary number of model tool calls.
         for index, call in enumerate(last.get("tool_calls", [])[:4]):
             function = call["function"]
             name = function.get("name")
-            if name not in {tool["function"]["name"] for tool in state["allowed_tools"]}:
+            arguments = function.get("arguments")
+            action_key = json.dumps([name, arguments], sort_keys=True, ensure_ascii=False)
+            if action_key in rejected_keys and name not in {"propose_plan", "revise_plan", "complete_plan_step"}:
+                result = {"ok": False, "error": "repeated_nonretryable_action",
+                          "guidance": "Change the action or arguments; the same call already failed."}
+            elif name not in {tool["function"]["name"] for tool in state["allowed_tools"]}:
                 result = {"ok": False, "error": "tool_not_exposed"}
             elif name in {"propose_plan", "revise_plan", "complete_plan_step"}:
                 try:
@@ -165,6 +220,17 @@ class AgentLoop:
                 result = execute_tool(name, function.get("arguments"), tasks, self.clock,
                                       task_store=self.task_store, memory_store=self.memory_store,
                                       mcp_client=self.mcp_client)
+            if (not result["ok"] and result.get("error") in
+                    {"invalid_arguments", "reference_not_found", "tool_not_exposed",
+                     "mcp_tool_not_allowlisted", "unknown_tool"}
+                    and name not in {"propose_plan", "revise_plan", "complete_plan_step"}
+                    and action_key not in rejected_keys):
+                rejected_keys.append(action_key)
+            if name not in {"propose_plan", "revise_plan", "complete_plan_step"}:
+                if result["ok"]:
+                    unresolved_failures = [item for item in unresolved_failures if item != action_key]
+                elif action_key not in unresolved_failures:
+                    unresolved_failures.append(action_key)
             if name == "recall_memory":
                 state["memory_recall_observed"] = True
             if name not in {"propose_plan", "revise_plan", "complete_plan_step"}:
@@ -193,7 +259,9 @@ class AgentLoop:
         update = {"messages": state["messages"] + observations,
                   "tasks": tasks, "traces": traces, "audit": audit,
                   "plan": state["plan"], "last_success": state["last_success"],
-                  "memory_recall_observed": state["memory_recall_observed"]}
+                  "memory_recall_observed": state["memory_recall_observed"],
+                  "rejected_action_keys": rejected_keys,
+                  "unresolved_tool_failures": unresolved_failures}
         # Stop only for an explicitly limited first step with verified evidence.
         steps = state["plan"].snapshot()
         if (state["stop_after_first_verified_step"] and len(steps) >= 2
@@ -202,6 +270,7 @@ class AgentLoop:
             remaining = [step["id"] for step in steps if step["status"] == "pending"]
             update.update({
                 "status": "partial",
+                "termination_reason": "bounded_partial_execution",
                 "final": ("已验证完成计划的第一步；其余步骤 "
                           + "、".join(str(i) for i in remaining)
                           + " 尚未完成，已保留在计划中。"),
@@ -244,6 +313,7 @@ class AgentLoop:
             if len(records) > 100:
                 return {"run_id": run_id, "status": "partial",
                         "answer": "长期记忆条目过多，请在记忆管理面板按 Key 查询。",
+                        "termination_reason": "memory_lookup_limit",
                         "trace": [{"step": 1, "type": "memory_lookup_limit"}],
                         "prompt_version": PROMPT_VERSION}
             # Exact literal matches are authoritative; a fuzzy semantic match is not.
@@ -261,7 +331,8 @@ class AgentLoop:
                           "。请指定 Key 查询，或在记忆管理面板核对。")
             else:
                 answer = "已查询当前用户的长期记忆库，目前没有保存的记录。"
-            result = {"run_id": run_id, "status": "completed", "answer": answer,
+            result = {"run_id": run_id, "status": "completed",
+                      "termination_reason": "verified_memory_index", "answer": answer,
                       "trace": [{"step": 1, "type": "memory_index_lookup",
                                  "matches": len(matches), "total": len(records)}],
                       "prompt_version": PROMPT_VERSION}
@@ -342,7 +413,10 @@ class AgentLoop:
             lines.append("计划全部步骤已验证完成。" if not remaining else
                          "仍有未完成步骤：" + "、".join(map(str, remaining)) + "。")
             answer = "\n".join(lines)
-            output = {"run_id": run_id, "status": status, "answer": answer,
+            output = {"run_id": run_id, "status": status,
+                      "termination_reason": ("pending_plan_steps" if remaining else
+                                             "verified_plan_continuation"),
+                      "answer": answer,
                       "trace": [{"step": 0, "type": "plan_resume_execution"}, *trace],
                       "prompt_version": PROMPT_VERSION,
                       "steps": len(trace), "plan": resumed.snapshot(),
@@ -354,6 +428,9 @@ class AgentLoop:
                 output["tasks"] = []
             return output
         selected_tools = exposed_tools(goal, TOOL_SCHEMAS, strategy=self.skill_strategy)
+        # A model-chosen clarification is available for any goal, regardless of skill routing.
+        selected_tools += [tool for tool in TOOL_SCHEMAS
+                           if tool["function"]["name"] == "request_clarification"]
         if resumed.revision:
             names = {t["function"]["name"] for t in selected_tools}
             selected_tools += [t for t in TOOL_SCHEMAS if t["function"]["name"]
@@ -372,10 +449,13 @@ class AgentLoop:
         initial: AgentState = {"messages": [
             {"role": "system", "content": PROMPT + "\nSelected skill instructions (" + SKILL_VERSION + "):\n" + load_instructions(goal, strategy=self.skill_strategy, max_chars=self.skill_budget_chars) + resume_context},
             *clean_history, {"role": "user", "content": goal}],
-            "traces": [], "tasks": [], "final": "", "status": "running", "iterations": 0,
+            "traces": [], "tasks": [], "final": "", "status": "running",
+            "termination_reason": None, "iterations": 0,
             "audit_enabled": include_evidence, "audit": [],
             "allowed_tools": selected_tools,
             "plan": resumed, "last_success": None,
+            "rejected_action_keys": [],
+            "unresolved_tool_failures": [],
             "superseded_step_ids": superseded_step_ids,
             "superseded_expression": superseded_expression,
             "memory_recall_required": recall_required and self.memory_store is not None,
@@ -389,11 +469,13 @@ class AgentLoop:
             if isinstance(exc, ModelUnavailable):
                 from agent.decision import ToolDecisionError
                 safe_code = exc.code if isinstance(exc, ToolDecisionError) else "model_unavailable"
-                return {"run_id": run_id, "status": "provider_error", "answer": "",
+                return {"run_id": run_id, "status": "provider_error",
+                        "termination_reason": safe_code, "answer": "",
                         "trace": [], "prompt_version": PROMPT_VERSION,
                         "failure_code": safe_code}
             raise
         result = {"run_id": run_id, "status": outcome["status"],
+                  "termination_reason": outcome["termination_reason"],
                   "answer": outcome["final"], "trace": outcome["traces"],
                   "prompt_version": PROMPT_VERSION, "steps": outcome["iterations"],
                   "plan": outcome["plan"].snapshot(), "plan_revision": outcome["plan"].revision,

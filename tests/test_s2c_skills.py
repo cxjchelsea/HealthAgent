@@ -24,8 +24,8 @@ def test_skill_discovery_and_fallback():
         return [s["function"]["name"] for s in exposed_tools(q, TOOL_SCHEMAS)]
     assert names("请查询 MCP 参考资料") == ["mcp_reference_lookup"]
     assert "create_task" in names("帮我创建待办任务")
-    assert len(names("任意模糊请求")) == len(TOOL_SCHEMAS)
-    assert len(exposed_tools("查询 MCP",TOOL_SCHEMAS,strategy="all")) == len(TOOL_SCHEMAS)
+    assert len(names("任意模糊请求")) == len(TOOL_SCHEMAS) - 1  # global control is exposed by AgentLoop
+    assert len(exposed_tools("查询 MCP",TOOL_SCHEMAS,strategy="all")) == len(TOOL_SCHEMAS) - 1
     assert {s.name for s in select_skills("查询 MCP")} == {"reference"}
 
 def test_mock_mcp_allowlist_and_schema():
@@ -46,7 +46,7 @@ def test_single_agent_mcp_execution_and_exposure_fence(tmp_path):
         response=ask("查询 MCP 的参考资料","s2c-request-001")
         assert response.status_code == 200, response.text
         assert '"source": "trusted_mock_catalog_v1"' in response.json()["answer"]
-        assert decision.visible[0] == ["mcp_reference_lookup"]
+        assert decision.visible[0] == ["mcp_reference_lookup", "request_clarification"]
         assert any(x["name"]=="mcp_reference_lookup" and x["ok"] for x in response.json()["trace"] if x["type"]=="tool")
     refused=MCPDecision("create_task")
     with TestClient(create_app(Settings(database_url=f"sqlite:///{tmp_path/'s2c2.db'}",model_provider="fake"),

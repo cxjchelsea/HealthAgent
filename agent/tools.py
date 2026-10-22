@@ -41,10 +41,14 @@ class CompleteArgs(StrictToolArgs):
     step_id: int = Field(ge=1)
     evidence_tool: str = Field(min_length=1, max_length=80)
 
+class ClarificationArgs(StrictToolArgs):
+    question: str = Field(min_length=1, max_length=500)
+
 class EmptyArgs(StrictToolArgs):
     pass
 
 SCHEMAS: dict[str, type[BaseModel]] = {
+    "request_clarification": ClarificationArgs,
     "calculate": CalcArgs,
     "utc_time": EmptyArgs,
     "create_task": TaskArgs,
@@ -58,6 +62,11 @@ SCHEMAS: dict[str, type[BaseModel]] = {
 }
 
 TOOL_SCHEMAS = [
+    {"type": "function", "function": {
+        "name": "request_clarification",
+        "description": "Ask a focused question when essential information is missing. Do not combine with other actions.",
+        "parameters": {"type": "object", "properties": {"question": {"type": "string"}},
+                       "required": ["question"], "additionalProperties": False}}},
     {"type": "function", "function": {
         "name": "calculate", "description": "Calculate a simple numeric arithmetic expression (+,-,*,/,parentheses).",
         "parameters": {"type": "object", "properties": {"expression": {"type": "string"}}, "required": ["expression"], "additionalProperties": False}}},

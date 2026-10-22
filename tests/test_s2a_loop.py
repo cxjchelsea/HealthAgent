@@ -46,7 +46,8 @@ def test_step_budget_stops_model():
 def test_invalid_tool_observation_continues():
     model = ScriptedDecision([call("unknown", {}), Decision("这个工具不可用。", [])])
     result = asyncio.run(AgentLoop(model).run("试试看"))
-    assert result["status"] == "completed"
+    assert result["status"] == "partial"
+    assert result["termination_reason"] == "unresolved_tool_failure"
     assert result["trace"][1]["ok"] is False
 
 def test_utc_tool_injected_clock():
