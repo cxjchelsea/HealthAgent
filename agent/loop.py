@@ -9,6 +9,7 @@ from agent.decision import NativeToolDecision
 from agent.tools import TOOL_SCHEMAS, execute_tool
 from agent.skills import exposed_tools, load_instructions, SKILL_VERSION
 from agent.planning import PlanLedger
+from services.evidence_store import make_attempt
 from agent.tools import SCHEMAS
 from pydantic import ValidationError
 
@@ -16,6 +17,8 @@ PROMPT_VERSION = "s2a-core-v1"
 PROMPT = (Path(__file__).parent / "prompts" / "s2a_core_v1.md").read_text(encoding="utf-8")
 
 class AgentState(TypedDict):
+    run_id: str
+    evidence_attempts: list[dict]
     messages: list[dict]
     traces: list[dict]
     tasks: list[str]
@@ -36,7 +39,7 @@ class AgentState(TypedDict):
     stop_after_first_verified_step: bool
 
 class AgentLoop:
-    def __init__(self, decider: Any, max_steps: int = 6, clock=None, task_store=None, memory_store=None, mcp_client=None, skill_strategy='dynamic', skill_budget_chars=600):
+    def __init__(self, decider: Any, max_steps: int = 6, clock=None, task_store=None, memory_store=None, mcp_client=None, skill_strategy='dynamic', skill_budget_chars=600, attempt_journal=None, attempt_session_factory=None, blocked_side_effects=False):
         if max_steps < 1 or max_steps > 20:
             raise ValueError("max_steps must be 1..20")
         self.decider = decider
@@ -47,6 +50,9 @@ class AgentLoop:
         self.mcp_client = mcp_client
         self.skill_strategy = skill_strategy
         self.skill_budget_chars = skill_budget_chars
+        self.attempt_journal = attempt_journal
+        self.attempt_session_factory = attempt_session_factory
+        self.blocked_side_effects = blocked_side_effects
         flow = StateGraph(AgentState)
         flow.add_node("decide", self._decide)
         flow.add_node("tools", self._tools)
@@ -126,11 +132,26 @@ class AgentLoop:
         observations = []
         traces = list(state["traces"])
         audit = list(state["audit"])
+        attempts = list(state["evidence_attempts"])
         # Limit fanout, never allow an arbitrary number of model tool calls.
         for index, call in enumerate(last.get("tool_calls", [])[:4]):
             function = call["function"]
             name = function.get("name")
-            if name not in {tool["function"]["name"] for tool in state["allowed_tools"]}:
+            attempt_step_id = None
+            if name not in {"propose_plan", "revise_plan", "complete_plan_step"}:
+                match = [st for st in state["plan"].snapshot()
+                         if st.get("status") == "pending"
+                         and st.get("expected_tool") == name
+                         and st.get("expected_arguments") == function.get("arguments")]
+                if len(match) == 1:
+                    attempt_step_id = match[0]["id"]
+            prepared = make_attempt(state["run_id"], name, function.get("arguments"),
+                                    {"ok": False, "error": "unconfirmed"}, attempt_step_id)
+            if self.attempt_journal is not None:
+                self.attempt_journal.begin(self.attempt_session_factory, prepared)
+            if self.blocked_side_effects and name in {"create_task", "save_memory"}:
+                result = {"ok": False, "error": "unresolved_prior_side_effect"}
+            elif name not in {tool["function"]["name"] for tool in state["allowed_tools"]}:
                 result = {"ok": False, "error": "tool_not_exposed"}
             elif name in {"propose_plan", "revise_plan", "complete_plan_step"}:
                 try:
@@ -182,6 +203,12 @@ class AgentLoop:
                                           "in invalidate_step_ids; preserve other completed steps.")
                 else:
                     result["guidance"] = "Retry with current revision or omit expected_revision, preserving verified steps."
+            finished = make_attempt(state["run_id"], name,
+                                    function.get("arguments"), result, attempt_step_id)
+            finished["attempt_id"] = prepared["attempt_id"]
+            if self.attempt_journal is not None:
+                self.attempt_journal.finish(self.attempt_session_factory, finished)
+            attempts.append(finished)
             observations.append({"role": "tool", "tool_name": name,
                                  "tool_call_id": call["id"],
                                  "content": json.dumps(result, ensure_ascii=False)})
@@ -193,6 +220,7 @@ class AgentLoop:
         update = {"messages": state["messages"] + observations,
                   "tasks": tasks, "traces": traces, "audit": audit,
                   "plan": state["plan"], "last_success": state["last_success"],
+                  "evidence_attempts": attempts,
                   "memory_recall_observed": state["memory_recall_observed"]}
         # Stop only for an explicitly limited first step with verified evidence.
         steps = state["plan"].snapshot()
@@ -211,7 +239,8 @@ class AgentLoop:
 
     async def run(self, goal: str, *, include_evidence: bool = False,
                   history: list[dict] | None = None,
-                  plan_checkpoint: dict | None = None) -> dict:
+                  plan_checkpoint: dict | None = None,
+                  prior_step_results: dict[int, dict] | None = None) -> dict:
         if not goal.strip() or len(goal) > 12000:
             raise ValueError("Goal must contain 1..12000 characters")
         run_id = str(uuid.uuid4())
@@ -287,15 +316,25 @@ class AgentLoop:
                         for step in outstanding)):
             trace = []
             audit = []
+            attempts = []
             delivered = []
             for step in outstanding:
                 name = step["expected_tool"]
                 arguments = step["expected_arguments"]
+                prepared = make_attempt(run_id, name, arguments,
+                                        {"ok": False, "error": "unconfirmed"}, step["id"])
+                if self.attempt_journal is not None:
+                    self.attempt_journal.begin(self.attempt_session_factory, prepared)
                 result = execute_tool(
                     name, arguments, [],
                     self.clock, task_store=self.task_store,
                     memory_store=self.memory_store, mcp_client=self.mcp_client)
                 resumed.observe(name, result, arguments)
+                finished = make_attempt(run_id, name, arguments, result, step["id"])
+                finished["attempt_id"] = prepared["attempt_id"]
+                if self.attempt_journal is not None:
+                    self.attempt_journal.finish(self.attempt_session_factory, finished)
+                attempts.append(finished)
                 # Preserve only the bounded, tool-observed output for delivery.
                 # Never synthesize results for previously completed steps.
                 if result.get("ok"):
@@ -335,8 +374,14 @@ class AgentLoop:
                     lines.append("步骤 " + str(step["id"]) + "（" +
                                  step["goal"] + "）： " + item["result"])
                 elif step["status"] == "completed":
-                    lines.append("步骤 " + str(step["id"]) +
-                                 "：此前已验证完成；本次没有其原始输出，不能重述具体结果。")
+                    historical = (prior_step_results or {}).get(step["id"])
+                    if historical and historical.get("tool") == step.get("expected_tool"):
+                        safe_value = historical.get("result", {})
+                        lines.append("步骤 " + str(step["id"]) + "：此前已验证完成；可信保存的结果：" +
+                                     json.dumps(safe_value, ensure_ascii=False)[:1200])
+                    else:
+                        lines.append("步骤 " + str(step["id"]) +
+                                     "：此前已验证完成；没有可信的已保存结果，不重述具体数值。")
                 else:
                     lines.append("步骤 " + str(step["id"]) + "：尚未完成。")
             lines.append("计划全部步骤已验证完成。" if not remaining else
@@ -348,7 +393,8 @@ class AgentLoop:
                       "steps": len(trace), "plan": resumed.snapshot(),
                       "plan_revision": resumed.revision,
                       "plan_events": list(resumed.events),
-                      "plan_checkpoint": resumed.checkpoint()}
+                      "plan_checkpoint": resumed.checkpoint(),
+                      "evidence_attempts": attempts}
             if include_evidence:
                 output["audit"] = audit
                 output["tasks"] = []
@@ -369,7 +415,7 @@ class AgentLoop:
         bounded_first_step = bool(
             re.search(r"(只|先|首先|先尝试).{0,14}(完成|执行).{0,6}(第一步|第1步|步骤一)", goal)
             and re.search(r"(剩余|其他|后续).{0,12}(步骤|保留|不要|暂)", goal))
-        initial: AgentState = {"messages": [
+        initial: AgentState = {"run_id": run_id, "evidence_attempts": [], "messages": [
             {"role": "system", "content": PROMPT + "\nSelected skill instructions (" + SKILL_VERSION + "):\n" + load_instructions(goal, strategy=self.skill_strategy, max_chars=self.skill_budget_chars) + resume_context},
             *clean_history, {"role": "user", "content": goal}],
             "traces": [], "tasks": [], "final": "", "status": "running", "iterations": 0,
@@ -398,7 +444,8 @@ class AgentLoop:
                   "prompt_version": PROMPT_VERSION, "steps": outcome["iterations"],
                   "plan": outcome["plan"].snapshot(), "plan_revision": outcome["plan"].revision,
                   "plan_events": list(outcome["plan"].events),
-                  "plan_checkpoint": outcome["plan"].checkpoint() if outcome["plan"].revision else None}
+                  "plan_checkpoint": outcome["plan"].checkpoint() if outcome["plan"].revision else None,
+                  "evidence_attempts": outcome["evidence_attempts"]}
         if include_evidence:
             result["audit"] = outcome["audit"]
             result["tasks"] = outcome["tasks"]

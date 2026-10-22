@@ -62,6 +62,48 @@ class Turn(Base):
     failure_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     decision_steps: Mapped[int] = mapped_column(Integer, default=0)
 
+class AgentTaskState(Base):
+    """CAS-protected projection of one active Agent task per conversation."""
+    __tablename__ = "agent_task_states"
+    conversation_id: Mapped[str] = mapped_column(ForeignKey("conversations.id"), primary_key=True)
+    task_id: Mapped[str] = mapped_column(String(40))
+    revision: Mapped[int] = mapped_column(Integer)
+    plan_revision: Mapped[int] = mapped_column(Integer)
+    state: Mapped[str] = mapped_column(String(24))
+    step_states: Mapped[str] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+class AgentStateTransition(Base):
+    """Append-only state change evidence; not authority to execute tools."""
+    __tablename__ = "agent_state_transitions"
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(ForeignKey("conversations.id"), index=True)
+    task_id: Mapped[str] = mapped_column(String(40))
+    revision: Mapped[int] = mapped_column(Integer)
+    entity_type: Mapped[str] = mapped_column(String(16))
+    step_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    from_state: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    to_state: Mapped[str] = mapped_column(String(24))
+    reason_code: Mapped[str] = mapped_column(String(40))
+    attempt_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+class AgentAttempt(Base):
+    """Durable bounded record of a real tool invocation, not a model claim."""
+    __tablename__ = "agent_attempts"
+    __table_args__ = (UniqueConstraint("turn_id", "id", name="uq_agent_attempt_turn_id"),)
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(ForeignKey("conversations.id"), index=True)
+    turn_id: Mapped[str] = mapped_column(ForeignKey("turns.id"), index=True)
+    run_id: Mapped[str] = mapped_column(String(40))
+    step_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    tool_name: Mapped[str] = mapped_column(String(80))
+    arguments_digest: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(24))
+    error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    result_projection: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
 def engine_for(url):
     if url == "sqlite://":
         return create_engine(url, connect_args={"check_same_thread":False}, poolclass=StaticPool)

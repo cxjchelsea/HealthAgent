@@ -16,6 +16,10 @@ from agent.context import build_context
 from services.task_store import ConversationTaskStore
 from services.memory_store import MemoryStore
 from services.plan_store import ConversationPlanStore
+from services.evidence_store import AttemptEvidenceStore
+from services.task_state import AgentTaskStateStore
+from services.db import AgentAttempt
+import json
 from services.db import Conversation, Message, Turn, database
 
 log=logging.getLogger("healthagent")
@@ -127,16 +131,25 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
         began = time.monotonic()
         status, answer = "provider_error", ""
         result = None
+        existing_checkpoint = None
+        prior_task_state = None
         failure_code = None
         decision_steps = 0
         try:
             existing_checkpoint = plan_store.load()
+            prior_task_state = AgentTaskStateStore(cid).load(Session)
+            prior_step_results = AttemptEvidenceStore(cid, turn_id).completed_step_projections(Session, existing_checkpoint)
+            attempt_journal = AttemptEvidenceStore(cid, turn_id)
+            blocked_side_effects = attempt_journal.has_unresolved_writes(Session)
             decider = agent_decider if agent_decider is not None else NativeToolDecision(settings)
             result = await AgentLoop(decider, task_store=ConversationTaskStore(Session, cid),
                 memory_store=MemoryStore(Session, uid, write_allowed=body.memory_write_consent),
                 mcp_client=StdioMCPClient(), skill_strategy=settings.skill_strategy,
-                skill_budget_chars=settings.skill_budget_chars).run(body.content, history=context,
-                                      plan_checkpoint=existing_checkpoint)
+                skill_budget_chars=settings.skill_budget_chars,
+                attempt_journal=attempt_journal, attempt_session_factory=Session,
+                blocked_side_effects=blocked_side_effects).run(body.content, history=context,
+                                      plan_checkpoint=existing_checkpoint,
+                                      prior_step_results=prior_step_results)
             if result["status"] in {"completed", "partial"}:
                 answer, status = result["answer"], result["status"]
             else:
@@ -147,6 +160,23 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
             log.warning("conversation Agent failed turn=%s class=%s", turn_id, type(exc).__name__)
             status, answer = "provider_error", ""
             failure_code = "agent_exception"
+        # R01/R03: A graph exception can lose its in-memory ledger. Recover only
+        # successful tool results matching the prior trusted plan and this turn.
+        # Unknown attempts remain unresolved; never infer an unrecorded plan.
+        if status not in {"completed", "partial"} and existing_checkpoint:
+            recovered_checkpoint = AttemptEvidenceStore(
+                cid, turn_id).reconcile_failed_turn_checkpoint(Session, existing_checkpoint)
+            if not (result or {}).get("plan_checkpoint"):
+                if result is None:
+                    result = {"plan_checkpoint": recovered_checkpoint,
+                              "evidence_attempts": AttemptEvidenceStore(
+                                  cid, turn_id).verified_attempt_refs_for_checkpoint(
+                                      Session, recovered_checkpoint)}
+                else:
+                    result["plan_checkpoint"] = recovered_checkpoint
+                    result["evidence_attempts"] = AttemptEvidenceStore(
+                        cid, turn_id).verified_attempt_refs_for_checkpoint(
+                            Session, recovered_checkpoint)
         # Atomic local DB commit: never expose a successful message separately
         # from its corresponding plan checkpoint and turn terminal state.
         # External tool effects remain outside this transaction.
@@ -156,8 +186,28 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                 turn = db.get(Turn, turn_id)
                 if response is None or turn is None or turn.state != "running":
                     raise RuntimeError("turn_finalization_conflict")
-                if status in {"completed", "partial"} and result.get("plan_checkpoint"):
-                    plan_store.save_in_session(db, result["plan_checkpoint"])
+                # A returned checkpoint is a potentially valid state even if the
+                # model's final answer failed. Never discard verified progress.
+                checkpoint_to_save = (result or {}).get("plan_checkpoint")
+                if checkpoint_to_save:
+                    plan_store.save_in_session(db, checkpoint_to_save)
+                # Preserve the previous trusted checkpoint on failed terminal turns.
+                # A failed model call is not evidence that the prior plan disappeared.
+                if result or prior_task_state:
+                    # Do not label a task simply failed when an external write
+                    # may have happened without a reliable final turn commit.
+                    task_status = status
+                    if status not in {"completed", "partial"} and AttemptEvidenceStore(
+                            cid, turn_id).has_unresolved_writes(Session):
+                        task_status = "blocked"
+                    AgentTaskStateStore(cid).save_in_session(
+                        db, result.get("plan_checkpoint") if result and result.get("plan_checkpoint")
+                        else existing_checkpoint, task_status,
+                        prior_task_state["revision"] if prior_task_state else None,
+                        result.get("evidence_attempts", []) if result else [],
+                        current_turn_id=turn_id)
+                if result and result.get("evidence_attempts"):
+                    AttemptEvidenceStore(cid, turn_id).save_in_session(db, result["evidence_attempts"])
                 response.content = answer
                 response.status = status
                 turn.state = status
@@ -184,7 +234,42 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                       "turn_id": turn_id,
                                       "status": status,
                                       "decision_steps": decision_steps})
-        return {**result, "conversation_id": cid, "message_id": assistant_id}
+        safe_result = {k: v for k, v in result.items() if k != "evidence_attempts"}
+        safe_result["attempt_refs"] = [a["attempt_id"] for a in result.get("evidence_attempts", [])]
+        return {**safe_result, "conversation_id": cid, "message_id": assistant_id}
+
+    @app.get("/conversations/{cid}/agent/task-history")
+    def task_history(cid: str, uid=Depends(user_id)):
+        with Session() as db:
+            get_owned(db, cid, uid)
+        return {"conversation_id": cid,
+                "transitions": AgentTaskStateStore(cid).history(Session)}
+
+    @app.get("/conversations/{cid}/agent/task-state")
+    def task_state(cid: str, uid=Depends(user_id)):
+        with Session() as db:
+            get_owned(db,cid,uid)
+        record = AgentTaskStateStore(cid).load(Session)
+        return record or {"task_id": None,"revision":0,"plan_revision":0,
+                          "state":"not_started","steps":[]}
+
+    @app.get("/conversations/{cid}/turns/{turn_id}/evidence")
+    def turn_evidence(cid: str, turn_id: str, uid=Depends(user_id)):
+        """Bounded owner-scoped evidence from the actual executor, not model recollection."""
+        with Session() as db:
+            get_owned(db, cid, uid)
+            turn = db.get(Turn, turn_id)
+            if turn is None or turn.conversation_id != cid:
+                raise HTTPException(404, "Turn not found")
+            attempts = db.scalars(select(AgentAttempt).where(
+                AgentAttempt.conversation_id == cid, AgentAttempt.turn_id == turn_id)
+                .order_by(AgentAttempt.created_at, AgentAttempt.id).limit(50)).all()
+            return {"turn_id": turn_id, "attempts": [
+                {"attempt_id": a.id, "run_id": a.run_id,
+                 "step_id": a.step_id, "tool": a.tool_name,
+                 "status": a.status, "error_code": a.error_code,
+                 "result": json.loads(a.result_projection) if a.result_projection else None}
+                for a in attempts]}
 
     @app.get("/conversations/{cid}/turns/{turn_id}/diagnostics")
     def turn_diagnostics(cid: str, turn_id: str, uid=Depends(user_id)):
