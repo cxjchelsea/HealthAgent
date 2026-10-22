@@ -165,3 +165,38 @@ def test_m07_missing_confirmed_goal_returns_clarification_not_503(tmp_path, monk
         state = ConversationGoalStore(Session, cid).load()
         assert state["goal"] is None
         engine.dispose()
+
+
+def test_m12_memory_tool_action_never_requires_existing_goal(tmp_path, monkeypatch):
+    from agent.execution_policy import ExecutionPolicyDecision
+    async def fake_understand(self, *, messages, model):
+        # Deliberately misclassified goal change: execution scope must prevent
+        # a missing_confirmed_goal from blocking an authorized memory operation.
+        return json.dumps({
+            "status": "understood",
+            "goal": {"objective": "记住测试键 manual_code", "subgoals": [],
+                     "constraints": [], "success_criteria": []},
+            "change": {"kind": "revise", "target_goal_id": None,
+                       "delta": "记住 manual_code=QA-17"},
+            "clarification": {"required": False, "reason_code": "none", "question": None},
+            "schema_version": "s25-01-v1"}, ensure_ascii=False)
+    async def policy(message, understanding):
+        return ExecutionPolicyDecision(mode="execute", target="tool_action")
+    monkeypatch.setattr(HTTPUnderstandingModel, "complete", fake_understand)
+    decider = Capture()
+    settings = Settings(database_url=f"sqlite:///{tmp_path/'memory_scope.db'}",
+                        model_provider="ollama_proxy", understanding_strategy="structured")
+    with TestClient(create_app(settings, agent_decider=decider,
+                               execution_policy=policy)) as client:
+        cid = client.post("/conversations").json()["id"]
+        response = client.post(f"/conversations/{cid}/agent/messages", json={
+            "content": "请记住测试键 manual_code，值 QA-17。",
+            "memory_write_consent": True, "client_request_id": "m12-memory-001"})
+        assert response.status_code == 200, response.text
+        assert response.json()["status"] == "completed"
+        assert "save_memory" in {x["function"]["name"] for x in decider.tools}
+        from services.db import database
+        from services.goal_store import ConversationGoalStore
+        engine, Session = database(settings.database_url)
+        assert ConversationGoalStore(Session, cid).load()["goal"] is None
+        engine.dispose()
