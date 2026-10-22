@@ -38,10 +38,10 @@ def test_failed_tool_then_unverified_success_claim_stays_partial():
     assert result["audit"][0]["observation"]["ok"] is False
 
 
-def test_successful_retry_of_same_tool_clears_failure():
+def test_different_arguments_do_not_clear_failed_action():
     result = asyncio.run(AgentLoop(FailThenRepair()).run("计算任务", include_evidence=True))
-    assert result["status"] == "completed"
-    assert result["termination_reason"] == "model_final"
+    assert result["status"] == "partial"
+    assert result["termination_reason"] == "unresolved_tool_failure"
     assert [a["observation"]["ok"] for a in result["audit"]] == [False, True]
 
 
