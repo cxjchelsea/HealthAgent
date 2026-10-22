@@ -144,10 +144,7 @@ def safe_calculate(expression: str) -> float | int:
         if isinstance(node, ast.UnaryOp) and type(node.op) in UNARY:
             return UNARY[type(node.op)](evaluate(node.operand, depth + 1))
         raise ValueError("Unsupported arithmetic syntax")
-    try:
-        return evaluate(parsed.body)
-    except ZeroDivisionError as exc:
-        raise ValueError("Division by zero") from exc
+    return evaluate(parsed.body)
 
 def execute_tool(name: str, arguments: Any, tasks: list[str], clock=None, task_store=None, memory_store=None, mcp_client=None) -> dict:
     """Returns typed observation; errors become data for the model, not unhandled side effects."""
@@ -170,7 +167,20 @@ def execute_tool(name: str, arguments: Any, tasks: list[str], clock=None, task_s
                 return {"ok": False, "error": "memory_unavailable"}
             return memory_store.get(parsed.key)
         if name == "calculate":
-            return {"ok": True, "value": safe_calculate(parsed.expression)}
+            try:
+                return {"ok": True, "value": safe_calculate(parsed.expression)}
+            except ZeroDivisionError:
+                return {"ok": False, "error": "division_by_zero",
+                        "retryable": False,
+                        "message": "The expression attempts division by zero."}
+            except (SyntaxError, ValueError) as exc:
+                return {"ok": False, "error": "unsupported_expression",
+                        "retryable": False,
+                        "message": "Unsupported arithmetic syntax, operation, or expression limit."}
+            except (OverflowError, TypeError):
+                return {"ok": False, "error": "calculation_limit_exceeded",
+                        "retryable": False,
+                        "message": "Numerical calculation failed or exceeded supported limits."}
         if name == "utc_time":
             current = clock() if clock else datetime.now(timezone.utc)
             return {"ok": True, "utc": current.astimezone(timezone.utc).isoformat()}
