@@ -13,7 +13,7 @@ class SameDecision:
 def test_identical_tool_request_stops_as_partial():
     loop = AgentLoop(SameDecision())
     state = {
-        "iterations": 2, "status": "running", "memory_recall_required": False,
+        "iterations": 2, "status": "running", "structured_mode": True, "memory_recall_required": False,
         "memory_recall_observed": True, "memory_recall_retry": False,
         "recall_retry_pending": False, "messages": [], "allowed_tools": [],
         "plan": PlanLedger(), "last_success": None,
