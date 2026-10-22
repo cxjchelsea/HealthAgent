@@ -63,6 +63,18 @@ def exercise(settings):
                         "code": payload.get("detail", {}).get("code") if isinstance(payload.get("detail"), dict) else None,
                         "step_count": payload.get("steps"),
                         "trace_count": len(payload.get("trace", [])),
+                        "trace_summary": [
+                            {"type": event.get("type"), "step": event.get("step"),
+                             "tool": event.get("name"), "ok": event.get("ok")}
+                            for event in payload.get("trace", [])[-20:]
+                            if event.get("type") in {"decision", "tool", "final",
+                                "repeat_tool_stop", "step_limit", "partial_first_step_verified"}
+                        ],
+                        "plan_progress": (
+                            {"total": len(payload["plan"]),
+                             "completed": sum(step.get("status") == "completed"
+                                              for step in payload["plan"])}
+                            if isinstance(payload.get("plan"), list) else None),
                         "failure_trace": (payload.get("detail", {}).get("trace_summary", [])
                                           if isinstance(payload.get("detail"), dict) else []),
                     })
