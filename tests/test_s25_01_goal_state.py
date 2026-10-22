@@ -93,8 +93,7 @@ def test_explicit_constraints_cannot_be_replaced_without_preflight(tmp_path):
     current = store.load()
     revision = UnderstandingResult.model_validate_json(proposal("revise", "安排两项", [
         {"name": "limit", "value": "最多两项", "source": "explicit", "scope": "goal"}]))
-    with pytest.raises(UnderstandingError, match="goal_change_needs_confirmation"):
-        store.validate_before_execution(revision, current)
+    assert store.validate_before_execution(revision, current) == "confirmation_required"
     assert store.load() == current
     engine.dispose()
 
