@@ -76,8 +76,9 @@ class UnderstandingContext(BaseModel):
         return self
 
 class UnderstandingError(Exception):
-    def __init__(self, code: str):
+    def __init__(self, code: str, attempts: list[dict[str, Any]] | None = None):
         self.code = code
+        self.attempts = attempts or []
         super().__init__(code)
 
 class UnderstandingModel(Protocol):
@@ -92,7 +93,7 @@ class HTTPUnderstandingModel:
         if self.provider == "ollama_proxy":
             url = self.base_url + "/chat"
             body = {"model": model, "messages": messages, "stream": False,
-                    "think": False, "format": "json",
+                    "think": False, "format": UnderstandingResult.model_json_schema(),
                     "options": {"temperature": 0, "num_predict": self.output_tokens}}
             headers = {}
         elif self.provider == "openai_compatible":
@@ -111,7 +112,9 @@ class HTTPUnderstandingModel:
                 data = response.json()
         except httpx.TimeoutException as exc:
             raise UnderstandingError("model_timeout") from exc
-        except httpx.HTTPError as exc:
+        except httpx.HTTPStatusError as exc:
+            raise UnderstandingError("model_http_status") from exc
+        except httpx.TransportError as exc:
             raise UnderstandingError("model_transport_error") from exc
         except ValueError as exc:
             raise UnderstandingError("model_invalid_response") from exc
@@ -119,7 +122,7 @@ class HTTPUnderstandingModel:
             message = data["message"] if self.provider == "ollama_proxy" else data["choices"][0]["message"]
             content = message["content"]
             if not isinstance(content, str) or not content.strip():
-                raise ValueError("empty_content")
+                raise UnderstandingError("model_empty_content")
             return content
         except (KeyError, IndexError, TypeError, ValueError) as exc:
             raise UnderstandingError("model_invalid_response") from exc
@@ -154,7 +157,12 @@ class UnderstandingService:
             start = time.monotonic()
             try:
                 raw = await self.model.complete(messages=messages, model=model_name)
-                result = UnderstandingResult.model_validate_json(raw)
+                try:
+                    result = UnderstandingResult.model_validate_json(raw)
+                except ValidationError as exc:
+                    types = {item["type"] for item in exc.errors()}
+                    code = "structured_consistency_error" if "value_error" in types else "structured_schema_error"
+                    raise UnderstandingError(code) from exc
                 if result.change.target_goal_id is not None:
                     # S25-03 owns durable goal IDs. A model cannot invent one from text.
                     raise UnderstandingError("unverified_goal_reference")
@@ -171,6 +179,6 @@ class UnderstandingService:
                 attempts.append({"role": "strong" if model_name == self.strong_model else "light",
                                  "duration_ms": int((time.monotonic() - start) * 1000),
                                  "outcome": reason})
-        raise UnderstandingError("understanding_unavailable")
+        raise UnderstandingError("understanding_unavailable", attempts=attempts)
 
 # No rule-based fallback. Legacy code calling understand() must migrate explicitly.
