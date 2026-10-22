@@ -134,6 +134,41 @@ class AttemptEvidenceStore:
                 )
             ).limit(1)) is not None
 
+    def reconcile_failed_turn_checkpoint(self, session_factory, checkpoint: dict | None) -> dict | None:
+        """Recover ONLY verified, bound pending steps from durable successful attempts.
+
+        Cannot recreate missing plans, infer model-only revisions, or reconcile effects
+        whose execution result is unknown.
+        """
+        if not checkpoint or not isinstance(checkpoint.get("steps"), list):
+            return checkpoint
+        from sqlalchemy import select
+        from services.db import AgentAttempt
+        recovered = json.loads(json.dumps(checkpoint))
+        with session_factory() as db:
+            rows = db.scalars(select(AgentAttempt).where(
+                AgentAttempt.conversation_id == self.conversation_id,
+                AgentAttempt.turn_id == self.turn_id,
+                AgentAttempt.status == "succeeded",
+                AgentAttempt.step_id.is_not(None))).all()
+        by_step = {}
+        for row in rows:
+            if row.step_id in by_step:
+                by_step[row.step_id] = None  # Ambiguous; fail closed.
+            else:
+                by_step[row.step_id] = row
+        for step in recovered["steps"]:
+            if step.get("status") != "pending":
+                continue
+            row = by_step.get(step.get("id"))
+            if not row or not isinstance(step.get("expected_arguments"), dict):
+                continue
+            if (row.tool_name == step.get("expected_tool") and
+                    row.arguments_digest == arguments_digest(step["expected_arguments"])):
+                step["status"] = "completed"
+                step["evidence_tool"] = row.tool_name
+        return recovered
+
     def completed_step_projections(self, session_factory, checkpoint: dict | None = None) -> dict[int, dict]:
         """Only previously recorded successful, tool-scoped projections in this conversation."""
         from sqlalchemy import select
