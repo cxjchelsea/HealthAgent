@@ -392,15 +392,15 @@ class AgentLoop:
         # Tool execution still requires the independent tool authorization and validation.
         tool_strategy = "all" if understanding_result is not None else self.skill_strategy
         selected_tools = exposed_tools(goal, TOOL_SCHEMAS, strategy=tool_strategy)
-        # A model-derived respond-only proposal can only REMOVE tool authority.
-        # The host never grants execution permissions from this declaration.
-        if understanding_result is not None and understanding_result.get("execution_intent") == "respond_only":
-            selected_tools = []
         if resumed.revision:
             names = {t["function"]["name"] for t in selected_tools}
             selected_tools += [t for t in TOOL_SCHEMAS if t["function"]["name"]
                                in {"propose_plan", "revise_plan", "complete_plan_step"}
                                and t["function"]["name"] not in names]
+        # A model-derived respond-only proposal can only REMOVE tool authority.
+        # The host never grants execution permissions from this declaration.
+        if understanding_result is not None and understanding_result.get("execution_intent") == "respond_only":
+            selected_tools = []
         resume_context = ("\nTrusted checkpoint: revision " + str(resumed.revision) +
                           "; steps: " + json.dumps(resumed.snapshot(), ensure_ascii=False)
                           if resumed.revision else "")
