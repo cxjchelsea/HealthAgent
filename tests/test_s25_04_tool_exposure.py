@@ -40,11 +40,15 @@ def test_unknown_registry_tool_not_exposed():
     assert "foreign_untrusted" in selection.excluded_names
 
 
-def test_explicit_writer_retains_legacy_exposure_gate():
+def test_write_exposure_requires_trusted_authorization():
     selection = select_tool_exposure("帮我创建待办任务", TOOL_SCHEMAS,
                                      strategy="semantic")
-    assert "create_task" in _names(selection)
+    assert "create_task" not in _names(selection)
     assert "save_memory" not in _names(selection)
+    authorized = select_tool_exposure("帮我创建待办任务", TOOL_SCHEMAS,
+                                     strategy="semantic", authorized_write_tools=("create_task",))
+    assert "create_task" in _names(authorized)
+    assert "save_memory" not in _names(authorized)
 
 
 def test_invalid_strategy_and_budget_fail_closed():
