@@ -35,3 +35,60 @@ def test_failed_turn_preserves_checkpoint_and_links_successful_attempt(tmp_path)
     assert any(e["entity_type"] == "task" and e["to_state"] == "failed"
                for e in store.history(Session))
     engine.dispose()
+
+
+def test_step_completion_links_only_real_matching_persisted_attempt(tmp_path):
+    from services.db import Message, Turn
+    from services.evidence_store import AttemptEvidenceStore, make_attempt
+    url = f"sqlite:///{tmp_path/'verified.db'}"
+    migrate(url)
+    engine, Session = database(url)
+    with Session.begin() as db:
+        db.add(Conversation(id="c1", owner_id="test"))
+        db.add(Message(id="m1", conversation_id="c1", role="assistant",
+                       content="", status="completed"))
+        db.add(Turn(id="t1", conversation_id="c1", request_id="request-verified-01",
+                    assistant_message_id="m1", state="completed"))
+    record = make_attempt("run", "calculate", {"expression": "8*8"},
+                          {"ok": True, "value": 64}, step_id=1)
+    journal = AttemptEvidenceStore("c1", "t1")
+    journal.begin(Session, record)
+    journal.finish(Session, record)
+    plan = {"revision": 1, "steps": [{
+        "id": 1, "status": "completed", "evidence_tool": "calculate",
+        "expected_tool": "calculate", "expected_arguments": {"expression": "8*8"}}]}
+    with Session.begin() as db:
+        AgentTaskStateStore("c1").save_in_session(
+            db, plan, "completed", None, [record])
+    linked = AgentTaskStateStore("c1").history(Session)
+    assert any(e["step_id"] == 1 and e["attempt_id"] == record["attempt_id"]
+               for e in linked)
+    engine.dispose()
+
+
+def test_mismatched_arguments_never_link_attempt(tmp_path):
+    from services.db import Message, Turn
+    from services.evidence_store import AttemptEvidenceStore, make_attempt
+    url = f"sqlite:///{tmp_path/'mismatch.db'}"
+    migrate(url)
+    engine, Session = database(url)
+    with Session.begin() as db:
+        db.add(Conversation(id="c1", owner_id="test"))
+        db.add(Message(id="m1", conversation_id="c1", role="assistant",
+                       content="", status="completed"))
+        db.add(Turn(id="t1", conversation_id="c1", request_id="request-mismatch-01",
+                    assistant_message_id="m1", state="completed"))
+    attempt = make_attempt("run", "calculate", {"expression": "8*8"},
+                           {"ok": True, "value": 64}, step_id=1)
+    journal = AttemptEvidenceStore("c1", "t1")
+    journal.begin(Session, attempt)
+    journal.finish(Session, attempt)
+    changed_plan = {"revision": 2, "steps": [{
+        "id": 1, "status": "completed", "evidence_tool": "calculate",
+        "expected_tool": "calculate", "expected_arguments": {"expression": "9*9"}}]}
+    with Session.begin() as db:
+        AgentTaskStateStore("c1").save_in_session(
+            db, changed_plan, "completed", None, [attempt])
+    assert all(e["attempt_id"] is None for e in
+               AgentTaskStateStore("c1").history(Session))
+    engine.dispose()
