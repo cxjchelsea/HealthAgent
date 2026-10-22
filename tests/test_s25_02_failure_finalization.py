@@ -34,7 +34,7 @@ def test_failed_tool_then_unverified_success_claim_stays_partial():
     result = asyncio.run(AgentLoop(FailThenClaim()).run("计算任务", include_evidence=True))
     assert result["status"] == "partial"
     assert result["termination_reason"] == "unresolved_tool_failure"
-    assert "不构成执行成功证明" in result["answer"]
+    assert "不是执行成功证明" in result["answer"]
     assert result["audit"][0]["observation"]["ok"] is False
 
 
