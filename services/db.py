@@ -62,6 +62,17 @@ class Turn(Base):
     failure_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     decision_steps: Mapped[int] = mapped_column(Integer, default=0)
 
+class AgentTaskState(Base):
+    """CAS-protected projection of one active Agent task per conversation."""
+    __tablename__ = "agent_task_states"
+    conversation_id: Mapped[str] = mapped_column(ForeignKey("conversations.id"), primary_key=True)
+    task_id: Mapped[str] = mapped_column(String(40))
+    revision: Mapped[int] = mapped_column(Integer)
+    plan_revision: Mapped[int] = mapped_column(Integer)
+    state: Mapped[str] = mapped_column(String(24))
+    step_states: Mapped[str] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
 class AgentAttempt(Base):
     """Durable bounded record of a real tool invocation, not a model claim."""
     __tablename__ = "agent_attempts"
