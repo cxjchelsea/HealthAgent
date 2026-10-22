@@ -7,7 +7,8 @@ from typing import Any, TypedDict
 from langgraph.graph import END, StateGraph
 from agent.decision import NativeToolDecision
 from agent.tools import TOOL_SCHEMAS, execute_tool
-from agent.skills import exposed_tools, load_instructions, SKILL_VERSION
+from agent.skills import (exposed_tools, load_instructions, SKILL_VERSION,
+                          select_tool_exposure, exposure_schemas, exposure_instructions)
 from agent.planning import PlanLedger
 from agent.tools import SCHEMAS
 from pydantic import ValidationError
@@ -353,7 +354,8 @@ class AgentLoop:
                 output["audit"] = audit
                 output["tasks"] = []
             return output
-        selected_tools = exposed_tools(goal, TOOL_SCHEMAS, strategy=self.skill_strategy)
+        selection = select_tool_exposure(goal, TOOL_SCHEMAS, strategy=self.skill_strategy)
+        selected_tools = exposure_schemas(selection, TOOL_SCHEMAS)
         if resumed.revision:
             names = {t["function"]["name"] for t in selected_tools}
             selected_tools += [t for t in TOOL_SCHEMAS if t["function"]["name"]
@@ -370,7 +372,7 @@ class AgentLoop:
             re.search(r"(只|先|首先|先尝试).{0,14}(完成|执行).{0,6}(第一步|第1步|步骤一)", goal)
             and re.search(r"(剩余|其他|后续).{0,12}(步骤|保留|不要|暂)", goal))
         initial: AgentState = {"messages": [
-            {"role": "system", "content": PROMPT + "\nSelected skill instructions (" + SKILL_VERSION + "):\n" + load_instructions(goal, strategy=self.skill_strategy, max_chars=self.skill_budget_chars) + resume_context},
+            {"role": "system", "content": PROMPT + "\nSelected skill instructions (" + SKILL_VERSION + "):\n" + exposure_instructions(selection, max_chars=self.skill_budget_chars) + resume_context},
             *clean_history, {"role": "user", "content": goal}],
             "traces": [], "tasks": [], "final": "", "status": "running", "iterations": 0,
             "audit_enabled": include_evidence, "audit": [],
