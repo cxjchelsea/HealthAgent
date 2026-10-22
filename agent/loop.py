@@ -23,6 +23,7 @@ class AgentState(TypedDict):
     final: str
     status: str
     termination_reason: str | None
+    pending_action: str | None
     rejected_action_keys: list[str]
     unresolved_tool_failures: list[str]
     iterations: int
@@ -524,7 +525,8 @@ class AgentLoop:
             {"role": "system", "content": PROMPT + "\nSelected skill instructions (" + SKILL_VERSION + "):\n" + load_instructions(goal, strategy=self.skill_strategy, max_chars=self.skill_budget_chars) + resume_context + structured_policy},
             *clean_history, *goal_view, {"role": "user", "content": goal}],
             "traces": [], "tasks": [], "final": "", "status": "running",
-            "termination_reason": None, "rejected_action_keys": [],
+            "termination_reason": None, "pending_action": None,
+            "rejected_action_keys": [],
             "unresolved_tool_failures": [], "iterations": 0,
             "audit_enabled": include_evidence, "audit": [],
             "allowed_tools": selected_tools,
