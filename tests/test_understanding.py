@@ -42,6 +42,8 @@ def test_malformed_small_result_escalates_once():
         UnderstandingContext(current_message="整理明天事项")))
     assert stub.calls == ["small", "large"]
     assert result["escalated"]
+    assert [a["outcome"] for a in result["attempts"]] == ["invalid_structured_result", "valid"]
+    assert all(a["duration_ms"] >= 0 for a in result["attempts"])
 
 def test_invalid_both_models_fails_closed():
     stub = StubModel(["{}", "{}"])
