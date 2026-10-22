@@ -227,7 +227,8 @@ class AgentLoop:
         # No automatic evidence deletion: the model must invalidate via revise_plan.
         superseded_step_ids = []
         superseded_expression = None
-        correction = re.search(r"不是\s*([0-9]+\s*[*+/-]\s*[0-9]+)\s*[,，；;。]?\s*而是", goal)
+        correction = (re.search(r"不是\s*([0-9]+\s*[*+/-]\s*[0-9]+)\s*[,，；;。]?\s*而是", goal)
+                      if understanding_result is None else None)
         if correction:
             old_expression = re.sub(r"\s+", "", correction.group(1))
             superseded_expression = old_expression
