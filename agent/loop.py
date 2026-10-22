@@ -355,7 +355,10 @@ class AgentLoop:
                 output["audit"] = audit
                 output["tasks"] = []
             return output
-        selected_tools = exposed_tools(goal, TOOL_SCHEMAS, strategy=self.skill_strategy)
+        # Model-derived understanding must not be routed through a second keyword classifier.
+        # Tool execution still requires the independent tool authorization and validation.
+        tool_strategy = "all" if understanding_result is not None else self.skill_strategy
+        selected_tools = exposed_tools(goal, TOOL_SCHEMAS, strategy=tool_strategy)
         if resumed.revision:
             names = {t["function"]["name"] for t in selected_tools}
             selected_tools += [t for t in TOOL_SCHEMAS if t["function"]["name"]
