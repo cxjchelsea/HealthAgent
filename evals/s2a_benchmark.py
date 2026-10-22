@@ -71,7 +71,7 @@ def grade(case, result):
     expected = case["expected_tools"]
     checks = {
         "terminal_completed": (result["status"] == "partial"
-                               if suffix in FAILURE_CASES or suffix == "020"
+                               if suffix in FAILURE_CASES
                                else result["status"] == "completed"),
         "tool_sequence": calls == expected,
         "tool_executions_ok": all(x["observation"].get("ok") is True for x in audit)
