@@ -7,7 +7,8 @@ from typing import Any, TypedDict
 from langgraph.graph import END, StateGraph
 from agent.decision import NativeToolDecision
 from agent.tools import TOOL_SCHEMAS, execute_tool
-from agent.skills import exposed_tools, load_instructions, SKILL_VERSION
+from agent.skills import (exposed_tools, load_instructions, SKILL_VERSION,
+                          select_tool_exposure, exposure_schemas, exposure_instructions)
 from agent.planning import PlanLedger
 from agent.tools import SCHEMAS
 from pydantic import ValidationError
@@ -25,6 +26,8 @@ class AgentState(TypedDict):
     audit_enabled: bool
     audit: list[dict]
     allowed_tools: list[dict]
+    exposure_goal: str
+    unavailable_tools: list[str]
     plan: PlanLedger
     last_success: dict | None
     superseded_step_ids: list[int]
@@ -56,6 +59,29 @@ class AgentLoop:
         self.graph = flow.compile()
 
     async def _decide(self, state: AgentState) -> dict:
+        if self.skill_strategy == "semantic":
+            selection = select_tool_exposure(
+                state["exposure_goal"], TOOL_SCHEMAS, strategy="semantic",
+                active_step_tools=tuple(step.get("expected_tool") for step in state["plan"].snapshot()
+                                        if step.get("status") == "pending" and step.get("expected_tool")),
+                unavailable_tools=tuple(state["unavailable_tools"]),
+            )
+            refreshed = exposure_schemas(selection, TOOL_SCHEMAS)
+            if state["plan"].revision:
+                included = {item["function"]["name"] for item in refreshed}
+                refreshed.extend(item for item in TOOL_SCHEMAS
+                                 if item["function"]["name"] in
+                                 {"propose_plan", "revise_plan", "complete_plan_step"}
+                                 and item["function"]["name"] not in included)
+            state["allowed_tools"] = refreshed
+            state["traces"].append({
+                "step": state["iterations"] + 1,
+                "type": "tool_exposure",
+                "strategy": selection.mode,
+                "version": selection.version,
+                "tool_names": [item["function"]["name"] for item in refreshed],
+                "excluded_count": len(selection.excluded_names),
+            })
         decision = await self.decider.decide(state["messages"], state["allowed_tools"])
         iteration = state["iterations"] + 1
         if not decision.tool_calls:
@@ -165,6 +191,12 @@ class AgentLoop:
                 result = execute_tool(name, function.get("arguments"), tasks, self.clock,
                                       task_store=self.task_store, memory_store=self.memory_store,
                                       mcp_client=self.mcp_client)
+            if (self.skill_strategy == "semantic" and result.get("error") in
+                    {"mcp_unavailable", "memory_unavailable"}):
+                # Only the actual trusted executor's typed error changes
+                # availability. A freeform tool response is not a policy input.
+                if name not in state["unavailable_tools"]:
+                    state["unavailable_tools"].append(name)
             if name == "recall_memory":
                 state["memory_recall_observed"] = True
             if name not in {"propose_plan", "revise_plan", "complete_plan_step"}:
@@ -353,7 +385,8 @@ class AgentLoop:
                 output["audit"] = audit
                 output["tasks"] = []
             return output
-        selected_tools = exposed_tools(goal, TOOL_SCHEMAS, strategy=self.skill_strategy)
+        selection = select_tool_exposure(goal, TOOL_SCHEMAS, strategy=self.skill_strategy)
+        selected_tools = exposure_schemas(selection, TOOL_SCHEMAS)
         if resumed.revision:
             names = {t["function"]["name"] for t in selected_tools}
             selected_tools += [t for t in TOOL_SCHEMAS if t["function"]["name"]
@@ -370,11 +403,13 @@ class AgentLoop:
             re.search(r"(只|先|首先|先尝试).{0,14}(完成|执行).{0,6}(第一步|第1步|步骤一)", goal)
             and re.search(r"(剩余|其他|后续).{0,12}(步骤|保留|不要|暂)", goal))
         initial: AgentState = {"messages": [
-            {"role": "system", "content": PROMPT + "\nSelected skill instructions (" + SKILL_VERSION + "):\n" + load_instructions(goal, strategy=self.skill_strategy, max_chars=self.skill_budget_chars) + resume_context},
+            {"role": "system", "content": PROMPT + "\nSelected skill instructions (" + SKILL_VERSION + "):\n" + exposure_instructions(selection, max_chars=self.skill_budget_chars) + resume_context},
             *clean_history, {"role": "user", "content": goal}],
             "traces": [], "tasks": [], "final": "", "status": "running", "iterations": 0,
             "audit_enabled": include_evidence, "audit": [],
             "allowed_tools": selected_tools,
+            "exposure_goal": goal,
+            "unavailable_tools": [],
             "plan": resumed, "last_success": None,
             "superseded_step_ids": superseded_step_ids,
             "superseded_expression": superseded_expression,
