@@ -54,7 +54,8 @@ class AgentTaskStateStore:
             created_at=now()))
 
     def save_in_session(self, db, checkpoint: dict | None, status: str,
-                        expected_revision: int | None, attempts: list[dict] | None = None):
+                        expected_revision: int | None, attempts: list[dict] | None = None,
+                        current_turn_id: str | None = None):
         state, steps, plan_revision = project_task(checkpoint, status)
         data = json.dumps(steps, ensure_ascii=False)
         # A model- or caller-provided attempt ID is never sufficient evidence.
@@ -75,6 +76,7 @@ class AgentTaskStateStore:
                     or row.status != "succeeded" or row.step_id != step_id
                     or row.tool_name != step["expected_tool"]
                     or row.arguments_digest != arguments_digest(step["expected_arguments"])
+                    or (current_turn_id is not None and row.turn_id != current_turn_id)
                     or row.run_id != attempt.get("run_id")
                     or row.turn_id != attempt.get("turn_id", row.turn_id)):
                 continue
