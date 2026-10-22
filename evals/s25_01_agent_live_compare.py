@@ -18,6 +18,7 @@ import statistics
 import time
 import uuid
 from pathlib import Path
+from evals.s25_01_paths import report_path
 import httpx
 from agent.config import Settings
 
@@ -98,7 +99,7 @@ def main():
             "This comparator alone cannot justify changing the default strategy.",
         ],
     }
-    Path(args.output).write_text(json.dumps(report, ensure_ascii=False, indent=2),
+    report_path(args.output).write_text(json.dumps(report, ensure_ascii=False, indent=2),
                                  encoding="utf-8")
     print(json.dumps({key: {"p50_ms": value["p50_ms"],
                             "p95_ms": value["p95_ms"],
