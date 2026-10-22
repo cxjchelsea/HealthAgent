@@ -194,9 +194,15 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                 # Preserve the previous trusted checkpoint on failed terminal turns.
                 # A failed model call is not evidence that the prior plan disappeared.
                 if result or prior_task_state:
+                    # Do not label a task simply failed when an external write
+                    # may have happened without a reliable final turn commit.
+                    task_status = status
+                    if status not in {"completed", "partial"} and AttemptEvidenceStore(
+                            cid, turn_id).has_unresolved_writes(Session):
+                        task_status = "blocked"
                     AgentTaskStateStore(cid).save_in_session(
                         db, result.get("plan_checkpoint") if result and result.get("plan_checkpoint")
-                        else existing_checkpoint, status,
+                        else existing_checkpoint, task_status,
                         prior_task_state["revision"] if prior_task_state else None,
                         result.get("evidence_attempts", []) if result else [],
                         current_turn_id=turn_id)
