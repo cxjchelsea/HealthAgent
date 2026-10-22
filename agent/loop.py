@@ -28,6 +28,7 @@ class AgentState(TypedDict):
     allowed_tools: list[dict]
     plan: PlanLedger
     last_success: dict | None
+    rejected_action_keys: list[str]
     superseded_step_ids: list[int]
     superseded_expression: str | None
     memory_recall_required: bool
@@ -133,11 +134,17 @@ class AgentLoop:
         observations = []
         traces = list(state["traces"])
         audit = list(state["audit"])
+        rejected_keys = list(state["rejected_action_keys"])
         # Limit fanout, never allow an arbitrary number of model tool calls.
         for index, call in enumerate(last.get("tool_calls", [])[:4]):
             function = call["function"]
             name = function.get("name")
-            if name not in {tool["function"]["name"] for tool in state["allowed_tools"]}:
+            arguments = function.get("arguments")
+            action_key = json.dumps([name, arguments], sort_keys=True, ensure_ascii=False)
+            if action_key in rejected_keys and name not in {"propose_plan", "revise_plan", "complete_plan_step"}:
+                result = {"ok": False, "error": "repeated_nonretryable_action",
+                          "guidance": "Change the action or arguments; the same call already failed."}
+            elif name not in {tool["function"]["name"] for tool in state["allowed_tools"]}:
                 result = {"ok": False, "error": "tool_not_exposed"}
             elif name in {"propose_plan", "revise_plan", "complete_plan_step"}:
                 try:
@@ -172,6 +179,12 @@ class AgentLoop:
                 result = execute_tool(name, function.get("arguments"), tasks, self.clock,
                                       task_store=self.task_store, memory_store=self.memory_store,
                                       mcp_client=self.mcp_client)
+            if (not result["ok"] and result.get("error") in
+                    {"invalid_arguments", "reference_not_found", "tool_not_exposed",
+                     "mcp_tool_not_allowlisted", "unknown_tool"}
+                    and name not in {"propose_plan", "revise_plan", "complete_plan_step"}
+                    and action_key not in rejected_keys):
+                rejected_keys.append(action_key)
             if name == "recall_memory":
                 state["memory_recall_observed"] = True
             if name not in {"propose_plan", "revise_plan", "complete_plan_step"}:
@@ -200,7 +213,8 @@ class AgentLoop:
         update = {"messages": state["messages"] + observations,
                   "tasks": tasks, "traces": traces, "audit": audit,
                   "plan": state["plan"], "last_success": state["last_success"],
-                  "memory_recall_observed": state["memory_recall_observed"]}
+                  "memory_recall_observed": state["memory_recall_observed"],
+                  "rejected_action_keys": rejected_keys}
         # Stop only for an explicitly limited first step with verified evidence.
         steps = state["plan"].snapshot()
         if (state["stop_after_first_verified_step"] and len(steps) >= 2
@@ -390,6 +404,7 @@ class AgentLoop:
             "audit_enabled": include_evidence, "audit": [],
             "allowed_tools": selected_tools,
             "plan": resumed, "last_success": None,
+            "rejected_action_keys": [],
             "superseded_step_ids": superseded_step_ids,
             "superseded_expression": superseded_expression,
             "memory_recall_required": recall_required and self.memory_store is not None,
