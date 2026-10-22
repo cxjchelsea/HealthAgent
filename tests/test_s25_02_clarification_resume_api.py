@@ -92,3 +92,86 @@ def test_new_goal_does_not_resume_pending_write(tmp_path, monkeypatch):
             assert not db.scalars(select(ConversationTask).where(
                 ConversationTask.conversation_id==cid)).all()
         engine.dispose()
+
+
+def test_b03_redundant_goal_clarification_still_resumes_title(tmp_path, monkeypatch):
+    """A second generic goal_clarification must not override a clear slot reply."""
+    calls = []
+    async def fake_complete(self, *, messages, model, **kwargs):
+        prompt = messages[0]["content"]
+        if "Classify the current USER message relative" in prompt:
+            return json.dumps({"kind": "answer"})
+        calls.append(1)
+        clarification = len(calls) == 2
+        return json.dumps({
+            "status": "clarification_required" if clarification else "understood",
+            "goal": None if clarification else {
+                "objective": "创建待办任务", "subgoals": [],
+                "constraints": [], "success_criteria": []},
+            "change": {"kind": "new_goal", "target_goal_id": None, "delta": None},
+            "clarification": {
+                "required": clarification,
+                "reason_code": "missing_critical_constraint" if clarification else "none",
+                "question": "请提供任务名称或具体内容。" if clarification else None},
+            "schema_version": "s25-01-v1"}, ensure_ascii=False)
+    monkeypatch.setattr(HTTPUnderstandingModel, "complete", fake_complete)
+    async def policy(message, interpretation):
+        return "execute"
+    settings = Settings(database_url=f"sqlite:///{tmp_path/'double_clarify.db'}",
+                        model_provider="ollama_proxy", understanding_strategy="structured")
+    with TestClient(create_app(settings, agent_decider=MissingTitleDecider(),
+                               execution_policy=policy)) as client:
+        cid = client.post("/conversations").json()["id"]
+        route = f"/conversations/{cid}/agent/messages"
+        first = client.post(route, json={"content": "帮我创建一个任务。",
+                                         "client_request_id": "repeat-clarify-001"})
+        assert first.json()["status"] == "partial"
+        second = client.post(route, json={"content": "做项目文档",
+                                          "client_request_id": "repeat-clarify-002"})
+        assert second.status_code == 200, second.text
+        assert second.json()["status"] == "completed"
+        assert second.json()["termination_reason"] == "verified_clarification_execution"
+        engine, Session = database(settings.database_url)
+        with Session() as db:
+            tasks = db.scalars(select(ConversationTask).where(
+                ConversationTask.conversation_id == cid)).all()
+            assert [t.title for t in tasks] == ["做项目文档"]
+        engine.dispose()
+
+
+def test_uncertain_pending_reply_never_performs_write(tmp_path, monkeypatch):
+    calls = []
+    async def fake_complete(self, *, messages, model, **kwargs):
+        if "Classify the current USER message relative" in messages[0]["content"]:
+            return json.dumps({"kind": "uncertain"})
+        calls.append(1)
+        clarification = len(calls) == 2
+        return json.dumps({
+            "status": "clarification_required" if clarification else "understood",
+            "goal": None if clarification else {
+                "objective": "创建任务", "subgoals": [], "constraints": [], "success_criteria": []},
+            "change": {"kind": "new_goal", "target_goal_id": None, "delta": None},
+            "clarification": {
+                "required": clarification,
+                "reason_code": "missing_critical_constraint" if clarification else "none",
+                "question": "请明确任务内容" if clarification else None},
+            "schema_version": "s25-01-v1"}, ensure_ascii=False)
+    monkeypatch.setattr(HTTPUnderstandingModel, "complete", fake_complete)
+    async def policy(message, interpretation):
+        return "execute"
+    settings = Settings(database_url=f"sqlite:///{tmp_path/'uncertain.db'}",
+                        model_provider="ollama_proxy", understanding_strategy="structured")
+    with TestClient(create_app(settings, agent_decider=MissingTitleDecider(),
+                               execution_policy=policy)) as client:
+        cid = client.post("/conversations").json()["id"]
+        route = f"/conversations/{cid}/agent/messages"
+        client.post(route, json={"content": "帮我创建一个任务。",
+                                 "client_request_id": "uncertain-001"})
+        second = client.post(route, json={"content": "随便吧",
+                                          "client_request_id": "uncertain-002"})
+        assert second.json()["status"] == "partial"
+        engine, Session = database(settings.database_url)
+        with Session() as db:
+            assert db.scalars(select(ConversationTask).where(
+                ConversationTask.conversation_id == cid)).all() == []
+        engine.dispose()
