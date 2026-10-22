@@ -62,3 +62,50 @@ def load_instructions(goal: str, *, strategy: str = "dynamic",
     if len(result) > max_chars:
         raise ValueError("Selected skill instructions exceed budget")
     return result
+
+# S25-04: one trusted exposure decision supplies both schemas and Skill hints.
+# With the current small catalog, let native model tool calling perform semantic
+# selection instead of suppressing tools with a brittle keyword classifier.
+from typing import Any
+
+@dataclass(frozen=True)
+class ToolExposureDecision:
+    tool_names: tuple[str, ...]
+    skill_names: tuple[str, ...]
+    mode: str
+    excluded_names: tuple[str, ...] = ()
+    version: str = "s25-04-exposure-v1"
+
+def select_tool_exposure(
+    goal: str, schemas: list[dict], *, strategy: str = "dynamic",
+    prior_observation: dict[str, Any] | None = None,
+    required_tools: tuple[str, ...] = (),
+) -> ToolExposureDecision:
+    if strategy not in ("dynamic", "all"):
+        raise ValueError("Unsupported skill strategy")
+    # Exposure is NOT authorization; execute_tool remains the trusted boundary.
+    registered = {item["function"]["name"] for item in schemas}
+    declared = {name for skill in SKILLS for name in skill.tool_names}
+    eligible = registered & declared
+    # Failing tools remain eligible for model-driven recovery. A model can also
+    # decline to call any tool. Observation never registers arbitrary tool names.
+    selected = tuple(item["function"]["name"] for item in schemas
+                     if item["function"]["name"] in eligible)
+    active = tuple(skill.name for skill in SKILLS
+                   if any(name in selected for name in skill.tool_names))
+    excluded = tuple(sorted(registered - eligible))
+    return ToolExposureDecision(selected, active, strategy, excluded)
+
+def exposure_schemas(selection: ToolExposureDecision, schemas: list[dict]) -> list[dict]:
+    names = set(selection.tool_names)
+    return [schema for schema in schemas if schema["function"]["name"] in names]
+
+def exposure_instructions(selection: ToolExposureDecision, *, max_chars: int = 600) -> str:
+    if not 0 <= max_chars <= 20000:
+        raise ValueError("Invalid skill instruction budget")
+    lines = [f"{name}: {INSTRUCTIONS[name]}" for name in selection.skill_names]
+    content = "\n".join(lines)
+    if len(content) > max_chars:
+        # Preserve the historical hard budget, without silently dropping safety hints.
+        raise ValueError("Selected skill instructions exceed budget")
+    return content
