@@ -61,3 +61,26 @@ def test_attempt_rows_commit_or_rollback_with_turn(tmp_path):
         assert recorded.status == "succeeded"
         assert recorded.result_projection == '{"ok": true, "value": 64}'
     engine.dispose()
+
+
+def test_persisted_result_is_available_for_next_turn(tmp_path):
+    url = f"sqlite:///{tmp_path / 'history.db'}"
+    migrate(url)
+    engine, Session = database(url)
+    with Session.begin() as db:
+        db.add(Conversation(id="c1", owner_id="u"))
+        for tid in ("t1", "t2"):
+            db.add(Message(id="m" + tid, conversation_id="c1",
+                           role="assistant", content="", status="pending"))
+            db.add(Turn(id=tid, conversation_id="c1",
+                        request_id="request-" + tid,
+                        assistant_message_id="m" + tid, state="running"))
+    store = AttemptEvidenceStore("c1", "t1")
+    item = make_attempt("run", "calculate", {"expression": "8*8"},
+                        {"ok": True, "value": 64}, 1)
+    with Session.begin() as db:
+        store.save_in_session(db, [item])
+    history = AttemptEvidenceStore("c1", "t2").completed_step_projections(Session)
+    assert history == {1: {"tool": "calculate", "result": {"ok": True, "value": 64}}}
+    assert AttemptEvidenceStore("another-conversation", "t2").completed_step_projections(Session) == {}
+    engine.dispose()
