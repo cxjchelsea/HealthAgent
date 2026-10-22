@@ -290,7 +290,8 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
             raise HTTPException(503, {"code": failure_code or status,
                                       "turn_id": turn_id,
                                       "status": status,
-                                      "decision_steps": decision_steps})
+                                      "decision_steps": decision_steps,
+                                      "trace_summary": safe_trace})
         return {**result, "conversation_id": cid, "message_id": assistant_id}
 
     @app.get("/conversations/{cid}/turns/{turn_id}/diagnostics")
