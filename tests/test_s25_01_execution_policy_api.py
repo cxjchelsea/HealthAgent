@@ -129,3 +129,39 @@ def test_unsaved_draft_can_be_revised_in_same_conversation(tmp_path, monkeypatch
         engine, Session = database(settings.database_url)
         assert ConversationGoalStore(Session, cid).load()["goal"] is None
         engine.dispose()
+
+
+def test_m07_missing_confirmed_goal_returns_clarification_not_503(tmp_path, monkeypatch):
+    async def fake_understand(self, *, messages, model):
+        return json.dumps({
+            "status": "understood",
+            "goal": {"objective": "修改第二项", "subgoals": [],
+                     "constraints": [], "success_criteria": []},
+            "change": {"kind": "revise", "target_goal_id": None,
+                       "delta": "修改第二项"},
+            "clarification": {"required": False, "reason_code": "none",
+                              "question": None},
+            "schema_version": "s25-01-v1"}, ensure_ascii=False)
+    async def policy(message, understanding):
+        return "execute"
+    monkeypatch.setattr(HTTPUnderstandingModel, "complete", fake_understand)
+    decider = Capture()
+    settings = Settings(database_url=f"sqlite:///{tmp_path/'missing_referent.db'}",
+                        model_provider="ollama_proxy",
+                        understanding_strategy="structured")
+    with TestClient(create_app(settings, agent_decider=decider,
+                               execution_policy=policy)) as client:
+        cid = client.post("/conversations").json()["id"]
+        response = client.post(f"/conversations/{cid}/agent/messages", json={
+            "content": "把第二项改一下",
+            "client_request_id": "m07-clarify-001"})
+        assert response.status_code == 200, response.text
+        assert response.json()["status"] == "partial"
+        assert "哪份清单" in response.json()["answer"]
+        assert decider.tools is None
+        from services.db import database
+        from services.goal_store import ConversationGoalStore
+        engine, Session = database(settings.database_url)
+        state = ConversationGoalStore(Session, cid).load()
+        assert state["goal"] is None
+        engine.dispose()
