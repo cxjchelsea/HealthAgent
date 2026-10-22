@@ -151,7 +151,8 @@ class AttemptEvidenceStore:
                 AgentAttempt.turn_id == self.turn_id,
                 AgentAttempt.status == "succeeded")).all()
             return [{"attempt_id": row.id, "run_id": row.run_id,
-                     "step_id": row.step_id, "status": row.status}
+                     "step_id": row.step_id, "status": row.status,
+                     "arguments_digest": row.arguments_digest}
                     for row in rows if bindings.get(row.step_id) ==
                     (row.tool_name, row.arguments_digest)]
 
