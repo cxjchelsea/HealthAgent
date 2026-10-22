@@ -64,7 +64,8 @@ class AgentTaskStateStore:
         successful_attempts = {}
         for attempt in attempts or []:
             step_id = attempt.get("step_id")
-            step = next((step for step in steps if step["id"] == step_id), None)
+            step = next((candidate for candidate in (checkpoint or {}).get("steps", [])
+                         if candidate["id"] == step_id), None)
             if not step or step["status"] != "completed":
                 continue
             if not step.get("expected_tool") or not isinstance(step.get("expected_arguments"), dict):
