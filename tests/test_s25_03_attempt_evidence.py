@@ -74,7 +74,8 @@ def test_persisted_result_is_available_for_next_turn(tmp_path):
                            role="assistant", content="", status="pending"))
             db.add(Turn(id=tid, conversation_id="c1",
                         request_id="request-" + tid,
-                        assistant_message_id="m" + tid, state="running"))
+                        assistant_message_id="m" + tid,
+                        state="completed" if tid == "t1" else "running"))
     store = AttemptEvidenceStore("c1", "t1")
     item = make_attempt("run", "calculate", {"expression": "8*8"},
                         {"ok": True, "value": 64}, 1)
