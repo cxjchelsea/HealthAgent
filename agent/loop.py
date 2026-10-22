@@ -203,7 +203,10 @@ class AgentLoop:
                                           "in invalidate_step_ids; preserve other completed steps.")
                 else:
                     result["guidance"] = "Retry with current revision or omit expected_revision, preserving verified steps."
-            if name in {"propose_plan", "revise_plan", "complete_plan_step"}:\n                state["failed_plan_attempts"] = (state["failed_plan_attempts"] + 1\n                    if not result.get("ok") else 0)\n            observations.append({"role": "tool", "tool_name": name,
+            if name in {"propose_plan", "revise_plan", "complete_plan_step"}:
+                state["failed_plan_attempts"] = (state["failed_plan_attempts"] + 1
+                    if not result.get("ok") else 0)
+            observations.append({"role": "tool", "tool_name": name,
                                  "tool_call_id": call["id"],
                                  "content": json.dumps(result, ensure_ascii=False)})
             traces.append({"step": state["iterations"], "type": "tool",
@@ -216,7 +219,15 @@ class AgentLoop:
                   "tasks": tasks, "traces": traces, "audit": audit,
                   "plan": state["plan"], "last_success": state["last_success"],
                   "memory_recall_observed": state["memory_recall_observed"]}
-        # A rejected plan call is not progress. Permit one correction, then stop\n        # safely instead of consuming the whole decision budget.\n        if state.get("structured_mode", False) and state["failed_plan_attempts"] >= 2:\n            update.update({"status": "partial",\n                           "final": "计划工具连续失败，已停止重试；未生成有效执行计划。",\n                           "traces": traces + [{"step": state["iterations"],\n                                                 "type": "plan_tool_failure_stop"}]})\n            return update\n        # Stop only for an explicitly limited first step with verified evidence.
+        # A rejected plan call is not progress. Permit one correction, then stop
+        # safely instead of consuming the whole decision budget.
+        if state.get("structured_mode", False) and state["failed_plan_attempts"] >= 2:
+            update.update({"status": "partial",
+                           "final": "计划工具连续失败，已停止重试；未生成有效执行计划。",
+                           "traces": traces + [{"step": state["iterations"],
+                                                 "type": "plan_tool_failure_stop"}]})
+            return update
+        # Stop only for an explicitly limited first step with verified evidence.
         steps = state["plan"].snapshot()
         if (state["stop_after_first_verified_step"] and len(steps) >= 2
                 and steps[0]["status"] == "completed"
@@ -431,7 +442,8 @@ class AgentLoop:
             "recall_retry_pending": False,
             "stop_after_first_verified_step": bounded_first_step,
             "last_tool_decision": None, "repeated_tool_decisions": 0,
-            "structured_mode": understanding_result is not None,\n            "failed_plan_attempts": 0}
+            "structured_mode": understanding_result is not None,
+            "failed_plan_attempts": 0}
         try:
             outcome = await self.graph.ainvoke(initial, config={"recursion_limit": 2 * self.max_steps + 4})
         except Exception as exc:
