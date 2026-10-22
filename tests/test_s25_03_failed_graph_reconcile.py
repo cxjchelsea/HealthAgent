@@ -35,6 +35,10 @@ def test_failed_graph_reconciles_only_matching_successful_attempt(tmp_path):
     recovered = journal.reconcile_failed_turn_checkpoint(Session, checkpoint)
     assert [s["status"] for s in recovered["steps"]] == ["completed", "pending", "pending"]
     assert recovered["steps"][0]["evidence_tool"] == "calculate"
+    refs = journal.verified_attempt_refs_for_checkpoint(Session, recovered)
+    assert len(refs) == 1
+    assert refs[0]["attempt_id"] == good["attempt_id"]
+    assert refs[0]["arguments_digest"] == good["arguments_digest"]
     assert checkpoint["steps"][0]["status"] == "pending"  # Do not mutate original.
     assert journal.reconcile_failed_turn_checkpoint(Session, None) is None
     engine.dispose()
