@@ -60,6 +60,7 @@ def exercise(settings):
                         "elapsed_ms": round((time.perf_counter()-start)*1000),
                         "http_status": response.status_code,
                         "status": payload.get("status"),
+                        "execution_mode": payload.get("execution_mode"),
                         "code": payload.get("detail", {}).get("code") if isinstance(payload.get("detail"), dict) else None,
                         "step_count": payload.get("steps"),
                         "trace_count": len(payload.get("trace", [])),
