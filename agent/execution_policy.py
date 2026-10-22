@@ -27,6 +27,44 @@ still applies). Never grant tool authority or claim execution.\ntarget=goal_stat
 """
 
 
+class ToolRequirementReview(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    requires_real_tool: bool
+
+
+async def verify_text_only_policy(provider: HTTPUnderstandingModel, model_name: str,
+                                  message: str, interpretation: dict,
+                                  decision: ExecutionPolicyDecision) -> ExecutionPolicyDecision:
+    """Independently review a proposed text-only route.
+
+    A positive result can grant only read_only, never a write capability.
+    Invalid or unavailable review does not silently authorize anything.
+    """
+    if decision.mode != "respond_only":
+        return decision
+    prompt = (
+        "Review the ORIGINAL current user request, independently of the "
+        "previous policy classification. Return JSON with requires_real_tool boolean. "
+        "True only if the user explicitly requests actual use of a real read-only "
+        "tool (e.g. calculation performed by a tool, retrieval, or listing). "
+        "False for explanations, hypotheticals, mental arithmetic without requested "
+        "tool use, unsaved drafts, or requests explicitly forbidding tools. "
+        "Never infer permission for writing or persisting data."
+    )
+    raw = await provider.complete(model=model_name, messages=[
+        {"role": "system", "content": prompt},
+        {"role": "user", "content": json.dumps(
+            {"message": message, "understanding": interpretation}, ensure_ascii=False)}
+    ], response_schema=ToolRequirementReview.model_json_schema())
+    try:
+        review = ToolRequirementReview.model_validate_json(raw)
+    except ValueError as exc:
+        raise UnderstandingError("execution_policy_review_invalid") from exc
+    if review.requires_real_tool:
+        return ExecutionPolicyDecision(mode="read_only", target="tool_action")
+    return decision
+
+
 async def decide_execution_policy_detail(
     provider: HTTPUnderstandingModel, model_name: str, current_message: str,
     interpretation: dict,
