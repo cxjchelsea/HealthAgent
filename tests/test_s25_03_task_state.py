@@ -54,3 +54,13 @@ def test_old_step_evidence_requires_same_binding_and_active_completed(tmp_path):
     assert store.completed_step_projections(Session,bad)=={}
     assert store.completed_step_projections(Session,pending)=={}
     engine.dispose()
+
+
+def test_blocked_and_interrupted_task_states_preserve_pending_steps():
+    checkpoint = {"revision": 2, "steps": [{"id": 1, "status": "completed"},
+                                            {"id": 2, "status": "pending"}]}
+    for status in ("blocked", "interrupted"):
+        state, steps, revision = project_task(checkpoint, status)
+        assert state == status
+        assert [x["status"] for x in steps] == ["completed", "pending"]
+        assert revision == 2
