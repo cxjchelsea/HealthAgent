@@ -70,3 +70,28 @@ def test_structured_loop_cannot_claim_success_after_tool_failure():
         execution_mode="read_only"))
     assert result["status"] == "partial"
     assert result["termination_reason"] == "unresolved_tool_failure"
+
+
+class UnauthorizedClarification:
+    def __init__(self):
+        self.calls = 0
+
+    async def decide(self, messages, tools):
+        self.calls += 1
+        assert not tools  # respond_only must continue exposing zero tools
+        if self.calls == 1:
+            return Decision("", [{"id": "unauthorized", "name": "request_clarification",
+                                  "arguments": {"question": "Should not be accepted"}}])
+        assert "tool_not_exposed" in messages[-1]["content"]
+        return Decision("Only an explanation, no action.", [])
+
+
+def test_unexposed_clarification_control_cannot_bypass_respond_only():
+    decider = UnauthorizedClarification()
+    result = asyncio.run(AgentLoop(decider).run(
+        "Explain this", understanding_result=_interpretation(),
+        execution_mode="respond_only"))
+    assert decider.calls == 2
+    assert result["status"] == "completed"
+    assert result["termination_reason"] == "model_final"
+    assert not any(x.get("type") == "clarification_requested" for x in result["trace"])
