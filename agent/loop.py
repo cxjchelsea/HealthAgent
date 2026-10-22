@@ -34,6 +34,8 @@ class AgentState(TypedDict):
     memory_recall_retry: bool
     recall_retry_pending: bool
     stop_after_first_verified_step: bool
+    last_tool_decision: str | None
+    repeated_tool_decisions: int
 
 class AgentLoop:
     def __init__(self, decider: Any, max_steps: int = 6, clock=None, task_store=None, memory_store=None, mcp_client=None, skill_strategy='dynamic', skill_budget_chars=600):
@@ -95,6 +97,22 @@ class AgentLoop:
             return {"iterations": iteration, "final": final,
                     "status": "partial" if is_partial else "completed", "traces": state["traces"] + [
                         {"step": iteration, "type": "final", "chars": len(decision.content)}]}
+        # Stop a non-progressing model that repeats the same tool invocation.
+        # This is a *partial* result, never evidence of task completion.
+        signature = (json.dumps([{"name": call.get("name"),
+                                "arguments": call.get("arguments")}
+                               for call in decision.tool_calls],
+                               sort_keys=True, ensure_ascii=False, default=str)
+                     if decision.tool_calls else None)
+        repeats = (state["repeated_tool_decisions"] + 1
+                   if signature and signature == state["last_tool_decision"] else 0)
+        if repeats >= 2:
+            return {"iterations": iteration, "status": "partial",
+                    "final": "连续多次收到相同工具请求，已停止重复执行；任务尚未验证完成。",
+                    "traces": state["traces"] + [
+                        {"step": iteration, "type": "repeat_tool_stop"}],
+                    "last_tool_decision": signature,
+                    "repeated_tool_decisions": repeats}
         if iteration >= self.max_steps:
             return {"iterations": iteration, "final": "Agent reached its decision step limit.",
                     "status": "step_limit", "traces": state["traces"] + [
@@ -109,6 +127,7 @@ class AgentLoop:
         return {"iterations": iteration, "messages": state["messages"] + [
             {"role": "assistant", "content": decision.content, "tool_calls": assistant_calls}],
             "recall_retry_pending": False,
+            "last_tool_decision": signature, "repeated_tool_decisions": repeats,
             "traces": state["traces"] + [{"step": iteration, "type": "decision",
                                          "tools": [c["name"] for c in decision.tool_calls]}]}
 
@@ -394,7 +413,8 @@ class AgentLoop:
             "memory_recall_required": recall_required and self.memory_store is not None,
             "memory_recall_observed": False, "memory_recall_retry": False,
             "recall_retry_pending": False,
-            "stop_after_first_verified_step": bounded_first_step}
+            "stop_after_first_verified_step": bounded_first_step,
+            "last_tool_decision": None, "repeated_tool_decisions": 0}
         try:
             outcome = await self.graph.ainvoke(initial, config={"recursion_limit": 2 * self.max_steps + 4})
         except Exception as exc:
