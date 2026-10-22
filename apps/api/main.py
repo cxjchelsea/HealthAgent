@@ -134,12 +134,14 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
         decision_steps = 0
         try:
             existing_checkpoint = plan_store.load()
+            prior_step_results = AttemptEvidenceStore(cid, turn_id).completed_step_projections(Session)
             decider = agent_decider if agent_decider is not None else NativeToolDecision(settings)
             result = await AgentLoop(decider, task_store=ConversationTaskStore(Session, cid),
                 memory_store=MemoryStore(Session, uid, write_allowed=body.memory_write_consent),
                 mcp_client=StdioMCPClient(), skill_strategy=settings.skill_strategy,
                 skill_budget_chars=settings.skill_budget_chars).run(body.content, history=context,
-                                      plan_checkpoint=existing_checkpoint)
+                                      plan_checkpoint=existing_checkpoint,
+                                      prior_step_results=prior_step_results)
             if result["status"] in {"completed", "partial"}:
                 answer, status = result["answer"], result["status"]
             else:
