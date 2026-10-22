@@ -72,9 +72,9 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", default="s25_01_e2e.json")
     args = parser.parse_args()
-    if os.getenv("RUN_S25_01_LIVE") != "1":
-        raise SystemExit("RUN_S25_01_LIVE=1 required; this is not a mocked evaluation.")
     base = Settings()
+    if not base.run_s25_01_live:
+        raise SystemExit("RUN_S25_01_LIVE=1 required; this is not a mocked evaluation.")
     if base.model_provider not in ("ollama_proxy", "openai_compatible"):
         raise SystemExit("MODEL_PROVIDER must specify a real model provider.")
     if base.model_provider == "openai_compatible" and not base.model_api_key:
