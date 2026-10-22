@@ -253,7 +253,8 @@ class AgentLoop:
                                       task_store=self.task_store, memory_store=self.memory_store,
                                       mcp_client=self.mcp_client)
             if (not result["ok"] and result.get("error") in
-                    {"invalid_arguments", "reference_not_found", "tool_not_exposed",
+                    {"invalid_arguments", "division_by_zero", "unsupported_expression",
+                     "calculation_limit_exceeded", "reference_not_found", "tool_not_exposed",
                      "mcp_tool_not_allowlisted", "unknown_tool"}
                     and name not in {"propose_plan", "revise_plan", "complete_plan_step"}
                     and action_key not in rejected_keys):
