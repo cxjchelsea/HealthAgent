@@ -36,6 +36,7 @@ class AgentState(TypedDict):
     stop_after_first_verified_step: bool
     last_tool_decision: str | None
     repeated_tool_decisions: int
+    structured_mode: bool
 
 class AgentLoop:
     def __init__(self, decider: Any, max_steps: int = 6, clock=None, task_store=None, memory_store=None, mcp_client=None, skill_strategy='dynamic', skill_budget_chars=600):
@@ -106,7 +107,7 @@ class AgentLoop:
                      if decision.tool_calls else None)
         repeats = (state["repeated_tool_decisions"] + 1
                    if signature and signature == state["last_tool_decision"] else 0)
-        if repeats >= 2:
+        if state.get("structured_mode", False) and repeats >= 2:
             return {"iterations": iteration, "status": "partial",
                     "final": "连续多次收到相同工具请求，已停止重复执行；任务尚未验证完成。",
                     "traces": state["traces"] + [
@@ -414,7 +415,8 @@ class AgentLoop:
             "memory_recall_observed": False, "memory_recall_retry": False,
             "recall_retry_pending": False,
             "stop_after_first_verified_step": bounded_first_step,
-            "last_tool_decision": None, "repeated_tool_decisions": 0}
+            "last_tool_decision": None, "repeated_tool_decisions": 0,
+            "structured_mode": understanding_result is not None}
         try:
             outcome = await self.graph.ainvoke(initial, config={"recursion_limit": 2 * self.max_steps + 4})
         except Exception as exc:
