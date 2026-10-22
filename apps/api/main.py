@@ -283,7 +283,8 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                          "name": pending_action, "ok": bool(observed.get("ok"))}],
                               "steps": 1}
             execution_mode = None
-            execution_target = "goal_state"  # Legacy injected strategy conservatively preserves revisions.
+            execution_target = "tool_action" if (result is not None and
+                any(t.get("type") == "clarification_resumed" for t in result.get("trace", []))) else "goal_state"  # Legacy injected strategy conservatively preserves revisions.
             if result is None and interpretation is not None:
                 if execution_policy is not None:
                     policy_result = await execution_policy(body.content, interpretation)
