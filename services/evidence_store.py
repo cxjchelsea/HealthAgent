@@ -61,7 +61,7 @@ class AttemptEvidenceStore:
                 result_projection=json.dumps(item["result_projection"], ensure_ascii=False),
             ))
 
-    def completed_step_projections(self, session_factory) -> dict[int, dict]:
+    def completed_step_projections(self, session_factory, checkpoint: dict | None = None) -> dict[int, dict]:
         """Only previously recorded successful, tool-scoped projections in this conversation."""
         from sqlalchemy import select
         from services.db import AgentAttempt
@@ -71,12 +71,23 @@ class AttemptEvidenceStore:
                 AgentAttempt.status == "succeeded",
                 AgentAttempt.step_id.is_not(None)
             ).order_by(AgentAttempt.created_at, AgentAttempt.id)).all()
+            accepted = {}
+            for step in (checkpoint or {}).get("steps", []):
+                if step.get("status") != "completed":
+                    continue
+                tool = step.get("expected_tool")
+                args = step.get("expected_arguments")
+                if tool and isinstance(args, dict):
+                    digest = hashlib.sha256(json.dumps(args, ensure_ascii=False,
+                        sort_keys=True, default=str).encode("utf-8")).hexdigest()
+                    accepted[step["id"]] = (tool, digest)
             evidence = {}
             for row in records:
                 try:
                     projection = json.loads(row.result_projection or "{}")
                 except (TypeError, ValueError):
                     continue
-                if projection.get("ok") is True:
+                if projection.get("ok") is True and (checkpoint is None or
+                    accepted.get(row.step_id) == (row.tool_name, row.arguments_digest)):
                     evidence[row.step_id] = {"tool": row.tool_name, "result": projection}
             return evidence
