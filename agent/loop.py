@@ -135,6 +135,31 @@ class AgentLoop:
         traces = list(state["traces"])
         audit = list(state["audit"])
         rejected_keys = list(state["rejected_action_keys"])
+        # A clarification is a turn-level control, never bundled with side effects.
+        calls = last.get("tool_calls", [])[:4]
+        if any(c["function"].get("name") == "request_clarification" for c in calls):
+            if len(calls) != 1:
+                observations.append({"role": "tool", "tool_name": "request_clarification",
+                                     "tool_call_id": calls[0]["id"],
+                                     "content": json.dumps({"ok": False, "error": "control_action_must_be_alone"})})
+                return {"messages": state["messages"] + observations,
+                        "traces": traces + [{"step": state["iterations"], "type": "tool",
+                                             "name": "request_clarification", "ok": False}]}
+            call = calls[0]
+            try:
+                args = SCHEMAS["request_clarification"].model_validate(
+                    call["function"].get("arguments"))
+            except ValidationError:
+                observations.append({"role": "tool", "tool_name": "request_clarification",
+                                     "tool_call_id": call["id"],
+                                     "content": json.dumps({"ok": False, "error": "invalid_arguments"})})
+                return {"messages": state["messages"] + observations,
+                        "traces": traces + [{"step": state["iterations"], "type": "tool",
+                                             "name": "request_clarification", "ok": False}]}
+            return {"status": "partial", "termination_reason": "needs_input",
+                    "final": args.question,
+                    "traces": traces + [{"step": state["iterations"],
+                                         "type": "clarification_requested"}]}
         # Limit fanout, never allow an arbitrary number of model tool calls.
         for index, call in enumerate(last.get("tool_calls", [])[:4]):
             function = call["function"]
@@ -381,6 +406,9 @@ class AgentLoop:
                 output["tasks"] = []
             return output
         selected_tools = exposed_tools(goal, TOOL_SCHEMAS, strategy=self.skill_strategy)
+        # A model-chosen clarification is available for any goal, regardless of skill routing.
+        selected_tools += [tool for tool in TOOL_SCHEMAS
+                           if tool["function"]["name"] == "request_clarification"]
         if resumed.revision:
             names = {t["function"]["name"] for t in selected_tools}
             selected_tools += [t for t in TOOL_SCHEMAS if t["function"]["name"]
