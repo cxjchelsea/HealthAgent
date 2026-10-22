@@ -9,6 +9,7 @@ from agent.decision import NativeToolDecision
 from agent.tools import TOOL_SCHEMAS, execute_tool
 from agent.skills import exposed_tools, load_instructions, SKILL_VERSION
 from agent.planning import PlanLedger
+from services.evidence_store import make_attempt
 from agent.tools import SCHEMAS
 from pydantic import ValidationError
 
@@ -16,6 +17,8 @@ PROMPT_VERSION = "s2a-core-v1"
 PROMPT = (Path(__file__).parent / "prompts" / "s2a_core_v1.md").read_text(encoding="utf-8")
 
 class AgentState(TypedDict):
+    run_id: str
+    evidence_attempts: list[dict]
     messages: list[dict]
     traces: list[dict]
     tasks: list[str]
@@ -126,6 +129,7 @@ class AgentLoop:
         observations = []
         traces = list(state["traces"])
         audit = list(state["audit"])
+        attempts = list(state["evidence_attempts"])
         # Limit fanout, never allow an arbitrary number of model tool calls.
         for index, call in enumerate(last.get("tool_calls", [])[:4]):
             function = call["function"]
@@ -182,6 +186,16 @@ class AgentLoop:
                                           "in invalidate_step_ids; preserve other completed steps.")
                 else:
                     result["guidance"] = "Retry with current revision or omit expected_revision, preserving verified steps."
+            evidence_step_id = None
+            if name not in {"propose_plan", "revise_plan", "complete_plan_step"}:
+                matches = [st for st in state["plan"].snapshot()
+                           if st.get("expected_tool") == name
+                           and st.get("expected_arguments") == function.get("arguments")]
+                if len(matches) == 1:
+                    evidence_step_id = matches[0]["id"]
+            attempts.append(make_attempt(state["run_id"], name,
+                                         function.get("arguments"), result,
+                                         evidence_step_id))
             observations.append({"role": "tool", "tool_name": name,
                                  "tool_call_id": call["id"],
                                  "content": json.dumps(result, ensure_ascii=False)})
@@ -193,6 +207,7 @@ class AgentLoop:
         update = {"messages": state["messages"] + observations,
                   "tasks": tasks, "traces": traces, "audit": audit,
                   "plan": state["plan"], "last_success": state["last_success"],
+                  "evidence_attempts": attempts,
                   "memory_recall_observed": state["memory_recall_observed"]}
         # Stop only for an explicitly limited first step with verified evidence.
         steps = state["plan"].snapshot()
@@ -287,6 +302,7 @@ class AgentLoop:
                         for step in outstanding)):
             trace = []
             audit = []
+            attempts = []
             delivered = []
             for step in outstanding:
                 name = step["expected_tool"]
@@ -296,6 +312,7 @@ class AgentLoop:
                     self.clock, task_store=self.task_store,
                     memory_store=self.memory_store, mcp_client=self.mcp_client)
                 resumed.observe(name, result, arguments)
+                attempts.append(make_attempt(run_id, name, arguments, result, step["id"]))
                 # Preserve only the bounded, tool-observed output for delivery.
                 # Never synthesize results for previously completed steps.
                 if result.get("ok"):
@@ -348,7 +365,8 @@ class AgentLoop:
                       "steps": len(trace), "plan": resumed.snapshot(),
                       "plan_revision": resumed.revision,
                       "plan_events": list(resumed.events),
-                      "plan_checkpoint": resumed.checkpoint()}
+                      "plan_checkpoint": resumed.checkpoint(),
+                      "evidence_attempts": attempts}
             if include_evidence:
                 output["audit"] = audit
                 output["tasks"] = []
@@ -369,7 +387,7 @@ class AgentLoop:
         bounded_first_step = bool(
             re.search(r"(只|先|首先|先尝试).{0,14}(完成|执行).{0,6}(第一步|第1步|步骤一)", goal)
             and re.search(r"(剩余|其他|后续).{0,12}(步骤|保留|不要|暂)", goal))
-        initial: AgentState = {"messages": [
+        initial: AgentState = {"run_id": run_id, "evidence_attempts": [], "messages": [
             {"role": "system", "content": PROMPT + "\nSelected skill instructions (" + SKILL_VERSION + "):\n" + load_instructions(goal, strategy=self.skill_strategy, max_chars=self.skill_budget_chars) + resume_context},
             *clean_history, {"role": "user", "content": goal}],
             "traces": [], "tasks": [], "final": "", "status": "running", "iterations": 0,
@@ -398,7 +416,8 @@ class AgentLoop:
                   "prompt_version": PROMPT_VERSION, "steps": outcome["iterations"],
                   "plan": outcome["plan"].snapshot(), "plan_revision": outcome["plan"].revision,
                   "plan_events": list(outcome["plan"].events),
-                  "plan_checkpoint": outcome["plan"].checkpoint() if outcome["plan"].revision else None}
+                  "plan_checkpoint": outcome["plan"].checkpoint() if outcome["plan"].revision else None,
+                  "evidence_attempts": outcome["evidence_attempts"]}
         if include_evidence:
             result["audit"] = outcome["audit"]
             result["tasks"] = outcome["tasks"]
