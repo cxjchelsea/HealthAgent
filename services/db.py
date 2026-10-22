@@ -62,6 +62,22 @@ class Turn(Base):
     failure_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     decision_steps: Mapped[int] = mapped_column(Integer, default=0)
 
+class AgentAttempt(Base):
+    """Durable bounded record of a real tool invocation, not a model claim."""
+    __tablename__ = "agent_attempts"
+    __table_args__ = (UniqueConstraint("turn_id", "id", name="uq_agent_attempt_turn_id"),)
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(ForeignKey("conversations.id"), index=True)
+    turn_id: Mapped[str] = mapped_column(ForeignKey("turns.id"), index=True)
+    run_id: Mapped[str] = mapped_column(String(40))
+    step_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    tool_name: Mapped[str] = mapped_column(String(80))
+    arguments_digest: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(24))
+    error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    result_projection: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
 def engine_for(url):
     if url == "sqlite://":
         return create_engine(url, connect_args={"check_same_thread":False}, poolclass=StaticPool)
