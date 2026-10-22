@@ -49,7 +49,6 @@ class UnderstandingResult(BaseModel):
     goal: GoalSpec | None = None
     change: GoalChangeProposal
     clarification: ClarificationDecision
-    execution_intent: Literal["respond_only", "read_only", "execute"] = "execute"
     schema_version: Literal["s25-01-v1"] = "s25-01-v1"
 
     @model_validator(mode="after")
@@ -136,10 +135,10 @@ change (object: kind new_goal|continue|add|revise|cancel_request|query_status|cl
 target_goal_id null unless a trusted ID exists, delta string or null),
 clarification (required boolean, reason_code none|missing_referent|missing_critical_constraint|
 conflicting_constraints|ambiguous_target, question string or null),
-execution_intent (respond_only when asking solely for prose, advice or an unsaved\n draft with NO external tool access; read_only when fetching external information;\n execute when tools or persistence are explicitly needed),\nschema_version 's25-01-v1'.
+schema_version 's25-01-v1'.
 Important: A goal is the user's desired outcome, NOT authorization to execute
 a plan or store data. Understood new_goal/add/revise must include goal even
-when execution_intent=respond_only and the user requests an UNSAVED draft.
+when the user requests an UNSAVED draft.
 Do NOT use goal=null just because tools and persistence are forbidden. A goal
 may be null when clarification is actually required due to missing information.
 Each constraint has name, value, source (explicit|inferred|confirmed) and scope.\nAn unsaved draft is respond_only; do NOT confuse a written plan with a\npersistent executable plan. An add preserves existing goals and appends new\nsubgoals; revise replaces or changes existing items. Never classify additive\nrequests as revise merely because the complete proposed goal is restated.
