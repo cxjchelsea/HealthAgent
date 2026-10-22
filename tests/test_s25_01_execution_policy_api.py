@@ -46,6 +46,11 @@ def test_conversation_response_only_policy_excludes_all_tools(tmp_path, monkeypa
         assert reply.status_code == 200, reply.text
         assert reply.json()["status"] == "completed"
         assert decider.tools == []
+        from services.db import database
+        from services.goal_store import ConversationGoalStore
+        engine, Session = database(settings.database_url)
+        assert ConversationGoalStore(Session, cid).load()["goal"] is None
+        engine.dispose()
 
 
 def test_conversation_read_only_policy_blocks_mutations(tmp_path, monkeypatch):
@@ -76,3 +81,8 @@ def test_conversation_read_only_policy_blocks_mutations(tmp_path, monkeypatch):
         assert "create_task" not in names
         assert "save_memory" not in names
         assert "propose_plan" not in names
+        from services.db import database
+        from services.goal_store import ConversationGoalStore
+        engine, Session = database(settings.database_url)
+        assert ConversationGoalStore(Session, cid).load()["goal"] is None
+        engine.dispose()
