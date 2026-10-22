@@ -32,13 +32,16 @@ def bounded_projection(tool_name: str, observation: dict) -> dict:
                 data[key + "_availability"] = "truncated"
     return data
 
-def make_attempt(run_id: str, tool_name: str, arguments: object, observation: dict, step_id: int | None = None) -> dict:
+def arguments_digest(arguments: object) -> str:
     raw = json.dumps(arguments, ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+def make_attempt(run_id: str, tool_name: str, arguments: object, observation: dict, step_id: int | None = None) -> dict:
     projection = bounded_projection(tool_name, observation)
     return {
         "attempt_id": str(uuid.uuid4()), "run_id": run_id,
         "step_id": step_id, "tool_name": tool_name,
-        "arguments_digest": hashlib.sha256(raw.encode("utf-8")).hexdigest(),
+        "arguments_digest": arguments_digest(arguments),
         "status": "succeeded" if observation.get("ok") is True else "failed",
         "error_code": None if observation.get("ok") is True else str(observation.get("error", "unknown"))[:80],
         "result_projection": projection,
