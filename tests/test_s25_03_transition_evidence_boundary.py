@@ -23,8 +23,9 @@ def test_failed_turn_preserves_checkpoint_and_links_successful_attempt(tmp_path)
         store.save_in_session(db, done, "partial", 1, [{
             "step_id": 1, "attempt_id": "attempt-real-1", "status": "succeeded"}])
     events = store.history(Session)
-    assert any(e["step_id"] == 1 and e["attempt_id"] == "attempt-real-1"
-               and e["to_state"] == "completed" for e in events)
+    assert any(e["step_id"] == 1 and e["attempt_id"] is None
+               and e["reason_code"] == "legacy_completion_unlinked"
+               for e in events)
     with Session.begin() as db:
         store.save_in_session(db, done, "provider_error", 2)
     current = store.load(Session)
