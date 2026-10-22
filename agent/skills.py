@@ -1,5 +1,6 @@
 """Static, trusted skill manifests; no arbitrary file paths or dynamic imports."""
 from dataclasses import dataclass
+from typing import Any
 
 @dataclass(frozen=True)
 class Skill:
@@ -66,8 +67,6 @@ def load_instructions(goal: str, *, strategy: str = "dynamic",
 # S25-04: one trusted exposure decision supplies both schemas and Skill hints.
 # With the current small catalog, let native model tool calling perform semantic
 # selection instead of suppressing tools with a brittle keyword classifier.
-from typing import Any
-
 @dataclass(frozen=True)
 class ToolExposureDecision:
     tool_names: tuple[str, ...]
