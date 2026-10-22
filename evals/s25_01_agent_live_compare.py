@@ -19,6 +19,7 @@ import time
 import uuid
 from pathlib import Path
 import httpx
+from agent.config import Settings
 
 TASKS = (
     ("single", ["请解释 Agent Loop 的作用。"]),
@@ -72,7 +73,7 @@ def main():
     parser.add_argument("--output", default="s25_01_agent_comparison.json")
     parser.add_argument("--timeout", type=float, default=180)
     args = parser.parse_args()
-    if os.getenv("RUN_S25_01_LIVE") != "1":
+    if not Settings().run_s25_01_live:
         raise SystemExit("RUN_S25_01_LIVE=1 required; no synthetic measurements.")
     if args.direct.rstrip("/") == args.structured.rstrip("/"):
         raise SystemExit("Direct and structured APIs must use different endpoints.")
