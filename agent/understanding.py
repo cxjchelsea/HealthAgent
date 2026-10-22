@@ -176,6 +176,16 @@ class UnderstandingService:
                         raise UnderstandingError(code) from exc
                     if result.change.target_goal_id is not None:
                         raise UnderstandingError("unverified_goal_reference")
+                    # Light-model schema validity is not proof that the user goal
+                    # or explicit constraints survived. Ask the independent strong
+                    # model to interpret mutating goal proposals; no keyword rules.
+                    if (not use_strong and role == "light" and
+                            result.change.kind in {"new_goal", "add", "revise"}):
+                        attempts.append({"role": role,
+                                         "duration_ms": int((time.monotonic() - start) * 1000),
+                                         "outcome": "semantic_review_required", "retry": retry})
+                        failures.append("semantic_review_required")
+                        break
                     attempts.append({"role": role,
                                      "duration_ms": int((time.monotonic() - start) * 1000),
                                      "outcome": "valid", "retry": retry})
