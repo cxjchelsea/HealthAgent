@@ -77,9 +77,10 @@ class UnderstandingContext(BaseModel):
         return self
 
 class UnderstandingError(Exception):
-    def __init__(self, code: str, attempts: list[dict[str, Any]] | None = None):
+    def __init__(self, code: str, attempts: list[dict[str, Any]] | None = None, detail: str | None = None):
         self.code = code
         self.attempts = attempts or []
+        self.detail = detail
         super().__init__(code)
 
 class UnderstandingModel(Protocol):
@@ -172,10 +173,15 @@ class UnderstandingService:
                     try:
                         result = UnderstandingResult.model_validate_json(raw)
                     except ValidationError as exc:
-                        types = {item["type"] for item in exc.errors()}
+                        issues = exc.errors(include_input=False, include_context=False)
+                        types = {item["type"] for item in issues}
                         code = ("structured_consistency_error" if "value_error" in types
                                 else "structured_schema_error")
-                        raise UnderstandingError(code) from exc
+                        # Finite allowlisted diagnostic; no raw model text or field values.
+                        detail = "model_level_consistency" if "value_error" in types else (
+                            "field:" + str(issues[0]["loc"][0])[:40] if issues and issues[0]["loc"]
+                            else "json_or_structure")
+                        raise UnderstandingError(code, detail=detail) from exc
                     if result.change.target_goal_id is not None:
                         raise UnderstandingError("unverified_goal_reference")
                     # Light-model schema validity is not proof that the user goal
