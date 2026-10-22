@@ -136,7 +136,7 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
         try:
             existing_checkpoint = plan_store.load()
             prior_task_state = AgentTaskStateStore(cid).load(Session)
-            prior_step_results = AttemptEvidenceStore(cid, turn_id).completed_step_projections(Session)
+            prior_step_results = AttemptEvidenceStore(cid, turn_id).completed_step_projections(Session, existing_checkpoint)
             decider = agent_decider if agent_decider is not None else NativeToolDecision(settings)
             result = await AgentLoop(decider, task_store=ConversationTaskStore(Session, cid),
                 memory_store=MemoryStore(Session, uid, write_allowed=body.memory_write_consent),
