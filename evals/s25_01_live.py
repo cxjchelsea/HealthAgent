@@ -93,7 +93,7 @@ async def run_strategy(settings, name, service, case):
                 "escalated": outcome["escalated"]}
     except UnderstandingError as error:
         return {"case_id": case["id"], "strategy": name, "valid": False,
-                "passed": False, "error": error.code,
+                "passed": False, "error": error.code, "attempts": error.attempts,
                 "duration_ms": int((time.monotonic() - started) * 1000)}
 
 def summary(rows):
