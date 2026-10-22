@@ -276,3 +276,7 @@ LoopOutcome:
 测试：`tests/test_s25_02_clarification_api.py` 覆盖“请求澄清 → 下一轮短回答 → 后续轮不再次注入”，并更新旧 `test_s2c_skills.py` 区分 Skill 工具与全局 Clarification 控制工具。此前 HEAD `9816ea0` CI 曾失败两项 Skills 断言（2 failed / 127 passed / 3 skipped），本轮已针对实际冲突修改；以新的精确 HEAD CI 结果为准。
 
 **限制**：当前仅提供最近一次澄清问题的可信上下文引用，不构成 S25-01 结构化 Goal/ChangeProposal、跨会话待澄清事务、独立持久目标续接或完整 Pause/Cancel 审批流程；尚需真实 Qwen E2E。
+
+### Step 4 — 第五切片：工具失败后的终止可信校验（2026-10-22）
+
+本切片在原单一 AgentLoop 中跟踪本回合普通执行工具的未消除失败。工具失败后即使模型直接产出自然语言成功结论，也强制返回 `partial` / `termination_reason=unresolved_tool_failure`，提示模型回答不等同于真实成功证据；同名工具成功 Observation 可以清除该失败。无工具的简单回答不受影响。规划工具已有独立 PlanLedger 验证，不将该保守状态规则套到计划操作，以避免无关已完成计划被错误废止。新增 `tests/test_s25_02_failure_finalization.py`，覆盖失败后谎称完成、改参修复、纯对话完成。限制：同名工具成功不一定满足全部目标；后续 S25-08 仍需细化目标级 Final Validation。真实模型与正式 API 证据尚需 Step 5 收集。
