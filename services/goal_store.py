@@ -80,3 +80,21 @@ class ConversationGoalStore:
         row.goal_json = json.dumps(goal, ensure_ascii=False) if goal else None
         row.pending_json = json.dumps(pending, ensure_ascii=False) if pending else None
         row.version = version + 1
+
+    def resolve_confirmation_in_session(self, db, previous: dict, expected_version: int,
+                                        accept: bool) -> str:
+        """Explicit host-confirmed mutation; never delegated to an LLM."""
+        row = db.get(ConversationGoalState, self.conversation_id)
+        if row is None or row.version != expected_version or previous["version"] != expected_version:
+            raise UnderstandingError("stale_goal_confirmation")
+        pending = previous.get("pending")
+        if not pending or (pending.get("change") or {}).get("kind") != "revise":
+            raise UnderstandingError("no_pending_revision")
+        if accept:
+            parsed = UnderstandingResult.model_validate(pending)
+            if parsed.goal is None:
+                raise UnderstandingError("invalid_pending_revision")
+            row.goal_json = json.dumps(parsed.goal.model_dump(mode="json"), ensure_ascii=False)
+        row.pending_json = None
+        row.version += 1
+        return "confirmed" if accept else "rejected"
