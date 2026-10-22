@@ -9,7 +9,7 @@ from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from agent.config import Settings
 from agent.understanding import UnderstandingContext, UnderstandingService, HTTPUnderstandingModel, UnderstandingError
-from agent.execution_policy import decide_execution_policy
+from agent.execution_policy import decide_execution_policy_detail
 from agent.decision import NativeToolDecision
 from agent.loop import AgentLoop
 from agent.mcp_stdio_client import StdioMCPClient
@@ -220,15 +220,22 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                               "trace": [{"step": 0, "type": "goal_clarification"}],
                               "steps": 0}
             execution_mode = None
+            execution_target = "goal_state"  # Legacy injected strategy conservatively preserves revisions.
             if result is None and interpretation is not None:
                 if execution_policy is not None:
-                    execution_mode = await execution_policy(body.content, interpretation)
+                    policy_result = await execution_policy(body.content, interpretation)
+                    execution_mode = (policy_result.mode if hasattr(policy_result, "mode")
+                                      else policy_result)
+                    if hasattr(policy_result, "target"):
+                        execution_target = policy_result.target
                 elif agent_decider is None:
-                    execution_mode = await decide_execution_policy(
+                    policy_result = await decide_execution_policy_detail(
                         HTTPUnderstandingModel(settings.model_provider, settings.model_base_url,
                                                settings.model_api_key, settings.model_timeout_seconds,
                                                settings.model_max_output_tokens),
                         settings.understanding_strong_model, body.content, interpretation)
+                    execution_mode = policy_result.mode
+                    execution_target = policy_result.target
                 # Injected deciders in existing offline tests use legacy tool visibility;
                 # live requests and explicit policy injections exercise the new boundary.
             # Only persistent execution proposals need a confirmed durable goal.
@@ -240,12 +247,14 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                 if (previous_goal is not None and previous_goal.get("goal") is None
                         and parsed_result.status == "understood"
                         and parsed_result.change.kind in {"revise", "add"}
-                        and execution_mode == "execute"):
+                        and execution_mode == "execute"
+                        and execution_target == "goal_state"):
                     result = {"run_id": turn_id, "status": "partial",
                               "answer": "当前没有已确认的目标。请说明要修改或追加的是哪份清单，以及具体修改内容。",
                               "trace": [{"step": 0, "type": "goal_clarification"}],
                               "steps": 0}
-                if result is None and execution_mode not in {"respond_only", "read_only"}:
+                if (result is None and execution_mode not in {"respond_only", "read_only"}
+                        and execution_target == "goal_state"):
                     transition = goal_store.validate_before_execution(
                         parsed_result, previous_goal)
                     if transition == "confirmation_required":
@@ -289,6 +298,7 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                     plan_store.save_in_session(db, result["plan_checkpoint"])
                 if (status in {"completed", "partial"} and parsed_result is not None
                         and execution_mode not in {"respond_only", "read_only"}
+                        and execution_target == "goal_state"
                         and previous_goal is not None
                         and not any(item.get("type") == "goal_clarification"
                                     for item in (result or {}).get("trace", []))
