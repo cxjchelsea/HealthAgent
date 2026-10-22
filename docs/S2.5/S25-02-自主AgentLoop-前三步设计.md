@@ -262,3 +262,9 @@ LoopOutcome:
 在现有 `AgentLoop._tools` 内登记单回合发生的不可重试工具错误（`invalid_arguments`、`reference_not_found`、`tool_not_exposed`、`mcp_tool_not_allowlisted`、`unknown_tool`）对应的工具名及精确参数。模型重复提交相同普通工具调用时不再次执行，返回 `repeated_nonretryable_action` 工具 Observation，允许模型修改参数或选择替代工具。成功工具调用不受该规则影响；每次新回合重新初始化记录。规划修订工具保持现有 Version/Invalidation 验证逻辑，不纳入此防重复规则，以免拦截合法计划状态变更后的修订。新增 `tests/test_s25_02_repeat_failure.py` 包含失败动作重复、变更参数成功、重复成功只读工具调用等受控决策测试。
 
 此切片不增加用户意图识别、审批、取消、长事务或跨回合幂等保证；不是对所有失败类型无条件禁止重试。自动化 CI 和真实 Qwen E2E 证据必须分别核验，S25-02 继续 **IMPLEMENTING**。
+
+### Step 4 — 第三切片：模型自主澄清控制（2026-10-22）
+
+在原生 Tool Calling 的统一 AgentLoop 中新增 `request_clarification(question)` 控制工具，使用 Pydantic 检验具体问题（1～500 字），所有 Skills 策略均可向模型暴露；**不通过关键词触发**。若模型独立调用此控制动作，Loop 立即返回 `status=partial`、`termination_reason=needs_input` 和具体问题，原会话 Assistant 消息按现有 API 路径持久化。若澄清与写工具一起批量提交，整批拒绝并反馈 `control_action_must_be_alone`，避免同一决策先发副作用再澄清；无效问题反馈 `invalid_arguments`，模型可在当前预算内重新决策。
+
+当前是**单回合主动澄清与用户可见等待提示**，不是已经完成独立 `NeedsInput` 持久任务状态、澄清引用绑定、授权等待/批准/取消或 S25-01 语义理解。下一轮用户答复仍由现有对话上下文处理；跨轮目标引用可信状态必须待 S25-01 / S25-03 接线后扩展。受控回归见 `tests/test_s25_02_clarification.py`，CI 和真实模型验证分别记录；不在此阶段宣称 S25-02 CLOSED。
