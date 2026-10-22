@@ -154,31 +154,43 @@ class UnderstandingService:
         failures: list[str] = []
         attempts: list[dict[str, Any]] = []
         for model_name in dict.fromkeys(models):
-            start = time.monotonic()
-            try:
-                raw = await self.model.complete(messages=messages, model=model_name)
+            # Light runs once; strong may retry one malformed structured response.
+            # No retry after an unverified goal reference or transport failure.
+            for retry in range(2 if model_name == self.strong_model else 1):
+                start = time.monotonic()
+                role = "strong" if model_name == self.strong_model else "light"
                 try:
-                    result = UnderstandingResult.model_validate_json(raw)
-                except ValidationError as exc:
-                    types = {item["type"] for item in exc.errors()}
-                    code = "structured_consistency_error" if "value_error" in types else "structured_schema_error"
-                    raise UnderstandingError(code) from exc
-                if result.change.target_goal_id is not None:
-                    # S25-03 owns durable goal IDs. A model cannot invent one from text.
-                    raise UnderstandingError("unverified_goal_reference")
-                attempts.append({"role": "strong" if model_name == self.strong_model else "light",
-                                 "duration_ms": int((time.monotonic() - start) * 1000),
-                                 "outcome": "valid"})
-                return {"result": result, "attempts": attempts,
-                        "model_role": "strong" if model_name == self.strong_model else "light",
-                        "model": model_name, "duration_ms": int((time.monotonic() - start) * 1000),
-                        "escalated": bool(failures)}
-            except (ValidationError, ValueError, UnderstandingError) as exc:
-                reason = getattr(exc, "code", "invalid_structured_result")
-                failures.append(reason)
-                attempts.append({"role": "strong" if model_name == self.strong_model else "light",
-                                 "duration_ms": int((time.monotonic() - start) * 1000),
-                                 "outcome": reason})
+                    prompt = messages
+                    if retry:
+                        prompt = [*messages, {"role": "system", "content":
+                            "Your prior response did not satisfy the JSON contract. "
+                            "Regenerate a complete valid object matching the schema; "
+                            "do not invent goal references, facts, constraints or confirmations."}]
+                    raw = await self.model.complete(messages=prompt, model=model_name)
+                    try:
+                        result = UnderstandingResult.model_validate_json(raw)
+                    except ValidationError as exc:
+                        types = {item["type"] for item in exc.errors()}
+                        code = ("structured_consistency_error" if "value_error" in types
+                                else "structured_schema_error")
+                        raise UnderstandingError(code) from exc
+                    if result.change.target_goal_id is not None:
+                        raise UnderstandingError("unverified_goal_reference")
+                    attempts.append({"role": role,
+                                     "duration_ms": int((time.monotonic() - start) * 1000),
+                                     "outcome": "valid", "retry": retry})
+                    return {"result": result, "attempts": attempts,
+                            "model_role": role, "model": model_name,
+                            "duration_ms": int((time.monotonic() - start) * 1000),
+                            "escalated": bool(failures)}
+                except (ValidationError, ValueError, UnderstandingError) as exc:
+                    reason = getattr(exc, "code", "invalid_structured_result")
+                    failures.append(reason)
+                    attempts.append({"role": role,
+                                     "duration_ms": int((time.monotonic() - start) * 1000),
+                                     "outcome": reason, "retry": retry})
+                    if reason not in ("structured_schema_error", "structured_consistency_error"):
+                        break
         raise UnderstandingError("understanding_unavailable", attempts=attempts)
 
 # No rule-based fallback. Legacy code calling understand() must migrate explicitly.
