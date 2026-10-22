@@ -7,7 +7,7 @@ def test_fresh_migration(tmp_path):
     assert migrate(url) == "fresh"
     engine, _ = database(url)
     with engine.connect() as connection:
-        assert connection.execute(text("select version_num from alembic_version")).scalar() == "0007_s25_evidence"
+        assert connection.execute(text("select version_num from alembic_version")).scalar() == "0008_s25_task_state"
         assert set(Base.metadata.tables).issubset(set(inspect(engine).get_table_names()))
     engine.dispose()
 
