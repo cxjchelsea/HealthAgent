@@ -8,6 +8,7 @@ import json
 import time
 from typing import Any, Literal, Protocol
 import httpx
+from agent.http_policy import model_http_trust_env
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 class ConstraintSpec(BaseModel):
@@ -104,7 +105,7 @@ class HTTPUnderstandingModel:
         else:
             raise UnderstandingError("unsupported_provider")
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
+            async with httpx.AsyncClient(timeout=self.timeout, trust_env=model_http_trust_env(self.provider, self.base_url)) as client:
                 response = await client.post(url, json=body, headers=headers)
                 response.raise_for_status()
                 data = response.json()
