@@ -15,6 +15,7 @@ import os
 import statistics
 import time
 from pathlib import Path
+from evals.s25_01_paths import report_path
 from agent.config import Settings
 from agent.understanding import (
     GoalSpec, UnderstandingContext, UnderstandingService, HTTPUnderstandingModel,
@@ -145,7 +146,7 @@ async def main(output):
             "Do not change production defaults or close S25-01 on this report alone.",
         ],
     }
-    Path(output).write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    report_path(output).write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(report["summary"], ensure_ascii=False, indent=2))
     print("Wrote", output)
 
