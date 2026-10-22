@@ -45,6 +45,26 @@ def test_different_arguments_do_not_clear_failed_action():
     assert [a["observation"]["ok"] for a in result["audit"]] == [False, True]
 
 
+class TwoGoalsOneFails:
+    async def decide(self, messages, tools):
+        observations = [m for m in messages if m["role"] == "tool"]
+        if not observations:
+            return Decision("", [{"id": "bad", "name": "calculate",
+                                  "arguments": {"expression": "8/0"}}])
+        if len(observations) == 1:
+            return Decision("", [{"id": "good", "name": "calculate",
+                                  "arguments": {"expression": "2+2"}}])
+        return Decision("已经完成全部计算。", [])
+
+
+def test_unrelated_success_does_not_erase_failed_goal_evidence():
+    result = asyncio.run(AgentLoop(TwoGoalsOneFails()).run(
+        "分别计算 8/0 与 2+2", include_evidence=True))
+    assert result["status"] == "partial"
+    assert result["termination_reason"] == "unresolved_tool_failure"
+    assert [a["observation"]["ok"] for a in result["audit"]] == [False, True]
+
+
 def test_plain_answer_remains_completed():
     result = asyncio.run(AgentLoop(DirectAnswer()).run("你好"))
     assert result["status"] == "completed"
