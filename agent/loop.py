@@ -472,6 +472,8 @@ class AgentLoop:
                   "plan": outcome["plan"].snapshot(), "plan_revision": outcome["plan"].revision,
                   "plan_events": list(outcome["plan"].events),
                   "plan_checkpoint": outcome["plan"].checkpoint() if outcome["plan"].revision else None}
+        if execution_mode is not None:
+            result["execution_mode"] = execution_mode
         if include_evidence:
             result["audit"] = outcome["audit"]
             result["tasks"] = outcome["tasks"]
