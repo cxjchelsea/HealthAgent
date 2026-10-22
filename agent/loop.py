@@ -245,7 +245,8 @@ class AgentLoop:
     async def run(self, goal: str, *, include_evidence: bool = False,
                   history: list[dict] | None = None,
                   plan_checkpoint: dict | None = None,
-                  understanding_result: dict | None = None) -> dict:
+                  understanding_result: dict | None = None,
+                  execution_mode: str | None = None) -> dict:
         if not goal.strip() or len(goal) > 12000:
             raise ValueError("Goal must contain 1..12000 characters")
         run_id = str(uuid.uuid4())
@@ -397,10 +398,20 @@ class AgentLoop:
             selected_tools += [t for t in TOOL_SCHEMAS if t["function"]["name"]
                                in {"propose_plan", "revise_plan", "complete_plan_step"}
                                and t["function"]["name"] not in names]
-        # A model-derived respond-only proposal can only REMOVE tool authority.
-        # The host never grants execution permissions from this declaration.
-        if understanding_result is not None and understanding_result.get("execution_intent") == "respond_only":
+        # Execution policy is independent of goal understanding and can only
+        # narrow tool exposure. The host's ordinary tool checks remain active.
+        mode = execution_mode
+        if mode is None and understanding_result is not None:
+            mode = understanding_result.get("execution_intent")  # legacy callers
+        if mode not in {None, "respond_only", "read_only", "execute"}:
+            raise ValueError("invalid_execution_mode")
+        if mode == "respond_only":
             selected_tools = []
+        elif mode == "read_only":
+            read_tools = {"calculate", "utc_time", "list_tasks",
+                          "recall_memory", "mcp_reference_lookup"}
+            selected_tools = [tool for tool in selected_tools
+                              if tool["function"]["name"] in read_tools]
         resume_context = ("\nTrusted checkpoint: revision " + str(resumed.revision) +
                           "; steps: " + json.dumps(resumed.snapshot(), ensure_ascii=False)
                           if resumed.revision else "")
