@@ -12,10 +12,10 @@ def project_task(checkpoint: dict | None, status: str) -> tuple[str, list[dict],
         status = "partial"
     if status == "completed":
         state = "completed"
-    elif status == "partial":
-        state = "partial"
+    elif status in {"partial", "running", "blocked", "interrupted", "waiting_user"}:
+        state = status
     else:
-        state = "failed" if status not in ("running", "partial") else status
+        state = "failed"
     summary = [{"id": s["id"], "status": s["status"],
                 "evidence_tool": s.get("evidence_tool")} for s in steps]
     return state, summary, plan_revision
