@@ -157,3 +157,19 @@ def test_validation_diagnostics_contain_only_error_path_and_type():
     assert outcome["validation_errors"]
     assert set(outcome["validation_errors"][0]) == {"path", "type"}
     assert "请计算" not in json.dumps(outcome, ensure_ascii=False)
+
+
+def test_shadow_prompt_explicitly_ties_clarification_to_route():
+    from agent.route_shadow import PROMPT
+    assert '{"required":false,"reason":"none","question":null}' in PROMPT
+    assert 'For clarify, set clarification.required=true' in PROMPT
+    assert 'HOST denial' in PROMPT
+
+
+def test_clarification_mismatch_still_rejected_instead_of_repaired():
+    bad = route(clarification={
+        "required":False,"reason":"missing_argument","question":None})
+    outcome = asyncio.run(evaluate_shadow(
+        Stub(bad), "fake", "请计算 19+23", has_plan=False, pending_action=None))
+    assert outcome["state"] == "unavailable"
+    assert outcome["validation_errors"][0]["path"] == "clarification"
