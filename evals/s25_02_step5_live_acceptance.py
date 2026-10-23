@@ -53,9 +53,10 @@ def check(case, data):
                 and len(data.get("plan", [])) == 2 else "FAIL",
                 "formal plan must be saved but not executed")
     if case == "D05_plan_revision":
+        plan = data.get("plan", [])
         return ("PASS" if reason == "plan_revised_pending_execution"
-                and data.get("steps") == 0
-                and data.get("plan", [{} , {}])[1].get("expected_arguments", {}).get(
+                and data.get("steps") == 0 and len(plan) == 2
+                and plan[1].get("expected_arguments", {}).get(
                     "expression") == "9*9" else "FAIL",
                 "only pending second step must change without execution")
     if case == "D03_execute_first":
