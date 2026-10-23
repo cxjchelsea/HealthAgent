@@ -11,6 +11,7 @@ from agent.tools import SCHEMAS
 class RevisionProposal(BaseModel):
     model_config = ConfigDict(extra="forbid")
     intent: Literal["revise", "other"]
+    edit_requested: bool | None = None
     step_number: int | None = None
     expected_tool: str | None = None
     old_argument: str | None = None
@@ -24,7 +25,10 @@ async def review_plan_revision(provider: HTTPUnderstandingModel, model: str,
         raw = await provider.complete(model=model, messages=[
         {"role": "system", "content":
          "Return JSON matching schema. Classify a request to EDIT an existing saved "
-         "plan as revise, otherwise other. For revise identify explicit 1-based "
+         plan as revise, otherwise other. Also set edit_requested=true "
+         "whenever the user attempts to edit a saved plan, even if the exact "
+         "step binding is unclear; false for execute/resume/status/chat. "
+         "For revise identify explicit 1-based "
          "step_number, expected_tool, old_argument and new_argument from CURRENT "
          "user words ONLY, not from guesses. When the user cites an old expression "
          "and a new expression, preserve both exactly. Do NOT correct contradictions "
@@ -42,7 +46,7 @@ async def review_plan_revision(provider: HTTPUnderstandingModel, model: str,
                 proposal.old_argument and proposal.new_argument
                 and proposal.old_argument.casefold() in message.casefold()
                 and proposal.new_argument.casefold() in message.casefold()):
-            return RevisionProposal(intent="other")
+            return RevisionProposal(intent="other", edit_requested=proposal.edit_requested)
         return proposal
     except (UnderstandingError, ValueError, TypeError):
         return RevisionProposal(intent="other")
