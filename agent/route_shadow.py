@@ -59,6 +59,7 @@ class ShadowRoute(BaseModel):
     source_quote: str = Field(max_length=400, default="")
     source_evidence: list[EvidenceSpan] = Field(default_factory=list, max_length=12)
     negative_constraints: list[EvidenceSpan] = Field(default_factory=list, max_length=8)
+    plan_step_evidence: list[EvidenceSpan] = Field(default_factory=list, max_length=8)
     reference: ShadowReference = Field(default_factory=ShadowReference)
     clarification: ShadowClarification = Field(default_factory=ShadowClarification)
     goal: GoalSpec | None = None
@@ -102,13 +103,14 @@ class ShadowRoute(BaseModel):
 def verify_source_spans(route: ShadowRoute, message: str) -> None:
     if route.source_quote and route.source_quote not in message:
         raise ValueError("shadow_untrusted_source_quote")
-    for span in [*route.source_evidence, *route.negative_constraints]:
+    for span in [*route.source_evidence, *route.negative_constraints,
+                 *route.plan_step_evidence]:
         if (span.end > len(message) or span.end <= span.start
                 or message[span.start:span.end] != span.exact_text):
             raise ValueError("shadow_untrusted_source_span")
     # An ungrounded negative constraint cannot silently be discarded by admission.
-    if route.negative_constraints and route.effect_intent == "mutation_requested":
-        raise ValueError("shadow_mutation_conflicts_negative_constraint")
+    # A negative constraint is scoped to its object. "Revise plan, do not
+    # execute" does not prohibit the revision itself. Host resolves scope.
 
 
 def hypothetical_admission(route: ShadowRoute, *, has_plan: bool,
@@ -119,8 +121,12 @@ def hypothetical_admission(route: ShadowRoute, *, has_plan: bool,
         return "missing_saved_plan"
     if route.primary_route == "plan_create" and has_plan:
         return "existing_saved_plan"
-    if route.primary_route == "plan_create" and not route.source_evidence:
-        return "plan_intent_evidence_unverified"
+    if route.primary_route == "plan_create":
+        if not route.source_evidence:
+            return "plan_intent_evidence_unverified"
+        spans = route.plan_step_evidence
+        if len(spans) < 2 or len({(x.start, x.end) for x in spans}) < 2:
+            return "ordered_plan_steps_evidence_unverified"
     if route.route_target == "pending_clarification" and pending_action is None:
         return "missing_pending_action"
     if route.primary_route == "clarify" and route.route_target == "pending_clarification":
@@ -207,6 +213,9 @@ Reference fields: kind none requires null step_number and null pending_field.
 Cancel pending argument is not saved_step; step_number must remain null.
 One-off task-manager item creation is agent_loop/tool_action, not a durable
 ordered multi-step plan. Host independently checks write authorization.
+For plan_create, plan_step_evidence must contain TWO distinct exact spans
+for separately requested ordered steps; never invent missing plan steps.
+Negative constraints are operation-scoped, not global write prohibitions.
 Do not fabricate source spans or reference fields; use empty/default
 values if original text does not prove the field."""
 
