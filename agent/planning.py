@@ -39,6 +39,28 @@ class PlanLedger:
             self.events.append({"event": "tool_failed", "tool": tool_name,
                                 "error": result.get("error", "unknown")})
 
+    def apply_verified_recovery(self, step_id: int, original_arguments: dict,
+                                replacement_arguments: dict, tool_name: str,
+                                observation: dict, strategy: str) -> bool:
+        """Version a recovered binding only after successful, verified evidence."""
+        from agent.plan_recovery import RecoveryCandidate, validates_recovery
+        step = next((s for s in self.steps if s["id"] == step_id), None)
+        if (step is None or step["status"] != "pending"
+                or step.get("expected_tool") != tool_name
+                or step.get("expected_arguments") != original_arguments
+                or tool_name != "calculate"
+                or not validates_recovery(original_arguments,
+                    RecoveryCandidate(tool_name, replacement_arguments, strategy),
+                    observation)):
+            return False
+        step["expected_arguments"] = dict(replacement_arguments)
+        self.revision += 1
+        self.events.append({"event": "plan_step_recovered",
+                            "id": step_id, "revision": self.revision,
+                            "strategy": strategy, "source": "verified_observation"})
+        self.observe(tool_name, observation, replacement_arguments)
+        return step["status"] == "completed"
+
     def complete(self, step_id: int, evidence_tool: str, observation: dict | None) -> dict:
         step = next((s for s in self.steps if s["id"] == step_id), None)
         if step is None:
