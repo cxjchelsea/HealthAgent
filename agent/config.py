@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     understanding_light_model: str = "qwen3:4b"
     understanding_strong_model: str = "qwen3:14b"
     run_s25_01_live: bool = False
+    route_shadow_enabled: bool = False  # M2 opt-in, never affects admission
     understanding_strategy: str = "direct"  # direct or structured; benchmark before default switch
     model_api_key: str = ""
     model_timeout_seconds: float = Field(default=45, gt=0)
