@@ -222,10 +222,26 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                           "trace": [{"step": 0, "type": "goal_confirmation"}], "steps": 0}
             if settings.understanding_strategy not in {"direct", "structured"}:
                 raise UnderstandingError("invalid_understanding_strategy")
+            # Resolve plan execution intent independently and FIRST, so a
+            # revision classifier cannot capture "execute first step" as an edit.
+            pending_plan_execution_intent = None
+            if (result is None and existing_checkpoint
+                    and settings.understanding_strategy == "structured"
+                    and agent_decider is None and body.goal_confirmation is None):
+                initial_plan_intent = await review_plan_intent(
+                    HTTPUnderstandingModel(
+                        settings.model_provider, settings.model_base_url,
+                        settings.model_api_key, settings.model_timeout_seconds,
+                        settings.model_max_output_tokens),
+                    settings.understanding_strong_model,
+                    body.content, True)
+                if initial_plan_intent.intent in {"execute_first", "resume"}:
+                    pending_plan_execution_intent = initial_plan_intent
             # Saved plan edits have their own bounded contract. Apply only a
             # proven single pending-step binding change before generic goal
             # Understanding, which must not rewrite the PlanLedger on its own.
             if (result is None and existing_checkpoint
+                    and not pending_plan_execution_intent
                     and settings.understanding_strategy == "structured"
                     and agent_decider is None and body.goal_confirmation is None):
                 revision_proposal = await review_plan_revision(
@@ -427,7 +443,7 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
             # the bound checkpoint can authorize later read-only execution.
             if (result is None and parsed_result is not None
                     and agent_decider is None):
-                plan_decision = await review_plan_intent(
+                plan_decision = pending_plan_execution_intent or await review_plan_intent(
                     HTTPUnderstandingModel(settings.model_provider,
                                            settings.model_base_url,
                                            settings.model_api_key,
