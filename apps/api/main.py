@@ -251,6 +251,23 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                         settings.model_max_output_tokens),
                     settings.understanding_strong_model,
                     body.content, existing_checkpoint)
+                if revision_proposal.intent != "revise":
+                    edit_unresolved = await check_plan_edit_intent(
+                        HTTPUnderstandingModel(
+                            settings.model_provider, settings.model_base_url,
+                            settings.model_api_key, settings.model_timeout_seconds,
+                            settings.model_max_output_tokens),
+                        settings.understanding_strong_model,
+                        body.content, existing_checkpoint)
+                    if edit_unresolved:
+                        result = {"run_id": turn_id, "status": "partial",
+                                  "termination_reason": "plan_revision_conflict",
+                                  "answer": "无法确认计划修改目标，请明确步骤编号、原参数及新参数。",
+                                  "trace": [{"step": 0, "type": "plan_revision_conflict"}],
+                                  "steps": 0, "plan_checkpoint": existing_checkpoint,
+                                  "plan": existing_checkpoint["steps"],
+                                  "plan_revision": existing_checkpoint["revision"],
+                                  "plan_events": []}
                 if revision_proposal.intent == "revise":
                     revised = apply_plan_revision(
                         existing_checkpoint, body.content, revision_proposal)
