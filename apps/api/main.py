@@ -565,23 +565,21 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                               "trace": [{"step": 0, "type": "plan_not_found"}],
                               "steps": 0}
                 elif plan_route.kind in {"execute_first", "resume"}:
-                    # Scope is independently reviewed against the current request.
-                    # An uncertain result never expands execute_first into resume.
-                    if agent_decider is None and execution_policy is None:
+                    # An explicit first-step request is already bounded. Only
+                    # a broad resume proposal needs a separate scope check;
+                    # ambiguous scope never widens single-step authority.
+                    if plan_route.kind == "execute_first":
+                        plan_control = "execute_first"
+                    elif agent_decider is None and execution_policy is None:
                         scope = await review_plan_execution_scope(
                             HTTPUnderstandingModel(
                                 settings.model_provider, settings.model_base_url,
                                 settings.model_api_key, settings.model_timeout_seconds,
                                 settings.model_max_output_tokens),
                             settings.understanding_strong_model, body.content)
-                        if scope == "all":
-                            plan_control = "resume"
-                        elif scope == "one":
-                            plan_control = "execute_first"
-                        else:
-                            plan_control = "execute_first"
+                        plan_control = "resume" if scope == "all" else "execute_first"
                     else:
-                        plan_control = plan_decision.intent
+                        plan_control = plan_route.kind
                     # A completed checkpoint is terminal: subsequent continuation
                     # requests are read-only status checks, never new tool work.
                     completed_plan = None
