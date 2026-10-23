@@ -74,3 +74,84 @@ def test_d03_rejects_unsupported_and_ungrounded_plan_binding():
         build_plan_checkpoint("建立计划计算 1+1", PlanRequest(intent="plan_only",steps=[
             {"goal":"计算 100+100","expected_tool":"calculate",
              "expected_arguments":{"expression":"100+100"}}]))
+
+
+def test_d03_f02_misrouted_respond_only_can_resume_verified_pending_plan(tmp_path, monkeypatch):
+    async def fake_complete(self, *, messages, model, response_schema=None):
+        return understood()
+    monkeypatch.setattr(HTTPUnderstandingModel, "complete", fake_complete)
+    intents = iter([
+        PlanRequest(intent="plan_only", steps=[
+            {"goal": "计算 2+2", "expected_tool": "calculate",
+             "expected_arguments": {"expression": "2+2"}},
+            {"goal": "计算 3+3", "expected_tool": "calculate",
+             "expected_arguments": {"expression": "3+3"}}]),
+        PlanRequest(intent="execute_first"),
+        PlanRequest(intent="resume"),
+    ])
+    async def fake_plan_intent(provider, model, message, existing_plan):
+        return next(intents)
+    monkeypatch.setattr("apps.api.main.review_plan_intent", fake_plan_intent)
+    reviews = []
+    async def fake_resume_review(provider, model, message, checkpoint, intent):
+        reviews.append((intent, len([s for s in checkpoint["steps"] if s["status"] == "pending"])))
+        return True
+    monkeypatch.setattr("apps.api.main.review_plan_execution_authorization", fake_resume_review)
+    async def policy(message, interpretation):
+        if "继续" in message:
+            return "respond_only"  # Reproduce real Qwen's failed D03 route.
+        return "read_only"
+    settings = Settings(database_url=f"sqlite:///{tmp_path/'d03f02.db'}",
+                        model_provider="ollama_proxy", understanding_strategy="structured")
+    with TestClient(create_app(settings, execution_policy=policy)) as client:
+        cid = client.post("/conversations").json()["id"]
+        route = f"/conversations/{cid}/agent/messages"
+        def send(msg, rid):
+            response = client.post(route, json={"content": msg, "client_request_id": rid})
+            assert response.status_code == 200, response.text
+            return response.json()
+        first = send("建立计划计算 2+2 和 3+3", "d03f02-001")
+        assert first["termination_reason"] == "plan_created_pending_execution"
+        second = send("只完成第一步", "d03f02-002")
+        assert [s["status"] for s in second["plan"]] == ["completed", "pending"]
+        third = send("继续完成计划中剩余步骤，不重复第一步", "d03f02-003")
+        assert third["status"] == "completed"
+        assert third["execution_mode"] == "read_only"
+        assert [s["status"] for s in third["plan"]] == ["completed", "completed"]
+        assert len([x for x in third["trace"] if x["type"] == "tool"]) == 1
+        assert reviews == [("resume", 1)]
+
+
+def test_d03_f02_explicit_denial_remains_fail_closed(tmp_path, monkeypatch):
+    async def fake_complete(self, *, messages, model, response_schema=None):
+        return understood()
+    monkeypatch.setattr(HTTPUnderstandingModel, "complete", fake_complete)
+    intents = iter([
+        PlanRequest(intent="plan_only", steps=[{
+            "goal": "计算 2+2", "expected_tool": "calculate",
+            "expected_arguments": {"expression": "2+2"}}]),
+        PlanRequest(intent="resume"),
+    ])
+    async def fake_plan_intent(provider, model, message, existing_plan):
+        return next(intents)
+    monkeypatch.setattr("apps.api.main.review_plan_intent", fake_plan_intent)
+    async def deny(*args):
+        return False
+    monkeypatch.setattr("apps.api.main.review_plan_execution_authorization", deny)
+    async def policy(message, interpretation):
+        return "respond_only"
+    settings = Settings(database_url=f"sqlite:///{tmp_path/'deny.db'}",
+                        model_provider="ollama_proxy", understanding_strategy="structured")
+    with TestClient(create_app(settings, execution_policy=policy)) as client:
+        cid = client.post("/conversations").json()["id"]
+        route = f"/conversations/{cid}/agent/messages"
+        def send(msg, rid):
+            response = client.post(route, json={"content": msg, "client_request_id": rid})
+            assert response.status_code == 200, response.text
+            return response.json()
+        first = send("建立计划计算 2+2", "d03deny-001")
+        assert first["plan"][0]["status"] == "pending"
+        second = send("继续执行剩余步骤", "d03deny-002")
+        assert second["termination_reason"] == "execution_not_authorized"
+        assert second["trace"][0]["type"] == "plan_execution_denied"
+        assert second["steps"] == 0
