@@ -59,7 +59,7 @@ def test_d05_execution_priority_after_revision(tmp_path, monkeypatch):
         count=len(calls)
         executed=send("现在请帮我执行第一步","d05f02-003")
         assert len(calls) == count, "Execution request entered revision classifier"
-        assert executed["termination_reason"] != "plan_revision_conflict"
+        assert executed.get("termination_reason") != "plan_revision_conflict"
         assert executed["plan"][0]["status"] == "completed"
         assert executed["plan"][1]["status"] == "pending"
         assert executed["plan"][1]["expected_arguments"]["expression"] == "9*9"
