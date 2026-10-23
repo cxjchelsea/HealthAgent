@@ -1,3 +1,4 @@
+from agent.planning import PlanLedger
 import logging
 import time
 from contextlib import asynccontextmanager
@@ -9,9 +10,24 @@ from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from agent.config import Settings
 from agent.understanding import UnderstandingContext, UnderstandingService, HTTPUnderstandingModel, UnderstandingError
-from agent.execution_policy import decide_execution_policy_detail
+from agent.execution_policy import decide_execution_policy_detail, reconcile_execution_policy
+from agent.route_shadow import evaluate_shadow, compare_to_legacy
 from agent.decision import NativeToolDecision
 from agent.loop import AgentLoop
+from agent.tools import execute_tool, SCHEMAS
+from agent.argument_provenance import REQUIRED_USER_VALUES
+from agent.pending_reply import classify_pending_reply
+from agent.pending_reference_review import review_pending_reference_lookup
+from agent.capability_review import review_unsupported_capability
+from agent.clarification_review import review_read_only_clarification
+from agent.control_admission import admit_clarification
+from agent.plan_intent import review_plan_intent, build_plan_checkpoint
+from agent.plan_control import (resolve_plan_admission, review_missing_plan_reference,
+                                review_plan_creation_reference)
+from agent.plan_execution_review import review_plan_execution_authorization
+from agent.plan_execution_scope import review_plan_execution_scope
+from agent.plan_revision_review import review_plan_revision, apply_plan_revision, check_plan_edit_intent, explicit_step_binding_conflict
+from agent.tools import TOOL_SCHEMAS
 from agent.mcp_stdio_client import StdioMCPClient
 from agent.context import build_context
 from services.task_store import ConversationTaskStore
@@ -139,12 +155,30 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                     Turn.conversation_id == cid, Turn.request_id == body.client_request_id))
                 if prior:
                     raise HTTPException(409, "duplicate_request_id")
+                latest_turn = db.scalar(select(Turn).join(
+                    Message, Message.id == Turn.assistant_message_id).where(
+                    Turn.conversation_id == cid, Turn.state != "running")
+                    .order_by(Message.created_at.desc(), Message.id.desc()))
+                clarification_reason = (latest_turn.failure_code
+                    if latest_turn and latest_turn.state == "partial" else None)
+                clarification_id = (latest_turn.assistant_message_id
+                    if clarification_reason and clarification_reason.startswith("needs_input") else None)
+                pending_action = (clarification_reason.split(":", 1)[1]
+                    if clarification_reason and clarification_reason.startswith("needs_input:")
+                    else None)
+                if pending_action not in REQUIRED_USER_VALUES:
+                    pending_action = None
+                pending_question = (db.get(Message, clarification_id).content
+                    if clarification_id else None)
                 history = db.scalars(select(Message).where(
-                    Message.conversation_id == cid, Message.status == "completed")
+                    Message.conversation_id == cid,
+                    ((Message.status == "completed") |
+                     (Message.id == clarification_id if clarification_id else False)))
                     .order_by(Message.created_at, Message.id)).all()
                 context = build_context(history, body.content,
                                         max_messages=settings.max_history_messages,
-                                        max_chars=settings.context_max_chars)
+                                        max_chars=settings.context_max_chars,
+                                        clarification_message_id=clarification_id)
                 user_message = Message(conversation_id=cid, role="user", content=body.content)
                 response_message = Message(conversation_id=cid, role="assistant",
                                            content="", status="pending")
@@ -170,6 +204,7 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
         previous_goal = None
         parsed_result = None
         began = time.monotonic()
+        understanding_attempts = []
         status, answer = "provider_error", ""
         result = None
         failure_code = None
@@ -194,6 +229,98 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                           "trace": [{"step": 0, "type": "goal_confirmation"}], "steps": 0}
             if settings.understanding_strategy not in {"direct", "structured"}:
                 raise UnderstandingError("invalid_understanding_strategy")
+            # A strict, user-grounded contradiction can be rejected before
+            # invoking any classifier or generic Understanding model.
+            if (result is None and existing_checkpoint
+                    and settings.understanding_strategy == "structured"
+                    and agent_decider is None and body.goal_confirmation is None
+                    and explicit_step_binding_conflict(body.content, existing_checkpoint)):
+                result = {"run_id": turn_id, "status": "partial",
+                          "termination_reason": "plan_revision_conflict",
+                          "answer": "指定步骤与当前计划绑定不一致，请确认要修改的步骤编号。",
+                          "trace": [{"step": 0, "type": "plan_revision_conflict"}],
+                          "steps": 0, "plan_checkpoint": existing_checkpoint,
+                          "plan": existing_checkpoint["steps"],
+                          "plan_revision": existing_checkpoint["revision"],
+                          "plan_events": []}
+            # Resolve plan execution intent independently and FIRST, so a
+            # revision classifier cannot capture "execute first step" as an edit.
+            pending_plan_execution_intent = None
+            reviewed_plan_intent = None
+            if (result is None and existing_checkpoint
+                    and settings.understanding_strategy == "structured"
+                    and agent_decider is None and body.goal_confirmation is None):
+                reviewed_plan_intent = await review_plan_intent(
+                    HTTPUnderstandingModel(
+                        settings.model_provider, settings.model_base_url,
+                        settings.model_api_key, settings.model_timeout_seconds,
+                        settings.model_max_output_tokens),
+                    settings.understanding_strong_model,
+                    body.content, True)
+                if reviewed_plan_intent.intent in {"execute_first", "resume"}:
+                    pending_plan_execution_intent = reviewed_plan_intent
+            # Saved plan edits have their own bounded contract. Apply only a
+            # proven single pending-step binding change before generic goal
+            # Understanding, which must not rewrite the PlanLedger on its own.
+            if (result is None and existing_checkpoint
+                    and not pending_plan_execution_intent
+                    and settings.understanding_strategy == "structured"
+                    and agent_decider is None and body.goal_confirmation is None):
+                revision_proposal = await review_plan_revision(
+                    HTTPUnderstandingModel(
+                        settings.model_provider, settings.model_base_url,
+                        settings.model_api_key, settings.model_timeout_seconds,
+                        settings.model_max_output_tokens),
+                    settings.understanding_strong_model,
+                    body.content, existing_checkpoint)
+                if revision_proposal.intent != "revise":
+                    edit_unresolved = revision_proposal.edit_requested
+                    if edit_unresolved is None:
+                        # Compatibility for legacy/test proposals. Current
+                        # production schema carries this semantic signal in
+                        # the first revision review, avoiding another call.
+                        edit_unresolved = await check_plan_edit_intent(
+                            HTTPUnderstandingModel(
+                                settings.model_provider, settings.model_base_url,
+                                settings.model_api_key, settings.model_timeout_seconds,
+                                settings.model_max_output_tokens),
+                            settings.understanding_strong_model,
+                            body.content, existing_checkpoint)
+                    if edit_unresolved:
+                        result = {"run_id": turn_id, "status": "partial",
+                                  "termination_reason": "plan_revision_conflict",
+                                  "answer": "无法确认计划修改目标，请明确步骤编号、原参数及新参数。",
+                                  "trace": [{"step": 0, "type": "plan_revision_conflict"}],
+                                  "steps": 0, "plan_checkpoint": existing_checkpoint,
+                                  "plan": existing_checkpoint["steps"],
+                                  "plan_revision": existing_checkpoint["revision"],
+                                  "plan_events": []}
+                if revision_proposal.intent == "revise":
+                    revised = apply_plan_revision(
+                        existing_checkpoint, body.content, revision_proposal)
+                    if revised is None:
+                        result = {"run_id": turn_id, "status": "partial",
+                                  "termination_reason": "plan_revision_conflict",
+                                  "answer": "修改描述与已保存计划的步骤或参数绑定不一致，请依据当前计划检查步骤编号与原参数。",
+                                  "trace": [{"step": 0, "type": "plan_revision_conflict"}],
+                                  "steps": 0,
+                                  "plan_checkpoint": existing_checkpoint,
+                                  "plan": existing_checkpoint["steps"],
+                                  "plan_revision": existing_checkpoint["revision"],
+                                  "plan_events": []}
+                    else:
+                        checkpoint = revised["checkpoint"]
+                        result = {"run_id": turn_id, "status": "partial",
+                                  "termination_reason": "plan_revised_pending_execution",
+                                  "answer": "已更新计划指定步骤，其他步骤不变；本次没有执行工具。",
+                                  "trace": [{"step": 0, "type": "plan_revised"}],
+                                  "steps": 0, "plan_checkpoint": checkpoint,
+                                  "plan": checkpoint["steps"],
+                                  "plan_revision": checkpoint["revision"],
+                                  "plan_events": [revised["event"]]}
+            pending_reply_kind = None
+            clarification_read_only = False
+            suppress_persistent_routing = False
             if result is None and settings.understanding_strategy == "structured":
                 previous_goal = goal_store.load()
                 service = UnderstandingService(
@@ -211,17 +338,140 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                     current_plan_summary=summary,
                     active_goal=previous_goal['goal'],
                     confirmed_constraints=previous_goal['goal'].get('constraints', []) if previous_goal['goal'] else [],
-                    outstanding_clarification=(previous_goal['pending'] or {}).get('clarification', {}).get('question')))
+                    outstanding_clarification=(pending_question or
+                        (previous_goal['pending'] or {}).get('clarification', {}).get('question'))))
                 parsed_result = parsed["result"]
                 interpretation = parsed_result.model_dump()
-                if parsed["result"].clarification.required:
+                if (pending_action in REQUIRED_USER_VALUES
+                        and (parsed["result"].clarification.required
+                             or pending_action == "mcp_reference_lookup")
+                        and body.goal_confirmation is None):
+                    pending_reply_kind = await classify_pending_reply(
+                        HTTPUnderstandingModel(
+                            settings.model_provider, settings.model_base_url,
+                            settings.model_api_key, settings.model_timeout_seconds,
+                            settings.model_max_output_tokens),
+                        settings.understanding_strong_model,
+                        question=pending_question or REQUIRED_USER_VALUES[pending_action][1],
+                        reply=body.content, tool=pending_action)
+                if (parsed["result"].clarification.required
+                        and pending_reply_kind != "answer"):
+                    # A missing MCP term is a pending *argument* to an
+                    # already-requested read-only operation, not a new tool
+                    # capability request. Persist this source-bound state
+                    # before running any unsupported-capability reviewer.
+                    pending_lookup = False
+                    if pending_action is None and body.goal_confirmation is None:
+                        pending_lookup = await review_pending_reference_lookup(
+                            HTTPUnderstandingModel(
+                                settings.model_provider, settings.model_base_url,
+                                settings.model_api_key, settings.model_timeout_seconds,
+                                settings.model_max_output_tokens),
+                            settings.understanding_strong_model, body.content)
+                    if pending_lookup:
+                        pending_action = "mcp_reference_lookup"
+                        result = {"run_id": turn_id, "status": "partial",
+                                  "termination_reason": "needs_input",
+                                  "pending_action": pending_action,
+                                  "answer": parsed["result"].clarification.question,
+                                  "trace": [{"step": 0, "type": "goal_clarification"}],
+                                  "steps": 0}
+                    # Capability unavailability is not missing user information.
+                    # A narrow review may *deny* a clearly named missing tool,
+                    # but never grants access to that or any other tool.
+                    requested_unavailable = None
+                    if result is None:
+                        requested_unavailable = await review_unsupported_capability(
+                            HTTPUnderstandingModel(
+                                settings.model_provider, settings.model_base_url,
+                                settings.model_api_key, settings.model_timeout_seconds,
+                                settings.model_max_output_tokens),
+                            settings.understanding_strong_model, body.content,
+                            {t["function"]["name"] for t in TOOL_SCHEMAS})
+                    # Resolve competing model proposals through one Host route.
+                    # A pending tool-argument clarification is never silently
+                    # converted into a new read-only action.
+                    ready_to_attempt = False
+                    if (not requested_unavailable and pending_action is None
+                            and body.goal_confirmation is None):
+                        ready_to_attempt = await review_read_only_clarification(
+                            HTTPUnderstandingModel(
+                                settings.model_provider, settings.model_base_url,
+                                settings.model_api_key, settings.model_timeout_seconds,
+                                settings.model_max_output_tokens),
+                            settings.understanding_strong_model, body.content,
+                            parsed["result"].clarification.question,
+                            ["calculate", "mcp_reference_lookup", "utc_time",
+                             "list_tasks", "recall_memory"])
+                    clarification_route = admit_clarification(
+                        missing_argument_action=pending_action,
+                        unsupported_name=requested_unavailable,
+                        complete_read_only_request=ready_to_attempt)
+                    if result is not None:
+                        pass  # A trusted pending argument was already admitted.
+                    elif clarification_route.kind == "unsupported":
+                        result = {"run_id": turn_id, "status": "partial",
+                                  "termination_reason": "unsupported_capability",
+                                  "answer": "当前系统没有提供或授权 " +
+                                            clarification_route.unsupported_name +
+                                            " 执行工具，因此无法执行该请求。",
+                                  "trace": [{"step": 0, "type": "unsupported_capability"}],
+                                  "steps": 0}
+                    elif clarification_route.kind == "read_only":
+                        suppress_persistent_routing = clarification_route.skip_persistence
+                        clarification_read_only = True
+                    else:
+                        result = {"run_id": turn_id, "status": "partial",
+                                  "answer": parsed["result"].clarification.question,
+                                  "trace": [{"step": 0, "type": "goal_clarification"}],
+                                  "steps": 0}
+            # Resume only a trustworthy, latest-turn missing-argument request.
+            # Semantic change classification remains S25-01's responsibility.
+            # The *current user's own reply* is the only source for the new value.
+            if (result is None and pending_action in REQUIRED_USER_VALUES
+                    and parsed_result is not None
+                    and ((parsed_result.status == "understood"
+                          and parsed_result.change.kind == "clarify_response")
+                         or pending_reply_kind == "answer")
+                    and body.goal_confirmation is None):
+                field, question = REQUIRED_USER_VALUES[pending_action]
+                candidate = body.content.strip()
+                try:
+                    validated = SCHEMAS[pending_action].model_validate({field: candidate})
+                except ValueError:
                     result = {"run_id": turn_id, "status": "partial",
-                              "answer": parsed["result"].clarification.question,
-                              "trace": [{"step": 0, "type": "goal_clarification"}],
+                              "termination_reason": "needs_input", "pending_action": pending_action,
+                              "answer": question, "trace": [{"step": 0, "type": "argument_clarification"}],
                               "steps": 0}
-            execution_mode = None
-            execution_target = "goal_state"  # Legacy injected strategy conservatively preserves revisions.
-            if result is None and interpretation is not None:
+                else:
+                    # A pending clarification is not fresh execution authorization.
+                    # For a task creation, the previous request explicitly authorized
+                    # the operation; the reply supplies only its missing title.
+                    # Reference lookup is read-only. These are the only two allowed
+                    # resumable tool types, not an arbitrary model-supplied tool name.
+                    if pending_action == "create_task":
+                        observed = execute_tool(pending_action, validated.model_dump(), [],
+                            task_store=ConversationTaskStore(Session, cid))
+                    else:
+                        observed = execute_tool(pending_action, validated.model_dump(), [],
+                            mcp_client=StdioMCPClient())
+                    result = {"run_id": turn_id,
+                              "status": "completed" if observed.get("ok") else "partial",
+                              "termination_reason": ("verified_clarification_execution"
+                                    if observed.get("ok") else "clarification_tool_failed"),
+                              "answer": ("已创建任务：" + candidate if pending_action == "create_task"
+                                  and observed.get("ok") else
+                                  "已查询词条：" + candidate + "。" + str(
+                                      observed.get("definition", observed.get("value", "")))
+                                  if pending_action == "mcp_reference_lookup" and observed.get("ok")
+                                  else "工具执行未成功，请检查查询或任务服务。"),
+                              "trace": [{"step": 0, "type": "clarification_resumed",
+                                         "name": pending_action, "ok": bool(observed.get("ok"))}],
+                              "steps": 1}
+            execution_mode = "read_only" if clarification_read_only else None
+            execution_target = "tool_action" if (clarification_read_only or (result is not None and
+                any(t.get("type") == "clarification_resumed" for t in result.get("trace", [])))) else "goal_state"  # Legacy injected strategy conservatively preserves revisions.
+            if result is None and interpretation is not None and not clarification_read_only:
                 if execution_policy is not None:
                     policy_result = await execution_policy(body.content, interpretation)
                     execution_mode = (policy_result.mode if hasattr(policy_result, "mode")
@@ -234,6 +484,14 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                                settings.model_api_key, settings.model_timeout_seconds,
                                                settings.model_max_output_tokens),
                         settings.understanding_strong_model, body.content, interpretation)
+                    if policy_result.mode != "read_only":
+                        policy_result = await reconcile_execution_policy(
+                            HTTPUnderstandingModel(
+                                settings.model_provider, settings.model_base_url,
+                                settings.model_api_key, settings.model_timeout_seconds,
+                                settings.model_max_output_tokens),
+                            settings.understanding_strong_model,
+                            body.content, interpretation, policy_result)
                     execution_mode = policy_result.mode
                     execution_target = policy_result.target
                 # Injected deciders in existing offline tests use legacy tool visibility;
@@ -241,7 +499,7 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
             # Only persistent execution proposals need a confirmed durable goal.
             # A revision of an unsaved conversational draft must not require
             # Goal Store state, but it must also never mutate that store.
-            if result is None and parsed_result is not None:
+            if result is None and parsed_result is not None and not suppress_persistent_routing:
                 # Host-grounded absence of a durable referent is a clarification,
                 # not a provider outage. Never invent the missing target.
                 if (previous_goal is not None and previous_goal.get("goal") is None
@@ -263,6 +521,161 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                   "trace": [{"step": 0, "type": "goal_confirmation_required"}],
                                   "steps": 0, "proposed_goal": parsed_result.goal.model_dump(),
                                   "expected_goal_version": previous_goal["version"] + 1}
+            plan_control = None
+            # Separate authoring a future plan from executing its steps. Only
+            # the bound checkpoint can authorize later read-only execution.
+            if (result is None and parsed_result is not None
+                    and not suppress_persistent_routing and agent_decider is None):
+                plan_decision = reviewed_plan_intent or await review_plan_intent(
+                    HTTPUnderstandingModel(settings.model_provider,
+                                           settings.model_base_url,
+                                           settings.model_api_key,
+                                           settings.model_timeout_seconds,
+                                           settings.model_max_output_tokens),
+                    settings.understanding_strong_model,
+                    body.content, bool(existing_checkpoint))
+                # Produce a single mutually exclusive Host route from model
+                # proposals and independently checked saved-plan references.
+                creation_confirmed = False
+                missing_reference = None
+                if plan_decision.intent == "plan_only":
+                    creation_confirmed = await review_plan_creation_reference(
+                        HTTPUnderstandingModel(
+                            settings.model_provider, settings.model_base_url,
+                            settings.model_api_key, settings.model_timeout_seconds,
+                            settings.model_max_output_tokens),
+                        settings.understanding_strong_model, body.content)
+                elif (plan_decision.intent in {"execute_first", "resume"}
+                      and existing_checkpoint is None):
+                    missing_reference = await review_missing_plan_reference(
+                        HTTPUnderstandingModel(
+                            settings.model_provider, settings.model_base_url,
+                            settings.model_api_key, settings.model_timeout_seconds,
+                            settings.model_max_output_tokens),
+                        settings.understanding_strong_model, body.content)
+                plan_route = resolve_plan_admission(
+                    plan_decision, existing_checkpoint=existing_checkpoint,
+                    creation_confirmed=creation_confirmed,
+                    missing_reference=missing_reference)
+                if plan_route.kind == "existing_plan":
+                    result = {"run_id": turn_id, "status": "partial",
+                              "termination_reason": "existing_plan_requires_revision",
+                              "answer": "会话已有计划，请先确认修改现有计划。",
+                              "trace": [{"step": 0, "type": "plan_creation_blocked"}],
+                              "steps": 0}
+                elif plan_route.kind == "create":
+                    try:
+                        checkpoint = build_plan_checkpoint(body.content, plan_decision)
+                    except ValueError:
+                        # An invalid model plan proposal cannot intercept a
+                        # standalone action or grant any write permission.
+                        plan_decision = None
+                    else:
+                        result = {"run_id": turn_id, "status": "partial",
+                                  "termination_reason": "plan_created_pending_execution",
+                                  "answer": "已建立计划，尚未执行任何步骤。请指定执行步骤。",
+                                  "trace": [{"step": 0, "type": "plan_created"}],
+                                  "steps": 0, "plan": checkpoint["steps"],
+                                  "plan_revision": checkpoint["revision"],
+                                  "plan_events": [{"event": "plan_created",
+                                                   "revision": checkpoint["revision"]}],
+                                  "plan_checkpoint": checkpoint}
+                elif plan_route.kind == "missing_plan":
+                    result = {"run_id": turn_id, "status": "partial",
+                              "termination_reason": "plan_not_found",
+                              "answer": "没有可继续执行的已保存计划，请先建立计划。",
+                              "trace": [{"step": 0, "type": "plan_not_found"}],
+                              "steps": 0}
+                elif plan_route.kind in {"execute_first", "resume"}:
+                    # For live structured routing, a saved-plan proposal must
+                    # be independently confirmed against the CURRENT request.
+                    # Rejection returns to ordinary request handling; it must
+                    # never turn a standalone calculation into a plan step.
+                    if agent_decider is None and execution_policy is None:
+                        confirmed_plan_execution = await review_plan_execution_authorization(
+                            HTTPUnderstandingModel(
+                                settings.model_provider, settings.model_base_url,
+                                settings.model_api_key, settings.model_timeout_seconds,
+                                settings.model_max_output_tokens),
+                            settings.understanding_strong_model, body.content,
+                            existing_checkpoint, plan_route.kind)
+                        if not confirmed_plan_execution:
+                            plan_route = resolve_plan_admission(
+                                type(plan_decision)(intent="other"),
+                                existing_checkpoint=existing_checkpoint)
+                    if plan_route.kind in {"execute_first", "resume"}:
+                        # An explicit first-step request is already bounded. Only
+                        # a broad resume proposal needs a separate scope check;
+                        # ambiguous scope never widens single-step authority.
+                        if plan_route.kind == "execute_first":
+                            plan_control = "execute_first"
+                        elif agent_decider is None and execution_policy is None:
+                            scope = await review_plan_execution_scope(
+                                HTTPUnderstandingModel(
+                                    settings.model_provider, settings.model_base_url,
+                                    settings.model_api_key, settings.model_timeout_seconds,
+                                    settings.model_max_output_tokens),
+                                settings.understanding_strong_model, body.content)
+                            plan_control = "resume" if scope == "all" else "execute_first"
+                        else:
+                            plan_control = plan_route.kind
+                        # A completed checkpoint is terminal: subsequent continuation
+                        # requests are read-only status checks, never new tool work.
+                        completed_plan = None
+                        if existing_checkpoint:
+                            try:
+                                completed_plan = PlanLedger.restore(existing_checkpoint)
+                            except (ValueError, TypeError):
+                                completed_plan = None
+                        if (completed_plan is not None
+                                and completed_plan.snapshot()
+                                and all(step["status"] == "completed"
+                                        for step in completed_plan.snapshot())):
+                            result = {"run_id": turn_id, "status": "completed",
+                                      "termination_reason": "plan_already_completed",
+                                      "answer": "当前计划所有步骤均已完成，没有剩余待执行步骤；本次未重新调用任何工具。",
+                                      "trace": [{"step": 0, "type": "plan_already_completed"}],
+                                      "steps": 0, "plan": completed_plan.snapshot(),
+                                      "plan_revision": completed_plan.revision,
+                                      "plan_events": [],
+                                      "plan_checkpoint": existing_checkpoint}
+                        elif (plan_control == "execute_first"
+                              and completed_plan is not None
+                              and completed_plan.snapshot()
+                              and completed_plan.snapshot()[0]["status"] == "completed"):
+                            result = {"run_id": turn_id, "status": "partial",
+                                      "termination_reason": "plan_first_step_already_completed",
+                                      "answer": "已保存计划的第一步已经完成，本轮不会执行下一步。如需执行下一未完成步骤，请明确提出。",
+                                      "trace": [{"step": 0, "type": "plan_first_step_already_completed"}],
+                                      "steps": 0, "plan": completed_plan.snapshot(),
+                                      "plan_revision": completed_plan.revision,
+                                      "plan_events": [],
+                                      "plan_checkpoint": existing_checkpoint}
+                        elif execution_mode == "respond_only" and existing_checkpoint:
+                            # Reuse the identical current-turn authorization
+                            # evidence instead of asking a model twice.
+                            authorized = (confirmed_plan_execution
+                                if agent_decider is None and execution_policy is None
+                                else await review_plan_execution_authorization(
+                                    HTTPUnderstandingModel(
+                                        settings.model_provider, settings.model_base_url,
+                                        settings.model_api_key, settings.model_timeout_seconds,
+                                        settings.model_max_output_tokens),
+                                    settings.understanding_strong_model,
+                                    body.content, existing_checkpoint, plan_decision.intent))
+                            if authorized:
+                                # Re-review can only permit the saved, read-only,
+                                # schema-bound pending steps, never arbitrary tools.
+                                execution_mode = "read_only"
+                                execution_target = "tool_action"
+                        if result is None and execution_mode == "respond_only":
+                            result = {"run_id": turn_id, "status": "partial",
+                                      "termination_reason": "execution_not_authorized",
+                                      "answer": "当前请求未获得计划工具执行许可。",
+                                      "trace": [{"step": 0, "type": "plan_execution_denied"}],
+                                      "steps": 0}
+                        elif result is None and existing_checkpoint:
+                            plan_control = plan_control or plan_decision.intent
             if result is None:
                 decider = agent_decider if agent_decider is not None else NativeToolDecision(settings)
                 result = await AgentLoop(decider, task_store=ConversationTaskStore(Session, cid),
@@ -271,9 +684,17 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                     skill_budget_chars=settings.skill_budget_chars).run(body.content, history=context,
                                           plan_checkpoint=existing_checkpoint,
                                           understanding_result=interpretation,
-                                          execution_mode=execution_mode)
+                                          execution_mode=execution_mode,
+                                          plan_control=plan_control)
             if result["status"] in {"completed", "partial"}:
                 answer, status = result["answer"], result["status"]
+                if status == "partial" and (
+                    result.get("termination_reason") == "needs_input"
+                    or any(t.get("type") == "goal_clarification"
+                           for t in result.get("trace", []))):
+                    failure_code = ("needs_input:" + result["pending_action"]
+                                    if result.get("pending_action") in REQUIRED_USER_VALUES
+                                    else "needs_input")
             else:
                 status = result["status"]
                 failure_code = result.get("failure_code") or status
@@ -281,6 +702,40 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
         except UnderstandingError as exc:
             status, answer = "provider_error", ""
             failure_code = exc.code
+            # Only fixed-category metadata; never return prompts, values, stack traces,
+            # arbitrary exception messages, model output, or credentials.
+            roles = {"light", "strong"}
+            outcomes = {"valid", "semantic_review_required", "structured_schema_error",
+                        "structured_consistency_error", "unverified_goal_reference",
+                        "model_timeout", "model_http_status", "model_transport_error",
+                        "model_invalid_response", "model_empty_content",
+                        "missing_credentials", "unsupported_provider",
+                        "invalid_structured_result"}
+            diagnostics = {"missing_goal", "clarification_status_mismatch",
+                           "clarification_requires_reason_and_question",
+                           "model_level_consistency", "json_or_structure"}
+            for item in exc.attempts[:4]:
+                if not isinstance(item, dict):
+                    continue
+                role = item.get("role")
+                outcome = item.get("outcome")
+                if role not in roles or outcome not in outcomes:
+                    continue
+                entry = {"role": role, "outcome": outcome}
+                retry = item.get("retry")
+                if type(retry) is int and 0 <= retry <= 1:
+                    entry["retry"] = retry
+                duration = item.get("duration_ms")
+                if type(duration) is int and 0 <= duration <= 600000:
+                    entry["duration_ms"] = duration
+                detail = item.get("diagnostic")
+                if detail in diagnostics:
+                    entry["diagnostic"] = detail
+                elif isinstance(detail, str) and detail in {
+                        "field:goal", "field:change", "field:clarification",
+                        "field:status", "field:schema_version"}:
+                    entry["diagnostic"] = detail
+                understanding_attempts.append(entry)
         except Exception as exc:
             log.warning("conversation Agent failed turn=%s class=%s", turn_id, type(exc).__name__)
             status, answer = "provider_error", ""
@@ -297,7 +752,7 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                 if status in {"completed", "partial"} and result.get("plan_checkpoint"):
                     plan_store.save_in_session(db, result["plan_checkpoint"])
                 if (status in {"completed", "partial"} and parsed_result is not None
-                        and execution_mode not in {"respond_only", "read_only"}
+                        and not suppress_persistent_routing and execution_mode not in {"respond_only", "read_only"}
                         and execution_target == "goal_state"
                         and previous_goal is not None
                         and not any(item.get("type") == "goal_clarification"
@@ -335,8 +790,30 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                       "turn_id": turn_id,
                                       "status": status,
                                       "decision_steps": decision_steps,
-                                      "trace_summary": safe_trace})
-        return {**result, "conversation_id": cid, "message_id": assistant_id}
+                                      "trace_summary": safe_trace,
+                                       **({"understanding_attempts": understanding_attempts}
+                                          if failure_code == "understanding_unavailable"
+                                          else {})})
+        # M2 diagnostic shadow is AFTER legacy durable finalization.
+        # No effect on tool execution, plan mutation or persisted Turn state.
+        shadow = None
+        if (settings.route_shadow_enabled
+                and settings.understanding_strategy == "structured"
+                and settings.model_provider != "fake"
+                and agent_decider is None
+                and body.goal_confirmation is None):
+            shadow = await evaluate_shadow(
+                HTTPUnderstandingModel(
+                    settings.model_provider, settings.model_base_url,
+                    settings.model_api_key, settings.model_timeout_seconds,
+                    settings.model_max_output_tokens),
+                settings.understanding_strong_model, body.content,
+                has_plan=existing_checkpoint is not None,
+                pending_action=pending_action)
+        response_data = {**result, "conversation_id": cid, "message_id": assistant_id}
+        if shadow is not None:
+            response_data["route_shadow"] = {**shadow, **compare_to_legacy(shadow, result)}
+        return response_data
 
     @app.get("/conversations/{cid}/turns/{turn_id}/diagnostics")
     def turn_diagnostics(cid: str, turn_id: str, uid=Depends(user_id)):

@@ -34,7 +34,7 @@ def original_checkpoint():
 def test_continue_pending_steps_without_replanning():
     out = asyncio.run(AgentLoop(NoMoreDecisions(), mcp_client=FakeMCP()).run(
         "请继续完成刚才计划中尚未完成的步骤，并给出最终结果。",
-        plan_checkpoint=original_checkpoint(), include_evidence=True))
+        plan_checkpoint=original_checkpoint(), plan_control="resume", include_evidence=True))
     assert out["status"] == "completed"
     assert out["plan_revision"] == 1
     assert "retrieval-augmented generation" in out["answer"]
@@ -55,7 +55,7 @@ class FailMCP:
 def test_failed_pending_tool_keeps_checkpoint_for_retry():
     out = asyncio.run(AgentLoop(NoMoreDecisions(), mcp_client=FailMCP()).run(
         "请继续完成原计划尚未完成的步骤。",
-        plan_checkpoint=original_checkpoint()))
+        plan_checkpoint=original_checkpoint(), plan_control="resume"))
     assert out["status"] == "partial"
     assert [x["status"] for x in out["plan"]] == ["completed", "pending", "pending"]
     assert out["plan_revision"] == 1

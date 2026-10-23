@@ -17,7 +17,8 @@ class RecoveringDecider:
 
 def test_model_corrects_tool_failure_using_observation():
     result = asyncio.run(AgentLoop(RecoveringDecider()).run("修复计算错误后得到结果"))
-    assert result["status"] == "completed"
+    assert result["status"] == "partial"
+    assert result["termination_reason"] == "unresolved_tool_failure"
     tools = [x for x in result["trace"] if x["type"] == "tool"]
     assert [x["ok"] for x in tools] == [False, True]
     assert result["steps"] == 3
