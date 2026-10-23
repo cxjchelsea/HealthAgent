@@ -272,13 +272,18 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                     settings.understanding_strong_model,
                     body.content, existing_checkpoint)
                 if revision_proposal.intent != "revise":
-                    edit_unresolved = await check_plan_edit_intent(
-                        HTTPUnderstandingModel(
-                            settings.model_provider, settings.model_base_url,
-                            settings.model_api_key, settings.model_timeout_seconds,
-                            settings.model_max_output_tokens),
-                        settings.understanding_strong_model,
-                        body.content, existing_checkpoint)
+                    edit_unresolved = revision_proposal.edit_requested
+                    if edit_unresolved is None:
+                        # Compatibility for legacy/test proposals. Current
+                        # production schema carries this semantic signal in
+                        # the first revision review, avoiding another call.
+                        edit_unresolved = await check_plan_edit_intent(
+                            HTTPUnderstandingModel(
+                                settings.model_provider, settings.model_base_url,
+                                settings.model_api_key, settings.model_timeout_seconds,
+                                settings.model_max_output_tokens),
+                            settings.understanding_strong_model,
+                            body.content, existing_checkpoint)
                     if edit_unresolved:
                         result = {"run_id": turn_id, "status": "partial",
                                   "termination_reason": "plan_revision_conflict",
