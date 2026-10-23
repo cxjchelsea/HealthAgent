@@ -1,15 +1,4 @@
 
-# These API regression fixtures explicitly supply a formal saved-plan request.
-# Stub only the new semantic admission review; the actual production model
-# contract is tested separately in test_s25_02_f03_plan_admission.py.
-import pytest
-
-@pytest.fixture(autouse=True)
-def admit_fixture_saved_plan(monkeypatch):
-    async def admitted(*args, **kwargs):
-        return True
-    monkeypatch.setattr("apps.api.main.review_plan_creation_reference", admitted)
-
 """D05 API regression: conflicting plan edit bypasses generic Understanding 503."""
 import json
 from fastapi.testclient import TestClient
@@ -18,6 +7,7 @@ from agent.understanding import HTTPUnderstandingModel
 from agent.plan_intent import PlanRequest
 from agent.plan_revision_review import RevisionProposal
 from apps.api.main import create_app
+import pytest
 
 
 def valid_understanding():
@@ -106,3 +96,12 @@ def test_d05_valid_second_step_edit_updates_revision(tmp_path, monkeypatch):
         assert result["plan"][0] == first["plan"][0]
         assert result["plan"][1]["expected_arguments"]["expression"] == "9*9"
         assert result["steps"] == 0
+
+# These API regression fixtures explicitly supply a formal saved-plan request.
+# Stub only the new semantic admission review; the actual production model
+# contract is tested separately in test_s25_02_f03_plan_admission.py.
+@pytest.fixture(autouse=True)
+def admit_fixture_saved_plan(monkeypatch):
+    async def admitted(*args, **kwargs):
+        return True
+    monkeypatch.setattr("apps.api.main.review_plan_creation_reference", admitted)
