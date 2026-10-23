@@ -19,7 +19,8 @@ class RevisionProposal(BaseModel):
 async def review_plan_revision(provider: HTTPUnderstandingModel, model: str,
                                message: str, checkpoint: dict) -> RevisionProposal:
     steps = PlanLedger.restore(checkpoint).snapshot()
-    raw = await provider.complete(model=model, messages=[
+    try:
+        raw = await provider.complete(model=model, messages=[
         {"role": "system", "content":
          "Return JSON matching schema. Classify a request to EDIT an existing saved "
          "plan as revise, otherwise other. For revise identify explicit 1-based "
@@ -34,11 +35,10 @@ async def review_plan_revision(provider: HTTPUnderstandingModel, model: str,
                  "tool": s.get("expected_tool"),
                  "arguments": s.get("expected_arguments"), "status": s["status"]}
                 for i, s in enumerate(steps)]}, ensure_ascii=False)}
-    ], response_schema=RevisionProposal.model_json_schema())
-    try:
+        ], response_schema=RevisionProposal.model_json_schema())
         return RevisionProposal.model_validate_json(raw)
-    except ValueError as exc:
-        raise UnderstandingError("plan_revision_intent_invalid") from exc
+    except (UnderstandingError, ValueError, TypeError):
+        return RevisionProposal(intent="other")
 
 
 def apply_plan_revision(checkpoint: dict, message: str,
