@@ -176,7 +176,7 @@ def test_clarification_mismatch_still_rejected_instead_of_repaired():
 
 
 def test_shadow_reports_target_without_granting_tool_permission():
-    data = route(route_target="pending_clarification",
+    data = route(source_quote="", route_target="pending_clarification",
                  reference={"kind":"pending_slot","pending_field":"term"})
     outcome = asyncio.run(evaluate_shadow(
         Stub(data), "fake", "RAG", has_plan=False,
