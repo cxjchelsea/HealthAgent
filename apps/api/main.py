@@ -560,62 +560,79 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                               "trace": [{"step": 0, "type": "plan_not_found"}],
                               "steps": 0}
                 elif plan_route.kind in {"execute_first", "resume"}:
-                    # An explicit first-step request is already bounded. Only
-                    # a broad resume proposal needs a separate scope check;
-                    # ambiguous scope never widens single-step authority.
-                    if plan_route.kind == "execute_first":
-                        plan_control = "execute_first"
-                    elif agent_decider is None and execution_policy is None:
-                        scope = await review_plan_execution_scope(
+                    # For live structured routing, a saved-plan proposal must
+                    # be independently confirmed against the CURRENT request.
+                    # Rejection returns to ordinary request handling; it must
+                    # never turn a standalone calculation into a plan step.
+                    if agent_decider is None and execution_policy is None:
+                        confirmed_plan_execution = await review_plan_execution_authorization(
                             HTTPUnderstandingModel(
                                 settings.model_provider, settings.model_base_url,
                                 settings.model_api_key, settings.model_timeout_seconds,
                                 settings.model_max_output_tokens),
-                            settings.understanding_strong_model, body.content)
-                        plan_control = "resume" if scope == "all" else "execute_first"
-                    else:
-                        plan_control = plan_route.kind
-                    # A completed checkpoint is terminal: subsequent continuation
-                    # requests are read-only status checks, never new tool work.
-                    completed_plan = None
-                    if existing_checkpoint:
-                        try:
-                            completed_plan = PlanLedger.restore(existing_checkpoint)
-                        except (ValueError, TypeError):
-                            completed_plan = None
-                    if (completed_plan is not None
-                            and completed_plan.snapshot()
-                            and all(step["status"] == "completed"
-                                    for step in completed_plan.snapshot())):
-                        result = {"run_id": turn_id, "status": "completed",
-                                  "termination_reason": "plan_already_completed",
-                                  "answer": "当前计划所有步骤均已完成，没有剩余待执行步骤；本次未重新调用任何工具。",
-                                  "trace": [{"step": 0, "type": "plan_already_completed"}],
-                                  "steps": 0, "plan": completed_plan.snapshot(),
-                                  "plan_revision": completed_plan.revision,
-                                  "plan_events": [],
-                                  "plan_checkpoint": existing_checkpoint}
-                    elif execution_mode == "respond_only" and existing_checkpoint:
-                        authorized = await review_plan_execution_authorization(
-                            HTTPUnderstandingModel(
-                                settings.model_provider, settings.model_base_url,
-                                settings.model_api_key, settings.model_timeout_seconds,
-                                settings.model_max_output_tokens),
-                            settings.understanding_strong_model,
-                            body.content, existing_checkpoint, plan_decision.intent)
-                        if authorized:
-                            # Re-review can only permit the saved, read-only,
-                            # schema-bound pending steps, never arbitrary tools.
-                            execution_mode = "read_only"
-                            execution_target = "tool_action"
-                    if result is None and execution_mode == "respond_only":
-                        result = {"run_id": turn_id, "status": "partial",
-                                  "termination_reason": "execution_not_authorized",
-                                  "answer": "当前请求未获得计划工具执行许可。",
-                                  "trace": [{"step": 0, "type": "plan_execution_denied"}],
-                                  "steps": 0}
-                    elif result is None and existing_checkpoint:
-                        plan_control = plan_control or plan_decision.intent
+                            settings.understanding_strong_model, body.content,
+                            existing_checkpoint, plan_route.kind)
+                        if not confirmed_plan_execution:
+                            plan_route = resolve_plan_admission(
+                                type(plan_decision)(intent="other"),
+                                existing_checkpoint=existing_checkpoint)
+                    if plan_route.kind in {"execute_first", "resume"}:
+                        # An explicit first-step request is already bounded. Only
+                        # a broad resume proposal needs a separate scope check;
+                        # ambiguous scope never widens single-step authority.
+                        if plan_route.kind == "execute_first":
+                            plan_control = "execute_first"
+                        elif agent_decider is None and execution_policy is None:
+                            scope = await review_plan_execution_scope(
+                                HTTPUnderstandingModel(
+                                    settings.model_provider, settings.model_base_url,
+                                    settings.model_api_key, settings.model_timeout_seconds,
+                                    settings.model_max_output_tokens),
+                                settings.understanding_strong_model, body.content)
+                            plan_control = "resume" if scope == "all" else "execute_first"
+                        else:
+                            plan_control = plan_route.kind
+                        # A completed checkpoint is terminal: subsequent continuation
+                        # requests are read-only status checks, never new tool work.
+                        completed_plan = None
+                        if existing_checkpoint:
+                            try:
+                                completed_plan = PlanLedger.restore(existing_checkpoint)
+                            except (ValueError, TypeError):
+                                completed_plan = None
+                        if (completed_plan is not None
+                                and completed_plan.snapshot()
+                                and all(step["status"] == "completed"
+                                        for step in completed_plan.snapshot())):
+                            result = {"run_id": turn_id, "status": "completed",
+                                      "termination_reason": "plan_already_completed",
+                                      "answer": "当前计划所有步骤均已完成，没有剩余待执行步骤；本次未重新调用任何工具。",
+                                      "trace": [{"step": 0, "type": "plan_already_completed"}],
+                                      "steps": 0, "plan": completed_plan.snapshot(),
+                                      "plan_revision": completed_plan.revision,
+                                      "plan_events": [],
+                                      "plan_checkpoint": existing_checkpoint}
+                        elif execution_mode == "respond_only" and existing_checkpoint:
+                            authorized = await review_plan_execution_authorization(
+                                HTTPUnderstandingModel(
+                                    settings.model_provider, settings.model_base_url,
+                                    settings.model_api_key, settings.model_timeout_seconds,
+                                    settings.model_max_output_tokens),
+                                settings.understanding_strong_model,
+                                body.content, existing_checkpoint, plan_decision.intent)
+                            if authorized:
+                                # Re-review can only permit the saved, read-only,
+                                # schema-bound pending steps, never arbitrary tools.
+                                execution_mode = "read_only"
+                                execution_target = "tool_action"
+                        if result is None and execution_mode == "respond_only":
+                            result = {"run_id": turn_id, "status": "partial",
+                                      "termination_reason": "execution_not_authorized",
+                                      "answer": "当前请求未获得计划工具执行许可。",
+                                      "trace": [{"step": 0, "type": "plan_execution_denied"}],
+                                      "steps": 0}
+                        elif result is None and existing_checkpoint:
+                            plan_control = plan_control or plan_decision.intent
             if result is None:
                 decider = agent_decider if agent_decider is not None else NativeToolDecision(settings)
                 result = await AgentLoop(decider, task_store=ConversationTaskStore(Session, cid),
