@@ -18,7 +18,8 @@ from agent.argument_provenance import REQUIRED_USER_VALUES
 from agent.pending_reply import classify_pending_reply
 from agent.capability_review import review_unsupported_capability
 from agent.plan_intent import review_plan_intent, build_plan_checkpoint
-from agent.plan_control import admit_plan_control, review_missing_plan_reference
+from agent.plan_control import (admit_plan_control, review_missing_plan_reference,
+                                review_plan_creation_reference)
 from agent.plan_execution_review import review_plan_execution_authorization
 from agent.plan_execution_scope import review_plan_execution_scope
 from agent.plan_revision_review import review_plan_revision, apply_plan_revision, check_plan_edit_intent, explicit_step_binding_conflict
@@ -485,7 +486,18 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                     settings.understanding_strong_model,
                     body.content, bool(existing_checkpoint))
                 if plan_decision.intent == "plan_only":
-                    if existing_checkpoint:
+                    # One model's plan_only label cannot turn an ordinary tool
+                    # request into a persisted execution plan. Check the user's
+                    # plan-creation intent independently before any checkpoint.
+                    admitted_creation = await review_plan_creation_reference(
+                        HTTPUnderstandingModel(
+                            settings.model_provider, settings.model_base_url,
+                            settings.model_api_key, settings.model_timeout_seconds,
+                            settings.model_max_output_tokens),
+                        settings.understanding_strong_model, body.content)
+                    if not admitted_creation:
+                        plan_decision = None
+                    elif existing_checkpoint:
                         result = {"run_id": turn_id, "status": "partial",
                                   "termination_reason": "existing_plan_requires_revision",
                                   "answer": "会话已有计划，请先确认修改现有计划。",
