@@ -95,6 +95,52 @@ async def verify_execute_policy(provider: HTTPUnderstandingModel, model_name: st
     return decision
 
 
+class PolicyBoundaryReview(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    explicit_read_only_tool_request: bool
+    explicit_mutation_request: bool
+
+
+async def reconcile_execution_policy(
+    provider: HTTPUnderstandingModel, model_name: str,
+    message: str, interpretation: dict,
+    decision: ExecutionPolicyDecision,
+) -> ExecutionPolicyDecision:
+    """One boundary review for either questionable non-read-only mode.
+
+    The original user request is authoritative for mutation semantics.
+    A review cannot manufacture tool rights: it may only downscope execute
+    or promote respond_only to the strictly read-only visibility class.
+    """
+    if decision.mode == "read_only":
+        return decision
+    raw = await provider.complete(
+        model=model_name,
+        messages=[
+            {"role": "system", "content":
+             "Review only the CURRENT user request, not historical context. "
+             "Return JSON fields explicit_read_only_tool_request and "
+             "explicit_mutation_request. A true read-only request asks to "
+             "actually use a calculation, retrieval, time or listing tool, "
+             "not merely explain or hypothetically describe it. A true mutation "
+             "request explicitly asks to save/create/update/delete persisted "
+             "state, not produce an unsaved draft. Never infer write consent."},
+            {"role": "user", "content": json.dumps(
+                {"message": message, "understanding": interpretation},
+                ensure_ascii=False)},
+        ],
+        response_schema=PolicyBoundaryReview.model_json_schema())
+    try:
+        review = PolicyBoundaryReview.model_validate_json(raw)
+    except ValueError as exc:
+        raise UnderstandingError("execution_policy_review_invalid") from exc
+    if decision.mode == "respond_only" and review.explicit_read_only_tool_request:
+        return ExecutionPolicyDecision(mode="read_only", target="tool_action")
+    if decision.mode == "execute" and not review.explicit_mutation_request:
+        return ExecutionPolicyDecision(mode="read_only", target="tool_action")
+    return decision
+
+
 async def decide_execution_policy_detail(
     provider: HTTPUnderstandingModel, model_name: str, current_message: str,
     interpretation: dict,
