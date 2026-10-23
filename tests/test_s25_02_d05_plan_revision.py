@@ -47,3 +47,12 @@ def test_d05_disallows_rewriting_completed_step():
                                 expected_tool="calculate", old_argument="8*8",
                                 new_argument="9*9")
     assert apply_plan_revision(saved, "将第二步计算 8*8 改成 9*9", proposal) is None
+
+
+def test_d05_model_cannot_silently_change_explicit_first_step_to_second():
+    saved = checkpoint()
+    proposal = RevisionProposal(intent="revise", step_number=2,
+                                expected_tool="calculate", old_argument="8*8",
+                                new_argument="9*9")
+    assert apply_plan_revision(
+        saved, "第一步不是计算 8*8 而是 9*9", proposal) is None
