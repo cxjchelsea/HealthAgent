@@ -19,6 +19,7 @@ from agent.pending_reply import classify_pending_reply
 from agent.capability_review import review_unsupported_capability
 from agent.plan_intent import review_plan_intent, build_plan_checkpoint
 from agent.plan_execution_review import review_plan_execution_authorization
+from agent.plan_execution_scope import review_plan_execution_scope
 from agent.plan_revision_review import review_plan_revision, apply_plan_revision, check_plan_edit_intent, explicit_step_binding_conflict
 from agent.tools import TOOL_SCHEMAS
 from agent.mcp_stdio_client import StdioMCPClient
@@ -509,6 +510,23 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                                        "revision": checkpoint["revision"]}],
                                       "plan_checkpoint": checkpoint}
                 elif plan_decision.intent in {"execute_first", "resume"}:
+                    # Scope is independently reviewed against the *current* request.
+                    # An uncertain result never expands execute_first into resume.
+                    if agent_decider is None and execution_policy is None:
+                        scope = await review_plan_execution_scope(
+                            HTTPUnderstandingModel(
+                                settings.model_provider, settings.model_base_url,
+                                settings.model_api_key, settings.model_timeout_seconds,
+                                settings.model_max_output_tokens),
+                            settings.understanding_strong_model, body.content)
+                        if scope == "all":
+                            plan_control = "resume"
+                        elif scope == "one":
+                            plan_control = "execute_first"
+                        else:
+                            plan_control = "execute_first"
+                    else:
+                        plan_control = plan_decision.intent
                     # A completed checkpoint is terminal: subsequent continuation
                     # requests are read-only status checks, never new tool work.
                     completed_plan = None
@@ -549,7 +567,7 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                   "trace": [{"step": 0, "type": "plan_execution_denied"}],
                                   "steps": 0}
                     elif result is None and existing_checkpoint:
-                        plan_control = plan_decision.intent
+                        plan_control = plan_control or plan_decision.intent
                     elif result is None:
                         result = {"run_id": turn_id, "status": "partial",
                                   "termination_reason": "plan_not_found",
