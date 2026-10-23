@@ -121,6 +121,10 @@ def hypothetical_admission(route: ShadowRoute, *, has_plan: bool,
         return "existing_saved_plan"
     if route.route_target == "pending_clarification" and pending_action is None:
         return "missing_pending_action"
+    if route.primary_route == "clarify" and route.route_target == "pending_clarification":
+        # A model may request another question, but a bound reply is not
+        # authority to re-open an already answered pending tool slot.
+        return "pending_clarification_requires_host_review"
     if route.reference.kind == "pending_slot" and (pending_action is None or
             route.reference.pending_field is None):
         return "pending_binding_unverified"
@@ -158,6 +162,16 @@ If there is NO saved plan, a reference to continuing one is still a
 plan_resume semantic proposal: lack of checkpoint is a HOST denial, not an
 excuse to invent steps.
 Routing distinctions (semantic proposals ONLY, never authorizations):
+- Decide between plan_create and agent_loop from the REQUESTED PERSISTED
+  OBJECT and its lifecycle. A single task has one title and is immediately
+  created by the task tool. A formal executable plan has ordered steps and
+  is stored for later stepwise execution. Both can contain the word "task".
+- Answering an existing missing tool argument completes a bound pending slot:
+  route agent_loop, target pending_clarification, not clarify. Clarify asks
+  for information that is STILL missing; don't ask again after the user
+  supplied the requested single value.
+- When has_pending_action=false, a new, complete read-only tool request
+  cannot be targeted at pending_clarification even if a saved plan exists.
 - The word "task" is not evidence of a multi-step saved plan. A concrete
   one-off task created in a task manager must remain a tool action.
 - Pending-action context and saved-plan context are separate: if a user gives
@@ -203,7 +217,8 @@ async def evaluate_shadow(provider: HTTPUnderstandingModel, model_name: str,
             messages=[{"role":"system","content":PROMPT},
                       {"role":"user","content":json.dumps({
                           "message":message,"has_saved_plan":has_plan,
-                          "has_pending_action":pending_action is not None
+                          "has_pending_action":pending_action is not None,
+                          "pending_action_tool":pending_action
                       },ensure_ascii=False)}]), timeout=timeout_s)
         result = ShadowRoute.model_validate_json(raw)
         verify_source_spans(result, message)
