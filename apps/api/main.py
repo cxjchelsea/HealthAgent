@@ -342,6 +342,8 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                 parsed_result = parsed["result"]
                 interpretation = parsed_result.model_dump()
                 if (pending_action in REQUIRED_USER_VALUES
+                        and (parsed["result"].clarification.required
+                             or pending_action == "mcp_reference_lookup")
                         and body.goal_confirmation is None):
                     pending_reply_kind = await classify_pending_reply(
                         HTTPUnderstandingModel(
