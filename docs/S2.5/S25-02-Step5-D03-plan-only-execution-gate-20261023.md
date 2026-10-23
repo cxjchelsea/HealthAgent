@@ -21,3 +21,14 @@
 最新代码 CI：<https://github.com/cxjchelsea/HealthAgent/actions/runs/39884855560> **SUCCESS / 222 passed / 3 skipped**，code HEAD `8be8182ebf44b7e9e22605c3f75d04ceed992a95`。
 
 人工使用**完全相同**的第一轮提示词，要求 `status=partial`、`termination_reason=plan_created_pending_execution`、`plan_revision=1`、两步 `pending`，无 `mcp_reference_lookup/calculate` 执行 Trace。第二轮指定只执行第一步，看到真实 MCP 工具成功、第一步 completed 第二步 pending。第三轮只执行剩余步骤，验证 calculate 8*8=64、计划全 completed、不会重复第一步。记录三轮 `trace/plan/plan_checkpoint/execution_mode/status`。人工未通过前 D03 保留 RETEST REQUIRED。
+
+
+## D03-F02 — 计划续接被错误拒绝（2026-10-23）
+
+真实 Qwen D03 三轮复测：第一轮只建计划、未执行，第二轮 MCP 第一步成功、第二步 pending，第三轮明确说“请继续完成刚才计划中剩余的步骤，不要重复第一步”，但 Execution Policy 把该请求分类为 `respond_only`。此前分支按设计拒绝，返回 `partial/execution_not_authorized` 和 `plan_execution_denied`，导致第二步不能继续。这是**策略复核不充分**，不是允许无条件绕过 `respond_only` 的理由。
+
+新增 `agent/plan_execution_review.py`：仅在用户当前请求已被 `review_plan_intent` 判为 `execute_first` 或 `resume`，且独立 Execution Policy 为 `respond_only`，又确实存在从该会话 PlanStore 读取的可信计划检查点时，才启动受限的 `PlanExecutionReview`。复核的上下文包含当前原文、待执行步骤数量和目标，而不是把旧计划本身当作最新执行授权。复核只回答“用户本轮是否明确授权执行待完成步骤”。必须先通过 `PlanLedger.restore` 的结构检查，且所有待执行步骤必须是带参数绑定的允许只读工具。复核确认为真时，仅将本轮模式收缩到 `read_only/tool_action` 并交给既有步骤恢复执行；假、格式非法、模型不可用、无检查点、步骤绑定不可信时都继续拒绝。绝不授予 `execute` 或开放其他工具。
+
+`agent/loop.py` 的直接计划恢复路径同步返回实际 `execution_mode`，方便人工审计权限来源。新增正式 Conversation API + SQLite 三轮回归：模拟第三轮 Execution Policy 误判 `respond_only` → 有证据的独立复核 → 只执行剩余第二步，PlanLedger 全部 completed，Trace 不重复第一步；另有复核拒绝时保持 `execution_not_authorized` 且零工具调用的负例。
+
+代码提交 `a971cd56faa41186d4e3f3a69447421788c44d78`；CI <https://github.com/cxjchelsea/HealthAgent/actions/runs/39885878065>：SUCCESS，224 passed / 3 skipped。本机制的独立复核仍是概率性模型判断，不能证明真实 Qwen 稳定百分百通过。必须在相同对话、相同第三轮用户原文中进行真实模型复测，核查 `status=completed`、`execution_mode=read_only`、`calculate` 执行结果 64、`plan` 两步 completed、无重复 MCP，方可正式关闭 D03-F02。
