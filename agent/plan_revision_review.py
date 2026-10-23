@@ -1,5 +1,6 @@
 """Guarded plan revision proposal: validate exact target and prior binding; never execute."""
 import json
+import re
 from typing import Literal
 from pydantic import BaseModel, ConfigDict
 from agent.planning import PlanLedger
@@ -49,6 +50,13 @@ def apply_plan_revision(checkpoint: dict, message: str,
     n = proposal.step_number
     if (proposal.intent != "revise" or type(n) is not int
             or n < 1 or n > len(steps)):
+        return None
+    # Step numbering is checked against explicit user wording, not model claims.
+    mentions = re.findall(r"第([一二三四五六七八1-8])步", message)
+    ordinals = {"一": 1, "二": 2, "三": 3, "四": 4,
+                "五": 5, "六": 6, "七": 7, "八": 8}
+    if mentions and any(ordinals.get(x, int(x) if x.isdigit() else -1) != n
+                        for x in mentions):
         return None
     target = steps[n - 1]
     if (target["status"] != "pending"
