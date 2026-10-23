@@ -35,7 +35,7 @@ Observation, retry budget, PlanLedger evidence and terminal statuses.
 | CC-04 | Capability-review interprets natural-language tool names separately from registered tool selection | False `unsupported_capability` | OPEN: produce unsupported-capability outcome only from grounded registry facts, never from a model's invented label |
 | CC-05 | Pending clarification has separate classifier; prior `needs_input:<tool>` recorded in Turn | Replay/ambiguous reply can cause wrong operation | KEEP the persisted pending-action provenance; consolidate semantic understanding without removing source/owner checks |
 | CC-06 | Revision and plan scope checks are partly repeated and include contextual/error strings hardcoding specific RAG/8*8 steps | Generality and regression risk | OPEN: derive conflict descriptions from trusted current PlanLedger, not hardcoded sample steps |
-| CC-07 | Read-only execution override after spurious clarification mutates `parsed_result=None` while retaining interpretation | Implicit coupling, difficult to reason about GoalStore | OPEN: replace with explicit immutable route result and Host policy fields |
+| CC-07 | Read-only execution override previously set `parsed_result=None` while retaining interpretation | Implicit coupling, difficult to reason about GoalStore | PARTIAL FIX: retain Understanding result and use explicit `suppress_persistent_routing` guard for goal/plan admission and goal-store write; full typed routing remains OPEN |
 | CC-08 | PlanLedger checkpoint, allowed tool set, external side effects, Turn idempotency, conversation lock and trace | Critical trust boundaries | PRESERVE; no weakening for classifier convergence |
 
 ## Target control contract (design direction, not yet implemented)
@@ -66,3 +66,7 @@ findings are repaired based on this audit document.
 7. Run all existing D03/D05/D06/E03/E04/E06/F02/F03/F04 API tests, complete CI,
    then a live Qwen multi-phrase matrix. Existing manual PASS is historical
    evidence, not a blanket regression waiver.
+
+## Convergence implementation update
+
+At HEAD `54c580fef24e733086a757f87dfc9f11cb72f144`: F04 clarification override no longer discards parsed understanding data to indirectly skip persistence. The API keeps the original interpretation for AgentLoop and applies explicit `suppress_persistent_routing` at plan admission, goal-state admission and GoalStore save. Regression `tests/test_s25_02_control_convergence_api.py` verifies a real `calculate` division-by-zero Observation with no plan creation under a spurious Understanding clarification. This is an incremental invariant repair; CC-02/03/04 and unified routing are not yet closed.
