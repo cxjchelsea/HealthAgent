@@ -201,6 +201,10 @@ Routing distinctions (semantic proposals ONLY, never authorizations):
   which is a durable plan mutation but NOT tool execution.
 Use EXACTLY one route with a combination allowed by the schema.
 Do not output inconsistent route_target, scope, effect or clarification.
+Reference fields: kind none requires null step_number and null pending_field.
+Cancel pending argument is not saved_step; step_number must remain null.
+One-off task-manager item creation is agent_loop/tool_action, not a durable
+ordered multi-step plan. Host independently checks write authorization.
 Do not fabricate source spans or reference fields; use empty/default
 values if original text does not prove the field."""
 
