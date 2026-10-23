@@ -78,3 +78,12 @@ Added `agent/control_admission.py` with immutable `ClarificationRoute` and `admi
 ## CC-03 plan admission convergence, 2026-10-23
 
 At commit `d74f49913242b94dc936451fc080c0146ec5d7e6`, added immutable `PlanAdmission` and `resolve_plan_admission` to `agent/plan_control.py`, integrated into the formal API, and added the cross-product state/intent admission matrix in `tests/test_s25_02_plan_route_contract.py`. Ordinary requests, new formal plans, existing-plan creation conflicts, missing checkpoints, and saved-plan execution now share one Host route outcome. No independent model classification was eliminated by *this* change; saved plan revision, execution scope and authorization remain separate pending contract-safe consolidation. This work is a **partial** CC-03 implementation, not the complete removal of duplicate semantic reviewers. Real Qwen regression is still required.
+
+## CC-03 duplicate semantic-review reduction — 2026-10-23
+
+Two actual calls were removed/avoided on normal structured routes:
+
+1. A saved-plan `execute_first` proposal now goes directly to bounded first-step execution after Host checks. The independent execution-scope review is still used for `resume` to prevent accidental authorization expansion, and an unclear scope degrades to one step. A regression makes the scope reviewer raise if erroneously called for `execute_first`.
+2. The existing `RevisionProposal` includes `edit_requested` as part of the *same* model output used for revision bindings. An explicit unsuccessful edit proposal reports a safe plan conflict without invoking `check_plan_edit_intent` again. The compatibility fallback remains only when legacy test/provider proposals omit the field. The Host still refuses any mutation without matching current PlanLedger binding, source-grounded old/new values, and valid step state.
+
+These changes reduce real semantic reviews without making a model proposal an authority. Independent plan-execution authorization remains separate when an earlier policy classified a user instruction as text-only. Do not delete that safety check until the policy boundary can be proven equivalent. Live Qwen multi-phrase acceptance remains outstanding.
