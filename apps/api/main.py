@@ -637,6 +637,18 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                       "plan_revision": completed_plan.revision,
                                       "plan_events": [],
                                       "plan_checkpoint": existing_checkpoint}
+                        elif (plan_control == "execute_first"
+                              and completed_plan is not None
+                              and completed_plan.snapshot()
+                              and completed_plan.snapshot()[0]["status"] == "completed"):
+                            result = {"run_id": turn_id, "status": "partial",
+                                      "termination_reason": "plan_first_step_already_completed",
+                                      "answer": "已保存计划的第一步已经完成，本轮不会执行下一步。如需执行下一未完成步骤，请明确提出。",
+                                      "trace": [{"step": 0, "type": "plan_first_step_already_completed"}],
+                                      "steps": 0, "plan": completed_plan.snapshot(),
+                                      "plan_revision": completed_plan.revision,
+                                      "plan_events": [],
+                                      "plan_checkpoint": existing_checkpoint}
                         elif execution_mode == "respond_only" and existing_checkpoint:
                             authorized = await review_plan_execution_authorization(
                                 HTTPUnderstandingModel(
