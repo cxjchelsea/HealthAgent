@@ -119,6 +119,8 @@ def hypothetical_admission(route: ShadowRoute, *, has_plan: bool,
         return "missing_saved_plan"
     if route.primary_route == "plan_create" and has_plan:
         return "existing_saved_plan"
+    if route.primary_route == "plan_create" and not route.source_evidence:
+        return "plan_intent_evidence_unverified"
     if route.route_target == "pending_clarification" and pending_action is None:
         return "missing_pending_action"
     if route.primary_route == "clarify" and route.route_target == "pending_clarification":
