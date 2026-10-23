@@ -118,3 +118,29 @@ def test_clarify_requires_reason_and_question():
                              "question":"查询哪个词？"}
     assert asyncio.run(evaluate_shadow(
         Stub(data),"fake","请计算 19+23",has_plan=False,pending_action=None))["state"] == "valid"
+
+
+def test_legacy_comparison_grounded_and_abstains():
+    from agent.route_shadow import compare_to_legacy
+    shadow = {"state":"valid","route":"plan_create"}
+    match = compare_to_legacy(shadow, {
+        "status":"partial","termination_reason":"plan_created_pending_execution",
+        "trace":[]})
+    assert match["comparison"] == "match"
+    unknown = compare_to_legacy(shadow, {
+        "status":"completed","termination_reason":"model_final",
+        "trace":[{"type":"tool","name":"calculate","ok":True}]})
+    assert unknown["comparison"] == "uncomparable"
+    assert unknown["legacy_tool_calls"] == 1
+    conflict = compare_to_legacy(shadow, {
+        "status":"partial","termination_reason":"plan_revised_pending_execution",
+        "trace":[]})
+    assert conflict["comparison"] == "mismatch"
+
+
+def test_plan_execution_scope_is_not_invented_from_trace():
+    from agent.route_shadow import compare_to_legacy
+    actual = {"status":"completed","trace":[{"type":"plan_resume_execution"}]}
+    same = compare_to_legacy({"state":"valid","route":"plan_resume"},actual)
+    assert same["comparison"] == "compatible_plan_execution"
+    assert same["legacy_route_evidence"] == "saved_plan_execution_unspecified"
