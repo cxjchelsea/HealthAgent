@@ -48,15 +48,15 @@ def test_d03_create_first_resume_no_premature_tool_calls(tmp_path, monkeypatch):
             res=client.post(route,json={"content":message, "client_request_id":suffix})
             assert res.status_code == 200, res.text
             return res.json()
-        first=send("建立计划：第一步算2+2，第二步算3+3", "plan-01")
+        first=send("建立计划：第一步算2+2，第二步算3+3", "plan-case-0001")
         assert first["termination_reason"] == "plan_created_pending_execution"
         assert first["plan_revision"] == 1
         assert [s["status"] for s in first["plan"]] == ["pending","pending"]
         assert not any(x["type"] == "tool" for x in first["trace"])
-        second=send("只执行第一步，其余保留", "plan-02")
+        second=send("只执行第一步，其余保留", "plan-case-0002")
         assert second["status"] == "partial"
         assert [s["status"] for s in second["plan"]] == ["completed","pending"]
-        third=send("继续执行剩余步骤", "plan-03")
+        third=send("继续执行剩余步骤", "plan-case-0003")
         assert third["status"] == "completed"
         assert [s["status"] for s in third["plan"]] == ["completed","completed"]
         assert len([x for x in third["trace"] if x["type"] == "tool"]) == 1
