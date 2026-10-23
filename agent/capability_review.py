@@ -38,7 +38,8 @@ async def review_unsupported_capability(provider: HTTPUnderstandingModel,
     if not review.request_is_clear or not review.explicitly_requested_tool:
         return None
     requested = review.explicitly_requested_tool.strip()
-    if not requested or requested.casefold() in {x.casefold() for x in allowed_names}:
+    if (not requested or requested.casefold() not in message.casefold()
+            or requested.casefold() in {x.casefold() for x in allowed_names}):
         return None
     # A model's proposed non-allowlisted name can never enable execution.
     return requested
