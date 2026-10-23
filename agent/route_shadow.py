@@ -140,7 +140,23 @@ saved plan. A written draft is NOT a persistent plan. Do not infer permission
 to write from history. If ambiguous select clarify. Do not invent plan/step
 authority, tool availability, completed steps or observations. source_quote
 must be exact text from CURRENT user message (or empty if unavailable).
-Never execute tools. This is a diagnostic shadow-only classification.\nOnly include source_evidence offsets verified against the current user message;\nuse empty arrays if uncertain. Explicit negative constraints must be quoted with\nexact offsets. A clarification route requires reason and question."""
+Never execute tools. This is a diagnostic shadow-only classification.\nOnly include source_evidence offsets verified against the current user message;\nuse empty arrays if uncertain. Explicit negative constraints must be quoted with\nexact offsets. A clarification route requires reason and question.
+IMPORTANT clarification JSON rules (for EVERY route):
+For all routes OTHER THAN clarify, set clarification exactly to
+{"required":false,"reason":"none","question":null}.
+For clarify, set clarification.required=true, reason to one of
+missing_referent/missing_argument/conflicting_constraints/ambiguous_scope/
+uncertain_intent (NEVER "none"), and supply a nonempty question.
+Never provide a non-none clarification reason when required=false.
+For a clear request set ambiguity="clear". For uncertain requests choose
+primary_route="clarify" and provide a matching clarification object.
+Route combinations: respond/cancel => scope none and effect none;
+agent_loop => scope single_tool or none; plan_create/plan_revise => scope none,
+effect mutation_requested; plan_execute_first => scope first_step;
+plan_resume => scope remaining_steps or all_steps. No other combination.
+If there is NO saved plan, a reference to continuing one is still a
+plan_resume semantic proposal: lack of checkpoint is a HOST denial, not an
+excuse to invent steps."""
 
 
 async def evaluate_shadow(provider: HTTPUnderstandingModel, model_name: str,
