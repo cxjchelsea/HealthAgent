@@ -356,7 +356,8 @@ class AgentLoop:
                   history: list[dict] | None = None,
                   plan_checkpoint: dict | None = None,
                   understanding_result: dict | None = None,
-                  execution_mode: str | None = None) -> dict:
+                  execution_mode: str | None = None,
+                  plan_control: str | None = None) -> dict:
         if not goal.strip() or len(goal) > 12000:
             raise ValueError("Goal must contain 1..12000 characters")
         run_id = str(uuid.uuid4())
@@ -425,12 +426,24 @@ class AgentLoop:
             "更正", "修改计划", "改成", "换成", "不是", "新增", "增加", "取消", "替换"))
         outstanding = [step for step in resumed.snapshot()
                        if step["status"] == "pending"]
-        if (understanding_result is None and continuation and not changed_goal and outstanding
-                and all(step.get("expected_tool") in
-                        {"calculate", "mcp_reference_lookup", "utc_time", "list_tasks",
-                         "recall_memory"}
-                        and isinstance(step.get("expected_arguments"), dict)
-                        for step in outstanding)):
+        authorized_plan_run = (
+            plan_control in {"execute_first", "resume"}
+            and bool(outstanding)
+            and all(step.get("expected_tool") in
+                    {"calculate", "mcp_reference_lookup", "utc_time", "list_tasks",
+                     "recall_memory"}
+                    and isinstance(step.get("expected_arguments"), dict)
+                    for step in outstanding))
+        if ((authorized_plan_run)
+                or (understanding_result is None and continuation and not changed_goal
+                    and outstanding
+                    and all(step.get("expected_tool") in
+                            {"calculate", "mcp_reference_lookup", "utc_time", "list_tasks",
+                             "recall_memory"}
+                            and isinstance(step.get("expected_arguments"), dict)
+                            for step in outstanding))):
+            if plan_control == "execute_first":
+                outstanding = outstanding[:1]
             trace = []
             audit = []
             delivered = []
