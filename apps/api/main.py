@@ -312,6 +312,7 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                   "plan_events": [revised["event"]]}
             pending_reply_kind = None
             clarification_read_only = False
+            suppress_persistent_routing = False
             if result is None and settings.understanding_strategy == "structured":
                 previous_goal = goal_store.load()
                 service = UnderstandingService(
@@ -382,7 +383,7 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                         if ready_to_attempt:
                             # Do not treat the model's original clarification as
                             # a durable GoalStore mutation or writing approval.
-                            parsed_result = None
+                            suppress_persistent_routing = True
                             clarification_read_only = True
                         else:
                             result = {"run_id": turn_id, "status": "partial",
@@ -473,7 +474,7 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
             # Only persistent execution proposals need a confirmed durable goal.
             # A revision of an unsaved conversational draft must not require
             # Goal Store state, but it must also never mutate that store.
-            if result is None and parsed_result is not None:
+            if result is None and parsed_result is not None and not suppress_persistent_routing:
                 # Host-grounded absence of a durable referent is a clarification,
                 # not a provider outage. Never invent the missing target.
                 if (previous_goal is not None and previous_goal.get("goal") is None
@@ -499,7 +500,7 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
             # Separate authoring a future plan from executing its steps. Only
             # the bound checkpoint can authorize later read-only execution.
             if (result is None and parsed_result is not None
-                    and agent_decider is None):
+                    and not suppress_persistent_routing and agent_decider is None):
                 plan_decision = reviewed_plan_intent or await review_plan_intent(
                     HTTPUnderstandingModel(settings.model_provider,
                                            settings.model_base_url,
@@ -705,7 +706,7 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                 if status in {"completed", "partial"} and result.get("plan_checkpoint"):
                     plan_store.save_in_session(db, result["plan_checkpoint"])
                 if (status in {"completed", "partial"} and parsed_result is not None
-                        and execution_mode not in {"respond_only", "read_only"}
+                        and not suppress_persistent_routing and execution_mode not in {"respond_only", "read_only"}
                         and execution_target == "goal_state"
                         and previous_goal is not None
                         and not any(item.get("type") == "goal_clarification"
