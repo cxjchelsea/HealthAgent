@@ -31,7 +31,7 @@ async def classify_pending_reply(provider: HTTPUnderstandingModel, model: str, *
             {"role": "user", "content": json.dumps({
                 "pending_tool": tool, "question": question,
                 "current_user_reply": reply}, ensure_ascii=False)}],
-            model=model)
+            model=model, response_schema=PendingReplyDecision.model_json_schema())
         return PendingReplyDecision.model_validate_json(raw).kind
     except (UnderstandingError, ValueError):
         return "uncertain"
