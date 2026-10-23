@@ -163,7 +163,9 @@ async def evaluate_shadow(provider: HTTPUnderstandingModel, model_name: str,
             result, has_plan=has_plan, pending_action=pending_action)
         return {"state":"valid","route":result.primary_route,
                 "scope":result.execution_scope,"effect":result.effect_intent,
-                "ambiguity":result.ambiguity,"host_would_deny":would_deny,\n                "host_admission_complete":False,\n                "evidence_spans":len(result.source_evidence),
+                "ambiguity":result.ambiguity,"host_would_deny":would_deny,
+                "host_admission_complete":False,
+                "evidence_spans":len(result.source_evidence),
                 "elapsed_ms":int((time.perf_counter()-began)*1000)}
     except Exception as exc:
         return {"state":"unavailable","error_class":type(exc).__name__,
