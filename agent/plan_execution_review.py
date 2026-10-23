@@ -1,9 +1,19 @@
 """Independent, fail-closed authorization re-review for saved plan continuation."""
 import json
+import re
 from pydantic import BaseModel, ConfigDict
 from agent.understanding import HTTPUnderstandingModel, UnderstandingError
 from agent.planning import PlanLedger
 
+
+def explicitly_forbids_saved_plan_execution(message: str) -> bool:
+    """A negative instruction is a hard veto, never a positive authorization."""
+    negative = r"(?:不要|不准|禁止|别|先不|暂不|do\\s+not|don\u0027t)"
+    action = r"(?:执行|运行|继续|跑|execute|run|resume)"
+    referent = r"(?:计划|步骤|plan|steps)"
+    return bool(re.search(negative + r".{0,24}" + action + r".{0,24}" + referent
+                          + "|" + negative + r".{0,24}" + referent
+                          + r".{0,20}" + action, message, re.IGNORECASE))
 
 class PlanExecutionReview(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -14,7 +24,7 @@ async def review_plan_execution_authorization(
     provider: HTTPUnderstandingModel, model: str, current_message: str,
     checkpoint: dict, intent: str,
 ) -> bool:
-    if intent not in {"execute_first", "resume"}:
+    if intent not in {"execute_first", "resume"} or explicitly_forbids_saved_plan_execution(current_message):
         return False
     try:
         ledger = PlanLedger.restore(checkpoint)
