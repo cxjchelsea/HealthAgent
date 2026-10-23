@@ -70,7 +70,9 @@ def test_valid_formal_plan_still_creates_checkpoint(tmp_path,monkeypatch):
     monkeypatch.setattr("apps.api.main.review_plan_intent",plan)
     settings=Settings(database_url=f"sqlite:///{tmp_path/'plan.db'}",
         model_provider="ollama_proxy",understanding_strategy="structured")
-    with TestClient(create_app(settings)) as client:
+    async def policy(message, result):
+        return "respond_only"
+    with TestClient(create_app(settings, execution_policy=policy)) as client:
         cid=client.post("/conversations").json()["id"]
         res=client.post(f"/conversations/{cid}/agent/messages",
             json={"content":"请建立计划：查询 RAG 然后计算 8*8，暂不执行",
