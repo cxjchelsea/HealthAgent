@@ -423,7 +423,13 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                                        "revision": checkpoint["revision"]}],
                                       "plan_checkpoint": checkpoint}
                 elif plan_decision.intent in {"execute_first", "resume"}:
-                    if existing_checkpoint:
+                    if execution_mode == "respond_only":
+                        result = {"run_id": turn_id, "status": "partial",
+                                  "termination_reason": "execution_not_authorized",
+                                  "answer": "当前请求未获得计划工具执行许可。",
+                                  "trace": [{"step": 0, "type": "plan_execution_denied"}],
+                                  "steps": 0}
+                    elif existing_checkpoint:
                         plan_control = plan_decision.intent
                     else:
                         result = {"run_id": turn_id, "status": "partial",
