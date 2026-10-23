@@ -48,13 +48,25 @@ async def run(args):
         outcome = await evaluate_shadow(
             provider, settings.understanding_strong_model, prompt,
             has_plan=has_plan, pending_action=pending, timeout_s=args.timeout)
+        # A correct primary route with the wrong binding must not be PASS.
+        expected_target = ("pending_clarification" if cid == "pending_reference_reply"
+                           else "tool_action" if cid in {
+                               "explicit_task", "standalone_math",
+                               "standalone_reference", "independent_math_with_plan",
+                               "unsupported_shell"} else None)
+        observed_target = outcome.get("route_target")
+        target_ok = expected_target is None or observed_target == expected_target
+        if cid == "independent_math_with_plan":
+            target_ok = observed_target == "tool_action"
         row = {"case_id":cid,"expected_route":expected,
+               "expected_target":expected_target,
+               "proposed_target":observed_target,
                "state":outcome.get("state"),
                "proposed_route":outcome.get("route"),
                "host_would_deny":outcome.get("host_would_deny"),
                "elapsed_ms":outcome["elapsed_ms"],
                "result":("PASS" if outcome.get("state")=="valid"
-                         and outcome.get("route")==expected else "REVIEW")}
+                         and outcome.get("route")==expected and target_ok else "REVIEW")}
         if outcome.get("error_class"):
             row["error_class"] = outcome["error_class"]
         if outcome.get("validation_errors"):
