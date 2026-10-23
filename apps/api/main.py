@@ -9,7 +9,7 @@ from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from agent.config import Settings
 from agent.understanding import UnderstandingContext, UnderstandingService, HTTPUnderstandingModel, UnderstandingError
-from agent.execution_policy import decide_execution_policy_detail, verify_text_only_policy
+from agent.execution_policy import decide_execution_policy_detail, verify_text_only_policy, verify_execute_policy
 from agent.decision import NativeToolDecision
 from agent.loop import AgentLoop
 from agent.tools import execute_tool, SCHEMAS
@@ -316,6 +316,15 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                         settings.understanding_strong_model, body.content, interpretation)
                     if policy_result.mode == "respond_only":
                         policy_result = await verify_text_only_policy(
+                            HTTPUnderstandingModel(settings.model_provider,
+                                                   settings.model_base_url,
+                                                   settings.model_api_key,
+                                                   settings.model_timeout_seconds,
+                                                   settings.model_max_output_tokens),
+                            settings.understanding_strong_model,
+                            body.content, interpretation, policy_result)
+                    if policy_result.mode == "execute":
+                        policy_result = await verify_execute_policy(
                             HTTPUnderstandingModel(settings.model_provider,
                                                    settings.model_base_url,
                                                    settings.model_api_key,
