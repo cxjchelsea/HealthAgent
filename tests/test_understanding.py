@@ -52,7 +52,8 @@ def test_invalid_both_models_fails_closed():
         asyncio.run(UnderstandingService(stub, "small", "large").understand(
             UnderstandingContext(current_message="替我存任务")))
     assert error.value.code == "understanding_unavailable"
-    assert len(error.value.attempts) == 3
+    assert len(error.value.attempts) == 4
+    assert error.value.attempts[-1]["diagnostic"] == "goal_repair_unverified"
     assert all(a["outcome"] == "structured_schema_error" for a in error.value.attempts)
 
 def test_fabricated_goal_reference_is_not_accepted():
