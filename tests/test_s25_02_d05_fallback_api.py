@@ -78,6 +78,7 @@ def test_execution_intent_skips_revision_fallback(tmp_path, monkeypatch):
         raise AssertionError("execution request entered revision fallback")
     monkeypatch.setattr("apps.api.main.review_plan_intent", plan_intent)
     monkeypatch.setattr("apps.api.main.review_plan_revision", should_not_run)
+    monkeypatch.setattr("apps.api.main.review_plan_execution_scope", should_not_run)
     monkeypatch.setattr("apps.api.main.check_plan_edit_intent", should_not_run)
     async def policy(message, interpretation):
         return "read_only"
