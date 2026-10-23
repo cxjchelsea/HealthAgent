@@ -131,7 +131,7 @@ def explicit_step_binding_conflict(message: str, checkpoint: dict) -> bool:
         return False
     # Strict grammar, not general intent recognition: require a concrete
     # before/after arithmetic change in the same message.
-    expressions = re.findall(r"(?<![\\w.])\\d+(?:\\s*[+*/-]\\s*\\d+)+(?![\\w.])", message)
+    expressions = re.findall(r"(?<![\w.])\d+(?:\s*[+*/-]\s*\d+)+(?![\w.])", message)
     if len(expressions) != 2:
         return False
     if not re.search(r"(?:不是|改为|修改为|换成|而是)", message):
