@@ -293,7 +293,7 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                     if revised is None:
                         result = {"run_id": turn_id, "status": "partial",
                                   "termination_reason": "plan_revision_conflict",
-                                  "answer": "修改描述与已有步骤不一致。当前第一步是查询 RAG，第二步才是计算 8*8；请明确要修改哪一步。",
+                                  "answer": "修改描述与已保存计划的步骤或参数绑定不一致，请依据当前计划检查步骤编号与原参数。",
                                   "trace": [{"step": 0, "type": "plan_revision_conflict"}],
                                   "steps": 0,
                                   "plan_checkpoint": existing_checkpoint,
