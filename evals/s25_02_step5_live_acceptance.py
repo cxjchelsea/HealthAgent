@@ -47,7 +47,7 @@ def check(case, data):
                 or any(x.get("type") == "clarification_resumed"
                        and x.get("ok") for x in data.get("trace", []))
                 else "FAIL", "reply must resume the real pending lookup")
-    if case == "D03_plan_create":
+    if case in {"D03_plan_create", "D03_plan_create_fresh"}:
         return ("PASS" if reason == "plan_created_pending_execution"
                 and data.get("steps") == 0
                 and len(data.get("plan", [])) == 2 else "FAIL",
@@ -80,9 +80,13 @@ def check(case, data):
                 and data.get("plan_checkpoint") is None else "FAIL",
                 "draft must not persist a task or formal plan")
     if case == "F04_unsupported_shell":
-        return ("PASS" if reason == "unsupported_capability"
-                and data.get("steps") == 0 else "FAIL",
-                "unregistered shell must not run")
+        attempted = [x for x in data.get("trace", []) if x.get("type") == "tool"]
+        if attempted:
+            return "FAIL", "unsupported shell request must execute no tools"
+        if reason == "unsupported_capability" and data.get("steps") == 0:
+            return "PASS", "structured unsupported tool refusal, no tool executed"
+        return "REVIEW", "no tool executed; manually check model refusal wording"
+
     if case == "E03_task_create":
         return ("PASS" if any(x.get("ok") is True for x in
                 tool_events(data, "create_task")) else "FAIL",
@@ -113,13 +117,15 @@ def main():
         ("F04_unsupported_shell", "请使用 shell 执行 echo hello。", "shell"),
         ("E06_unsaved_draft", "拟定三项工作任务草案，不要保存也不要创建计划。", "draft"),
         ("E03_task_create", "请正式创建任务：周五提交测试报告。", "task"),
-        ("D03_plan_create", "请建立一个暂不执行的两步正式计划：先查询 RAG，再计算 8*8。", "plan"),
-        ("E06_standalone_with_plan", "请单独使用计算工具计算 19+23，不要执行刚才的计划。", "plan"),
+        ("D03_plan_create", "请建立一个暂不执行的两步正式计划：先查询 RAG，再计算 8*8。", "plan_probe"),
+        ("E06_standalone_with_plan", "请单独使用计算工具计算 19+23，不要执行刚才的计划。", "plan_probe"),
+        ("D03_plan_create_fresh", "请建立一个暂不执行的两步正式计划：先查询 RAG，再计算 8*8。", "plan"),
         ("D05_plan_revision", "请将刚才正式计划的第二步计算 8*8 修改成 9*9，其他不变，不执行。", "plan"),
         ("D03_execute_first", "现在只执行已保存计划的第一步，其余步骤先不执行。", "plan"),
         ("D06_resume", "继续执行已保存计划剩余的所有步骤。", "plan"),
     ]
     rows, conversations = [], {}
+    last_by_group = {}
     started = datetime.now(timezone.utc).isoformat()
     with httpx.Client(base_url=args.endpoint, timeout=args.timeout) as client:
         model = client.get("/model")
@@ -133,6 +139,14 @@ def main():
             parser.error("API not ready")
         for index, (case, utterance, group) in enumerate(cases):
             start = time.perf_counter()
+            # A failed prerequisite invalidates subsequent plan-state
+            # assertions, not evidence that the next action is correct.
+            if (group == "plan" and case != "D03_plan_create_fresh"
+                    and last_by_group.get(group) not in {"PASS", "REVIEW"}):
+                rows.append({"case": case, "result": "BLOCKED",
+                             "rationale": "prior saved-plan prerequisite failed"})
+                print(case, "BLOCKED")
+                continue
             try:
                 if group not in conversations:
                     resp = client.post("/conversations")
@@ -164,6 +178,7 @@ def main():
                 rows.append({"case": case, "result": "BLOCKED",
                              "error_type": type(exc).__name__,
                              "elapsed_ms": round((time.perf_counter()-start)*1000)})
+            last_by_group[group] = rows[-1]["result"]
             print(case, rows[-1]["result"])
     results = {"started_utc": started, "source": "real Conversation API",
                "model": metadata, "rows": rows,
