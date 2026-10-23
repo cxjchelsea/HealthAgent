@@ -10,6 +10,7 @@ from agent.tools import TOOL_SCHEMAS, execute_tool
 from agent.skills import exposed_tools, load_instructions, SKILL_VERSION
 from agent.planning import PlanLedger
 from agent.arithmetic_recovery import arithmetic_equivalent
+from agent.plan_recovery import candidate_for_failure
 from agent.tools import SCHEMAS
 from agent.argument_provenance import REQUIRED_USER_VALUES, user_supplied_value, clarification_question
 from pydantic import ValidationError
@@ -481,7 +482,30 @@ class AgentLoop:
                     audit.append({"name": name, "arguments": arguments,
                                   "observation": result})
                 if not result["ok"]:
-                    break
+                    candidate = candidate_for_failure(
+                        name, arguments, str(result.get("error", "")))
+                    if candidate is None:
+                        break
+                    # No candidate authorizes a write or marks success by itself.
+                    recovery = execute_tool(
+                        candidate.tool, candidate.arguments, [],
+                        self.clock, task_store=self.task_store,
+                        memory_store=self.memory_store, mcp_client=self.mcp_client)
+                    verified = resumed.apply_verified_recovery(
+                        step["id"], arguments, candidate.arguments,
+                        candidate.tool, recovery, candidate.strategy)
+                    trace.append({"step": len(trace) + 1, "type": "plan_recovery_attempt",
+                                  "name": candidate.tool, "ok": verified,
+                                  "strategy": candidate.strategy})
+                    if include_evidence:
+                        audit.append({"name": candidate.tool,
+                                      "arguments": candidate.arguments,
+                                      "observation": recovery})
+                    if not verified:
+                        break
+                    delivered.append({"step_id": step["id"], "goal": step["goal"],
+                                      "tool": candidate.tool,
+                                      "result": str(recovery["value"])[:1200]})
             remaining = [step["id"] for step in resumed.snapshot()
                          if step["status"] == "pending"]
             completed = [step["id"] for step in resumed.snapshot()
