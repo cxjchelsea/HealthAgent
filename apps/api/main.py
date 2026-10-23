@@ -19,7 +19,7 @@ from agent.pending_reply import classify_pending_reply
 from agent.capability_review import review_unsupported_capability
 from agent.plan_intent import review_plan_intent, build_plan_checkpoint
 from agent.plan_execution_review import review_plan_execution_authorization
-from agent.plan_revision_review import review_plan_revision, apply_plan_revision
+from agent.plan_revision_review import review_plan_revision, apply_plan_revision, check_plan_edit_intent
 from agent.tools import TOOL_SCHEMAS
 from agent.mcp_stdio_client import StdioMCPClient
 from agent.context import build_context
