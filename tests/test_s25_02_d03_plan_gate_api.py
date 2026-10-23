@@ -1,15 +1,4 @@
 
-# These API regression fixtures explicitly supply a formal saved-plan request.
-# Stub only the new semantic admission review; the actual production model
-# contract is tested separately in test_s25_02_f03_plan_admission.py.
-import pytest
-
-@pytest.fixture(autouse=True)
-def admit_fixture_saved_plan(monkeypatch):
-    async def admitted(*args, **kwargs):
-        return True
-    monkeypatch.setattr("apps.api.main.review_plan_creation_reference", admitted)
-
 """D03-F01: plan authoring cannot execute; explicit step commands resume saved evidence."""
 import json
 
@@ -19,6 +8,7 @@ from agent.config import Settings
 from agent.understanding import HTTPUnderstandingModel
 from agent.plan_intent import PlanRequest
 from apps.api.main import create_app
+import pytest
 
 
 def understood():
@@ -178,3 +168,12 @@ def test_d03_f02_explicit_denial_remains_fail_closed(tmp_path, monkeypatch):
         assert second["termination_reason"] == "execution_not_authorized"
         assert second["trace"][0]["type"] == "plan_execution_denied"
         assert second["steps"] == 0
+
+# These API regression fixtures explicitly supply a formal saved-plan request.
+# Stub only the new semantic admission review; the actual production model
+# contract is tested separately in test_s25_02_f03_plan_admission.py.
+@pytest.fixture(autouse=True)
+def admit_fixture_saved_plan(monkeypatch):
+    async def admitted(*args, **kwargs):
+        return True
+    monkeypatch.setattr("apps.api.main.review_plan_creation_reference", admitted)
