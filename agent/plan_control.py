@@ -67,3 +67,38 @@ def admit_plan_control(
     if missing_reference is True:
         return "missing_plan"
     return None
+
+
+class PlanCreationReview(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    explicitly_requests_saved_plan: bool
+
+
+async def review_plan_creation_reference(
+    provider: HTTPUnderstandingModel, model: str, message: str,
+) -> bool:
+    """An independent semantic admission check, not a source of tool authority."""
+    prompt = (
+        "Return only JSON with explicitly_requests_saved_plan boolean. "
+        "True ONLY when the CURRENT user explicitly asks to establish/save a "
+        "FUTURE EXECUTABLE MULTI-STEP PLAN without executing it now. "
+        "False for an ordinary single lookup, calculation, task creation, "
+        "requests with a missing lookup term, questions, explanations, or "
+        "written task drafts that do not request an executable plan. "
+        "A tool invocation is NOT a request to save an execution plan. "
+        "Even an incorrect preliminary model classification must not influence "
+        "your answer. This classification does not authorize any tool execution."
+    )
+    try:
+        raw = await provider.complete(
+            model=model,
+            messages=[
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": json.dumps(
+                    {"current_request": message}, ensure_ascii=False)},
+            ],
+            response_schema=PlanCreationReview.model_json_schema(),
+        )
+        return PlanCreationReview.model_validate_json(raw).explicitly_requests_saved_plan
+    except (UnderstandingError, ValueError, TypeError):
+        return False
