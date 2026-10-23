@@ -1,3 +1,4 @@
+from agent.planning import PlanLedger
 import logging
 import time
 from contextlib import asynccontextmanager
@@ -424,7 +425,27 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                                        "revision": checkpoint["revision"]}],
                                       "plan_checkpoint": checkpoint}
                 elif plan_decision.intent in {"execute_first", "resume"}:
-                    if execution_mode == "respond_only" and existing_checkpoint:
+                    # A completed checkpoint is terminal: subsequent continuation
+                    # requests are read-only status checks, never new tool work.
+                    completed_plan = None
+                    if existing_checkpoint:
+                        try:
+                            completed_plan = PlanLedger.restore(existing_checkpoint)
+                        except (ValueError, TypeError):
+                            completed_plan = None
+                    if (completed_plan is not None
+                            and completed_plan.snapshot()
+                            and all(step["status"] == "completed"
+                                    for step in completed_plan.snapshot())):
+                        result = {"run_id": turn_id, "status": "completed",
+                                  "termination_reason": "plan_already_completed",
+                                  "answer": "当前计划所有步骤均已完成，没有剩余待执行步骤；本次未重新调用任何工具。",
+                                  "trace": [{"step": 0, "type": "plan_already_completed"}],
+                                  "steps": 0, "plan": completed_plan.snapshot(),
+                                  "plan_revision": completed_plan.revision,
+                                  "plan_events": [],
+                                  "plan_checkpoint": existing_checkpoint}
+                    elif execution_mode == "respond_only" and existing_checkpoint:
                         authorized = await review_plan_execution_authorization(
                             HTTPUnderstandingModel(
                                 settings.model_provider, settings.model_base_url,
@@ -437,15 +458,15 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                             # schema-bound pending steps, never arbitrary tools.
                             execution_mode = "read_only"
                             execution_target = "tool_action"
-                    if execution_mode == "respond_only":
+                    if result is None and execution_mode == "respond_only":
                         result = {"run_id": turn_id, "status": "partial",
                                   "termination_reason": "execution_not_authorized",
                                   "answer": "当前请求未获得计划工具执行许可。",
                                   "trace": [{"step": 0, "type": "plan_execution_denied"}],
                                   "steps": 0}
-                    elif existing_checkpoint:
+                    elif result is None and existing_checkpoint:
                         plan_control = plan_decision.intent
-                    else:
+                    elif result is None:
                         result = {"run_id": turn_id, "status": "partial",
                                   "termination_reason": "plan_not_found",
                                   "answer": "没有可继续执行的已保存计划，请先建立计划。",
