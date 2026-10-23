@@ -103,7 +103,8 @@ class UnderstandingError(Exception):
         super().__init__(code)
 
 class UnderstandingModel(Protocol):
-    async def complete(self, *, messages: list[dict[str, str]], model: str) -> str: ...
+    async def complete(self, *, messages: list[dict[str, str]], model: str,
+                       response_schema: dict | None = None) -> str: ...
 
 class HTTPUnderstandingModel:
     def __init__(self, provider: str, base_url: str, key: str, timeout: float, output_tokens: int):
