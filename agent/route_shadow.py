@@ -158,6 +158,13 @@ If there is NO saved plan, a reference to continuing one is still a
 plan_resume semantic proposal: lack of checkpoint is a HOST denial, not an
 excuse to invent steps.
 Routing distinctions (semantic proposals ONLY, never authorizations):
+- The word "task" is not evidence of a multi-step saved plan. A concrete
+  one-off task created in a task manager must remain a tool action.
+- Pending-action context and saved-plan context are separate: if a user gives
+  a short missing parameter value while has_pending_action=true, it is a
+  pending-clarification reply, not a request for more clarification.
+- With has_pending_action=false, NEVER mark an independent tool request as
+  pending_clarification. Use tool_action and reference.kind=none.
 - Creating ONE task via create_task is agent_loop with mutation_requested,
   NOT plan_create. plan_create applies ONLY to a durable multi-step
   executable PLAN explicitly requested for FUTURE work, not a normal write.
@@ -203,6 +210,8 @@ async def evaluate_shadow(provider: HTTPUnderstandingModel, model_name: str,
         would_deny = hypothetical_admission(
             result, has_plan=has_plan, pending_action=pending_action)
         return {"state":"valid","route":result.primary_route,
+                "route_target":result.route_target,
+                "reference_kind":result.reference.kind,
                 "scope":result.execution_scope,"effect":result.effect_intent,
                 "ambiguity":result.ambiguity,"host_would_deny":would_deny,
                 "host_admission_complete":False,
