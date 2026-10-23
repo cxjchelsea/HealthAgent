@@ -7,7 +7,6 @@ from agent.config import Settings
 from agent.understanding import HTTPUnderstandingModel
 from agent.plan_intent import PlanRequest
 from apps.api.main import create_app
-from services.db import database, ConversationPlan
 
 
 def understood():
