@@ -32,3 +32,14 @@
 `agent/loop.py` 的直接计划恢复路径同步返回实际 `execution_mode`，方便人工审计权限来源。新增正式 Conversation API + SQLite 三轮回归：模拟第三轮 Execution Policy 误判 `respond_only` → 有证据的独立复核 → 只执行剩余第二步，PlanLedger 全部 completed，Trace 不重复第一步；另有复核拒绝时保持 `execution_not_authorized` 且零工具调用的负例。
 
 代码提交 `a971cd56faa41186d4e3f3a69447421788c44d78`；CI <https://github.com/cxjchelsea/HealthAgent/actions/runs/39885878065>：SUCCESS，224 passed / 3 skipped。本机制的独立复核仍是概率性模型判断，不能证明真实 Qwen 稳定百分百通过。必须在相同对话、相同第三轮用户原文中进行真实模型复测，核查 `status=completed`、`execution_mode=read_only`、`calculate` 执行结果 64、`plan` 两步 completed、无重复 MCP，方可正式关闭 D03-F02。
+
+
+## D03-F03 — 已完成计划再次继续时缺少终态保护（2026-10-23）
+
+真实 Qwen 前三轮人工测试：创建计划未执行、第一步 MCP 已验证完成且第二步 pending、第三轮只执行 calculate 8*8=64，计划两步都 completed。用户在第四轮再次输入“请继续完成刚才计划中剩余的步骤，不要重复第一步”，页面再次生成计划执行结果，截图中显示“执行步骤：3 条”。第四轮无 Network Trace，故不能证明发生了真实重复工具调用，但从代码可确认终态缺口：`AgentLoop` 已有恢复分支必须存在 pending 步骤，全部 completed 时请求会落入普通工具决策链，存在重复执行和重复宣称风险。
+
+**修复**：`apps/api/main.py` 在结构化 `PlanRequest.intent` 为 `execute_first` 或 `resume` 时，首先用 `PlanLedger.restore` 验证**当前会话持久化检查点**。当存在已保存计划且全部步骤均为 `completed` 时，直接返回 `status=completed`、`termination_reason=plan_already_completed`、`trace=[{step:0,type:plan_already_completed}]`、`steps=0`，保留计划 `snapshot/revision/checkpoint`，响应明确告知无剩余步骤。本轮不调用执行授权复核、不进入 AgentLoop、不调用 MCP/计算或其他工具。只有非终态计划才进入已有执行权限复核和计划恢复路径。快照无法验证时不得按已完成计划放行。
+
+**回归**：扩展 `test_d03_f02_misrouted_respond_only_can_resume_verified_pending_plan` 为四轮 Conversation API + SQLite 测试。模拟第四轮再次请求 resume，断言 `plan_already_completed`、零执行步骤、原 checkpoint/revision/plan 不变、不会再次调用 plan execution review。此前 B03/C01～C05、D03 第一到三轮与拒绝分支继续回归。
+
+代码 HEAD `4e16b8c9d74da15d0e7ea960ba52a42145fbe62c` CI <https://github.com/cxjchelsea/HealthAgent/actions/runs/39886911127> SUCCESS（224 passed / 3 skipped）。该结果为自动化通过，尚须真实 Qwen 第四轮重测，确认仍不发生业务工具调用后方可关闭 D03-F03。PR #22 Draft、main 不变。
