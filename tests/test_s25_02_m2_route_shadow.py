@@ -144,3 +144,16 @@ def test_plan_execution_scope_is_not_invented_from_trace():
     same = compare_to_legacy({"state":"valid","route":"plan_resume"},actual)
     assert same["comparison"] == "compatible_plan_execution"
     assert same["legacy_route_evidence"] == "saved_plan_execution_unspecified"
+
+
+
+def test_validation_diagnostics_contain_only_error_path_and_type():
+    bad = route("respond")
+    outcome = asyncio.run(evaluate_shadow(
+        Stub(bad), "fake", "请计算 19+23",
+        has_plan=False, pending_action=None))
+    assert outcome["state"] == "unavailable"
+    assert outcome["error_class"] == "ValidationError"
+    assert outcome["validation_errors"]
+    assert set(outcome["validation_errors"][0]) == {"path", "type"}
+    assert "请计算" not in json.dumps(outcome, ensure_ascii=False)
