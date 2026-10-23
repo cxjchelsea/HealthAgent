@@ -30,7 +30,7 @@ Observation, retry budget, PlanLedger evidence and terminal statuses.
 | ID | Finding | Risk | Disposition |
 |---|---|---|---|
 | CC-01 | A saved-plan turn could call `review_plan_intent` twice: once before revision and again after Understanding if the first intent was `other` or `plan_only` | Two contradictory model outputs for one request; unnecessary model latency | FIXED in this PR: reuse single turn-scoped proposal, still check step binding/authority separately |
-| CC-02 | Understanding clarification can be contradicted by an independent read-only completeness classifier | Semantics duplicated; potential false positive/false negative | OPEN: consolidate into coherent control contract; keep fail-closed mode/Host tool checks |
+| CC-02 | Understanding clarification can be contradicted by independent read-only completeness classification | Semantics duplicated; potential false positive/false negative | PARTIAL: typed `ClarificationRoute` now centralizes Host precedence and fail-closed decision; model-call consolidation is still OPEN |
 | CC-03 | Normal requests can traverse independent execution-policy, plan-intent, plan-creation and missing-plan classifiers | Routing instability and cost | OPEN: single typed route proposal, followed by strict state and permission admission |
 | CC-04 | Capability-review interprets natural-language tool names separately from registered tool selection | False `unsupported_capability` | OPEN: produce unsupported-capability outcome only from grounded registry facts, never from a model's invented label |
 | CC-05 | Pending clarification has separate classifier; prior `needs_input:<tool>` recorded in Turn | Replay/ambiguous reply can cause wrong operation | KEEP the persisted pending-action provenance; consolidate semantic understanding without removing source/owner checks |
@@ -70,3 +70,7 @@ findings are repaired based on this audit document.
 ## Convergence implementation update
 
 At HEAD `54c580fef24e733086a757f87dfc9f11cb72f144`: F04 clarification override no longer discards parsed understanding data to indirectly skip persistence. The API keeps the original interpretation for AgentLoop and applies explicit `suppress_persistent_routing` at plan admission, goal-state admission and GoalStore save. Regression `tests/test_s25_02_control_convergence_api.py` verifies a real `calculate` division-by-zero Observation with no plan creation under a spurious Understanding clarification. This is an incremental invariant repair; CC-02/03/04 and unified routing are not yet closed.
+
+## 2026-10-23 clarification admission convergence
+
+Added `agent/control_admission.py` with immutable `ClarificationRoute` and `admit_clarification`. The API now translates independent reviewer outputs into one Host route: `unsupported`, `clarify`, or `read_only`. Pending tool-argument clarification cannot be treated as a fresh read-only request; only the `read_only` route suppresses persistent goal/plan operations. Added `tests/test_s25_02_control_admission.py` to cover competing inputs, write-related pending clarifications, and route invariants. This is **not** a full CC-02/CC-03 closure: primary model calls are not yet consolidated, and plan-control routing remains distributed. Do not mark Step 5 complete without real Qwen cross-route testing.
