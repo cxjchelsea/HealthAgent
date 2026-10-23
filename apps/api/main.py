@@ -191,6 +191,7 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
         previous_goal = None
         parsed_result = None
         began = time.monotonic()
+        understanding_attempts = []
         status, answer = "provider_error", ""
         result = None
         failure_code = None
@@ -376,6 +377,40 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
         except UnderstandingError as exc:
             status, answer = "provider_error", ""
             failure_code = exc.code
+            # Only fixed-category metadata; never return prompts, values, stack traces,
+            # arbitrary exception messages, model output, or credentials.
+            roles = {"light", "strong"}
+            outcomes = {"valid", "semantic_review_required", "structured_schema_error",
+                        "structured_consistency_error", "unverified_goal_reference",
+                        "model_timeout", "model_http_status", "model_transport_error",
+                        "model_invalid_response", "model_empty_content",
+                        "missing_credentials", "unsupported_provider",
+                        "invalid_structured_result"}
+            diagnostics = {"missing_goal", "clarification_status_mismatch",
+                           "clarification_requires_reason_and_question",
+                           "model_level_consistency", "json_or_structure"}
+            for item in exc.attempts[:4]:
+                if not isinstance(item, dict):
+                    continue
+                role = item.get("role")
+                outcome = item.get("outcome")
+                if role not in roles or outcome not in outcomes:
+                    continue
+                entry = {"role": role, "outcome": outcome}
+                retry = item.get("retry")
+                if type(retry) is int and 0 <= retry <= 1:
+                    entry["retry"] = retry
+                duration = item.get("duration_ms")
+                if type(duration) is int and 0 <= duration <= 600000:
+                    entry["duration_ms"] = duration
+                detail = item.get("diagnostic")
+                if detail in diagnostics:
+                    entry["diagnostic"] = detail
+                elif isinstance(detail, str) and detail in {
+                        "field:goal", "field:change", "field:clarification",
+                        "field:status", "field:schema_version"}:
+                    entry["diagnostic"] = detail
+                understanding_attempts.append(entry)
         except Exception as exc:
             log.warning("conversation Agent failed turn=%s class=%s", turn_id, type(exc).__name__)
             status, answer = "provider_error", ""
@@ -430,7 +465,10 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                       "turn_id": turn_id,
                                       "status": status,
                                       "decision_steps": decision_steps,
-                                      "trace_summary": safe_trace})
+                                      "trace_summary": safe_trace,
+                                       **({"understanding_attempts": understanding_attempts}
+                                          if failure_code == "understanding_unavailable"
+                                          else {})})
         return {**result, "conversation_id": cid, "message_id": assistant_id}
 
     @app.get("/conversations/{cid}/turns/{turn_id}/diagnostics")
