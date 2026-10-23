@@ -229,3 +229,56 @@ def test_value_error_diagnostic_is_bounded_and_source_scoped():
     assert result["failure_stage"] == "source_provenance"
     assert result["validation_code"] == "shadow_untrusted_source_quote"
     assert "PRIVATE_SENTINEL_NOT_IN_INPUT" not in json.dumps(result)
+
+
+def test_single_task_cannot_pass_plan_step_preview():
+    from agent.route_shadow import hypothetical_admission
+    message = "请正式创建任务：周五提交测试报告。"
+    span = {"start":3,"end":7,"exact_text":"创建任务"}
+    plan = ShadowRoute.model_validate({
+        "schema_version":"s25-route-v2","primary_route":"plan_create",
+        "route_target":"saved_plan","execution_scope":"none",
+        "effect_intent":"mutation_requested","ambiguity":"clear",
+        "source_evidence":[span]})
+    assert hypothetical_admission(plan,has_plan=False,pending_action=None) == (
+        "ordered_plan_steps_evidence_unverified")
+
+
+def test_real_ordered_plan_requires_two_distinct_grounded_steps():
+    from agent.route_shadow import hypothetical_admission, verify_source_spans
+    message = "先查询 RAG，再计算 8*8"
+    def span(text):
+        start=message.index(text)
+        return {"start":start,"end":start+len(text),"exact_text":text}
+    plan = ShadowRoute.model_validate({
+        "schema_version":"s25-route-v2","primary_route":"plan_create",
+        "route_target":"saved_plan","execution_scope":"none",
+        "effect_intent":"mutation_requested","ambiguity":"clear",
+        "source_evidence":[span("先查询 RAG")],
+        "plan_step_evidence":[span("查询 RAG"),span("计算 8*8")]})
+    verify_source_spans(plan,message)
+    assert hypothetical_admission(plan,has_plan=False,pending_action=None) == (
+        "write_provenance_unverified")
+
+
+def test_plan_revision_negative_no_execution_is_not_global_write_conflict():
+    from agent.route_shadow import verify_source_spans
+    message="修改第二步，不要执行"
+    span={"start":message.index("不要执行"),"end":len(message),"exact_text":"不要执行"}
+    route=ShadowRoute.model_validate({
+        "schema_version":"s25-route-v2","primary_route":"plan_revise",
+        "route_target":"saved_plan","execution_scope":"none",
+        "effect_intent":"mutation_requested","ambiguity":"clear",
+        "negative_constraints":[span]})
+    verify_source_spans(route,message)
+
+
+def test_plan_step_source_offsets_still_fail_closed():
+    from agent.route_shadow import verify_source_spans
+    route=ShadowRoute.model_validate({
+        "schema_version":"s25-route-v2","primary_route":"plan_create",
+        "route_target":"saved_plan","execution_scope":"none",
+        "effect_intent":"mutation_requested","ambiguity":"clear",
+        "plan_step_evidence":[{"start":0,"end":3,"exact_text":"虚构步骤"}]})
+    with pytest.raises(ValueError,match="shadow_untrusted_source_span"):
+        verify_source_spans(route,"创建计划")
