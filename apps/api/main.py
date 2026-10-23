@@ -651,13 +651,17 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                       "plan_events": [],
                                       "plan_checkpoint": existing_checkpoint}
                         elif execution_mode == "respond_only" and existing_checkpoint:
-                            authorized = await review_plan_execution_authorization(
-                                HTTPUnderstandingModel(
-                                    settings.model_provider, settings.model_base_url,
-                                    settings.model_api_key, settings.model_timeout_seconds,
-                                    settings.model_max_output_tokens),
-                                settings.understanding_strong_model,
-                                body.content, existing_checkpoint, plan_decision.intent)
+                            # Reuse the identical current-turn authorization
+                            # evidence instead of asking a model twice.
+                            authorized = (confirmed_plan_execution
+                                if agent_decider is None and execution_policy is None
+                                else await review_plan_execution_authorization(
+                                    HTTPUnderstandingModel(
+                                        settings.model_provider, settings.model_base_url,
+                                        settings.model_api_key, settings.model_timeout_seconds,
+                                        settings.model_max_output_tokens),
+                                    settings.understanding_strong_model,
+                                    body.content, existing_checkpoint, plan_decision.intent))
                             if authorized:
                                 # Re-review can only permit the saved, read-only,
                                 # schema-bound pending steps, never arbitrary tools.
