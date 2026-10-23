@@ -494,11 +494,13 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                         try:
                             checkpoint = build_plan_checkpoint(body.content, plan_decision)
                         except ValueError:
-                            result = {"run_id": turn_id, "status": "partial",
-                                      "termination_reason": "plan_requires_clarification",
-                                      "answer": "计划步骤或参数不完整，请明确每步的工具与具体参数。",
-                                      "trace": [{"step": 0, "type": "plan_binding_missing"}],
-                                      "steps": 0}
+                            # A model's plan_only label is not authority to
+                            # intercept ordinary drafts or single tool actions.
+                            # Formal plans are admitted only with an executable,
+                            # user-grounded checkpoint. Otherwise the existing
+                            # Understanding/Execution Policy governs the request.
+                            # In particular, never elevate write permissions here.
+                            plan_decision = None
                         else:
                             result = {"run_id": turn_id, "status": "partial",
                                       "termination_reason": "plan_created_pending_execution",
