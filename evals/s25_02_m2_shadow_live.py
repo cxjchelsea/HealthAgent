@@ -45,6 +45,8 @@ async def run(args):
         settings.model_max_output_tokens)
     rows = []
     for cid, prompt, has_plan, pending, expected in CASES:
+        if args.case and cid not in args.case:
+            continue
         outcome = await evaluate_shadow(
             provider, settings.understanding_strong_model, prompt,
             has_plan=has_plan, pending_action=pending, timeout_s=args.timeout)
@@ -71,6 +73,10 @@ async def run(args):
             row["error_class"] = outcome["error_class"]
         if outcome.get("validation_errors"):
             row["validation_errors"] = outcome["validation_errors"]
+        if outcome.get("failure_stage"):
+            row["failure_stage"] = outcome["failure_stage"]
+        if outcome.get("validation_code"):
+            row["validation_code"] = outcome["validation_code"]
         rows.append(row)
         print(cid,row["result"])
     elapsed = [x["elapsed_ms"] for x in rows]
@@ -101,6 +107,8 @@ def main():
     parser=argparse.ArgumentParser()
     parser.add_argument("--output",default="evals/results/s25-02-m2-shadow-live.json")
     parser.add_argument("--timeout",type=float,default=45)
+    parser.add_argument("--case",action="append",choices=[item[0] for item in CASES],
+                        help="Only evaluate named case; may be specified multiple times")
     args=parser.parse_args()
     if os.environ.get("RUN_S25_02_SHADOW_LIVE")!="1":
         parser.error("RUN_S25_02_SHADOW_LIVE=1 required")
