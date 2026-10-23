@@ -4,6 +4,8 @@ Classification is not authority. Route a missing-checkpoint continuation only
 after a separate semantic confirmation; ordinary tool requests stay in AgentLoop.
 """
 import json
+from dataclasses import dataclass
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
@@ -102,3 +104,32 @@ async def review_plan_creation_reference(
         return PlanCreationReview.model_validate_json(raw).explicitly_requests_saved_plan
     except (UnderstandingError, ValueError, TypeError):
         return False
+
+
+@dataclass(frozen=True)
+class PlanAdmission:
+    """Final Host plan route. Model intent alone never grants an action."""
+    kind: Literal["ordinary", "create", "execute_first", "resume",
+                  "missing_plan", "existing_plan"]
+    
+
+def resolve_plan_admission(
+    proposal: PlanRequest, *, existing_checkpoint: dict | None,
+    creation_confirmed: bool = False,
+    missing_reference: bool | None = None,
+) -> PlanAdmission:
+    """Collapse mutually exclusive plan routes without changing state authority.
+
+    The caller separately validates step bindings, plan revision, user
+    authorization, and tool permissions. All insufficient proposals stay
+    ordinary; they do not become plans through inference.
+    """
+    if proposal.intent == "plan_only":
+        if not creation_confirmed:
+            return PlanAdmission("ordinary")
+        return PlanAdmission("existing_plan" if existing_checkpoint is not None
+                             else "create")
+    admitted = admit_plan_control(
+        proposal, existing_checkpoint=existing_checkpoint,
+        missing_reference=missing_reference)
+    return PlanAdmission(admitted if admitted is not None else "ordinary")
