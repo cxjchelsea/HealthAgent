@@ -202,3 +202,20 @@ def test_shadow_prompt_explains_single_task_vs_executable_plan():
     from agent.route_shadow import PROMPT
     assert "single task has one title" in PROMPT
     assert "formal executable plan has ordered steps" in PROMPT
+
+
+def test_prompt_documents_no_step_reference_for_cancel():
+    from agent.route_shadow import PROMPT
+    assert "Cancel pending argument is not saved_step" in PROMPT
+    assert "One-off task-manager item creation is agent_loop/tool_action" in PROMPT
+
+
+def test_cancel_pending_forged_step_reference_rejected():
+    data = route("cancel", source_quote="", route_target="pending_clarification",
+                 execution_scope="none", effect_intent="none",
+                 reference={"kind":"none","step_number":2})
+    result = asyncio.run(evaluate_shadow(
+        Stub(data), "fake", "取消这个操作",
+        has_plan=False, pending_action="mcp_reference_lookup"))
+    assert result["state"] == "unavailable"
+    assert result["validation_errors"][0]["path"] == "reference"
