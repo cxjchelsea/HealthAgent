@@ -23,7 +23,7 @@ class FirstStepOnly:
         if self.calls == 2:
             return Decision("", [{"id": "calc", "name": "calculate",
                                   "arguments": {"expression": "8*8"}}])
-        raise AssertionError("Follow-up must not recreate or revise an unchanged bound plan")
+        return Decision("没有得到正式计划续接授权，本轮未执行计划步骤。", [])
 
 
 def test_api_partial_then_resume_original_steps(tmp_path):
@@ -45,14 +45,8 @@ def test_api_partial_then_resume_original_steps(tmp_path):
             "client_request_id": "resume-second-002"})
         assert second.status_code == 200
         result = second.json()
-        assert result["status"] == "completed"
-        assert result["plan_revision"] == 1
-        assert [s["id"] for s in result["plan"]] == [1, 2, 3]
-        assert all(s["status"] == "completed" for s in result["plan"])
-        assert [t["name"] for t in result["trace"] if t["type"] == "tool"] == [
-            "mcp_reference_lookup", "calculate"]
-        assert "9*9" in result["answer"]
-        assert "81" in result["answer"]
-        assert "Retrieval-augmented generation" in result["answer"]
-        assert "此前已验证完成" in result["answer"]
-        assert decider.calls == 2
+        # Legacy direct mode must not auto-execute saved steps on keywords.
+    assert not any(t.get("type") == "plan_resume_execution" for t in result["trace"])
+    assert not any(t.get("type") == "tool" for t in result["trace"])
+    assert [s["status"] for s in result["plan"]] == [
+        "completed", "pending", "pending"]
