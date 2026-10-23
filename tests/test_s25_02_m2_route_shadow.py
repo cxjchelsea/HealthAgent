@@ -173,3 +173,14 @@ def test_clarification_mismatch_still_rejected_instead_of_repaired():
         Stub(bad), "fake", "请计算 19+23", has_plan=False, pending_action=None))
     assert outcome["state"] == "unavailable"
     assert outcome["validation_errors"][0]["path"] == "clarification"
+
+
+def test_shadow_reports_target_without_granting_tool_permission():
+    data = route(route_target="pending_clarification",
+                 reference={"kind":"pending_slot","pending_field":"term"})
+    outcome = asyncio.run(evaluate_shadow(
+        Stub(data), "fake", "RAG", has_plan=False,
+        pending_action="mcp_reference_lookup"))
+    assert outcome["route_target"] == "pending_clarification"
+    assert outcome["reference_kind"] == "pending_slot"
+    assert outcome["host_admission_complete"] is False
