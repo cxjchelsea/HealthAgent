@@ -156,7 +156,32 @@ effect mutation_requested; plan_execute_first => scope first_step;
 plan_resume => scope remaining_steps or all_steps. No other combination.
 If there is NO saved plan, a reference to continuing one is still a
 plan_resume semantic proposal: lack of checkpoint is a HOST denial, not an
-excuse to invent steps."""
+excuse to invent steps.
+Routing distinctions (semantic proposals ONLY, never authorizations):
+- Creating ONE task via create_task is agent_loop with mutation_requested,
+  NOT plan_create. plan_create applies ONLY to a durable multi-step
+  executable PLAN explicitly requested for FUTURE work, not a normal write.
+- "Use calculate tool" and "query MCP definition of RAG" are agent_loop,
+  read_only and single_tool, not respond/clarify when parameters are present.
+- When has_pending_action=true and the user replies only with a value
+  answering the prior missing argument, choose agent_loop,
+  route_target=pending_clarification and reference.kind=pending_slot.
+  Pending field is unverified unless the Host supplies its exact binding.
+- An independent calculator request while a plan exists is agent_loop,
+  NOT respond and NOT plan_resume, especially with "do not execute plan".
+- The lack of a saved plan does not change the semantic request to resume it;
+  return plan_resume and let Host deny missing plan.
+- An unknown tool explicitly requested is agent_loop as an intent proposal;
+  only Host registry checks can reject the unsupported tool.
+- A request to continue saved remaining plan is plan_resume, saved_plan,
+  remaining_steps and read_only unless mutation of external state is asked.
+- Negative constraints such as "don't execute" narrow action scope.
+  A plan edit that says "don't execute" still requests a plan revision,
+  which is a durable plan mutation but NOT tool execution.
+Use EXACTLY one route with a combination allowed by the schema.
+Do not output inconsistent route_target, scope, effect or clarification.
+Do not fabricate source spans or reference fields; use empty/default
+values if original text does not prove the field."""
 
 
 async def evaluate_shadow(provider: HTTPUnderstandingModel, model_name: str,
@@ -185,7 +210,9 @@ async def evaluate_shadow(provider: HTTPUnderstandingModel, model_name: str,
                 "elapsed_ms":int((time.perf_counter()-began)*1000)}
     except ValidationError as exc:
         diagnostics = [{"path":".".join(str(i) for i in err["loc"])[:120],
-                        "type":err["type"][:80]}
+                        "type":err["type"][:80],
+                        "code": (str(err.get("ctx", {}).get("error", ""))[:80]
+                                 if err["type"] == "value_error" else "")}
                        for err in exc.errors(include_url=False)[:8]]
         return {"state":"unavailable","error_class":"ValidationError",
                 "validation_errors":diagnostics,
