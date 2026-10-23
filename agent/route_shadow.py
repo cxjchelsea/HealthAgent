@@ -215,6 +215,7 @@ async def evaluate_shadow(provider: HTTPUnderstandingModel, model_name: str,
     """Isolated evaluation: never invokes AgentLoop, tools, stores or permissions."""
     import asyncio
     began = time.perf_counter()
+    stage = "provider"
     try:
         raw = await asyncio.wait_for(provider.complete(
             model=model_name, response_schema=ShadowRoute.model_json_schema(),
@@ -224,8 +225,11 @@ async def evaluate_shadow(provider: HTTPUnderstandingModel, model_name: str,
                           "has_pending_action":pending_action is not None,
                           "pending_action_tool":pending_action
                       },ensure_ascii=False)}]), timeout=timeout_s)
+        stage = "schema"
         result = ShadowRoute.model_validate_json(raw)
+        stage = "source_provenance"
         verify_source_spans(result, message)
+        stage = "host_preview"
         would_deny = hypothetical_admission(
             result, has_plan=has_plan, pending_action=pending_action)
         return {"state":"valid","route":result.primary_route,
@@ -244,6 +248,15 @@ async def evaluate_shadow(provider: HTTPUnderstandingModel, model_name: str,
                        for err in exc.errors(include_url=False)[:8]]
         return {"state":"unavailable","error_class":"ValidationError",
                 "validation_errors":diagnostics,
+                "elapsed_ms":int((time.perf_counter()-began)*1000)}
+    except ValueError as exc:
+        # Fixed allowlist; never reflect raw exception or model/user content.
+        safe = {"shadow_untrusted_source_quote",
+                "shadow_untrusted_source_span",
+                "shadow_mutation_conflicts_negative_constraint"}
+        code = str(exc) if str(exc) in safe else "other_value_error"
+        return {"state":"unavailable","error_class":"ValueError",
+                "failure_stage":stage,"validation_code":code,
                 "elapsed_ms":int((time.perf_counter()-began)*1000)}
     except Exception as exc:
         return {"state":"unavailable","error_class":type(exc).__name__,
