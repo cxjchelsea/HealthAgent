@@ -133,6 +133,14 @@ def hypothetical_admission(route: ShadowRoute, *, has_plan: bool,
         # A model may request another question, but a bound reply is not
         # authority to re-open an already answered pending tool slot.
         return "pending_clarification_requires_host_review"
+    if route.route_target == "pending_clarification" and route.primary_route == "agent_loop":
+        if pending_action is None:
+            return "missing_pending_action"
+        if route.reference.kind != "pending_slot":
+            return "pending_reference_unverified"
+        if route.reference.pending_field is None:
+            return "pending_field_unverified"
+        return "pending_original_request_binding_unverified"
     if route.reference.kind == "pending_slot" and (pending_action is None or
             route.reference.pending_field is None):
         return "pending_binding_unverified"
