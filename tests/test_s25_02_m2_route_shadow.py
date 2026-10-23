@@ -34,7 +34,7 @@ def test_valid_semantic_shadow_only_reports_route():
         shadow, "fake", "请计算 19+23", has_plan=True, pending_action=None))
     assert result["state"] == "valid"
     assert result["route"] == "agent_loop"
-    assert result["host_would_deny"] is None
+    assert result["host_would_deny"] == "tool_arguments_unverified"
     assert shadow.calls == 1
 
 
