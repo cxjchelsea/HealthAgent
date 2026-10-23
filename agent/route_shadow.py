@@ -3,6 +3,7 @@ import json
 import time
 from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from agent.understanding import GoalSpec, GoalChangeProposal, HTTPUnderstandingModel
 
 
 class EvidenceSpan(BaseModel):
@@ -42,7 +43,6 @@ class ShadowClarification(BaseModel):
             raise ValueError("shadow_missing_question")
         return self
 
-from agent.understanding import GoalSpec, GoalChangeProposal, HTTPUnderstandingModel
 
 
 class ShadowRoute(BaseModel):
