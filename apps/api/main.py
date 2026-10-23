@@ -11,7 +11,7 @@ from sqlalchemy.exc import IntegrityError
 from agent.config import Settings
 from agent.understanding import UnderstandingContext, UnderstandingService, HTTPUnderstandingModel, UnderstandingError
 from agent.execution_policy import decide_execution_policy_detail, reconcile_execution_policy
-from agent.route_shadow import evaluate_shadow
+from agent.route_shadow import evaluate_shadow, compare_to_legacy
 from agent.decision import NativeToolDecision
 from agent.loop import AgentLoop
 from agent.tools import execute_tool, SCHEMAS
@@ -812,7 +812,7 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                 pending_action=pending_action)
         response_data = {**result, "conversation_id": cid, "message_id": assistant_id}
         if shadow is not None:
-            response_data["route_shadow"] = shadow
+            response_data["route_shadow"] = {**shadow, **compare_to_legacy(shadow, result)}
         return response_data
 
     @app.get("/conversations/{cid}/turns/{turn_id}/diagnostics")
