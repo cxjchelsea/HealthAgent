@@ -19,7 +19,7 @@ from agent.pending_reply import classify_pending_reply
 from agent.capability_review import review_unsupported_capability
 from agent.plan_intent import review_plan_intent, build_plan_checkpoint
 from agent.plan_execution_review import review_plan_execution_authorization
-from agent.plan_revision_review import review_plan_revision, apply_plan_revision, check_plan_edit_intent
+from agent.plan_revision_review import review_plan_revision, apply_plan_revision, check_plan_edit_intent, explicit_step_binding_conflict
 from agent.tools import TOOL_SCHEMAS
 from agent.mcp_stdio_client import StdioMCPClient
 from agent.context import build_context
@@ -222,6 +222,20 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                           "trace": [{"step": 0, "type": "goal_confirmation"}], "steps": 0}
             if settings.understanding_strategy not in {"direct", "structured"}:
                 raise UnderstandingError("invalid_understanding_strategy")
+            # A strict, user-grounded contradiction can be rejected before
+            # invoking any classifier or generic Understanding model.
+            if (result is None and existing_checkpoint
+                    and settings.understanding_strategy == "structured"
+                    and agent_decider is None and body.goal_confirmation is None
+                    and explicit_step_binding_conflict(body.content, existing_checkpoint)):
+                result = {"run_id": turn_id, "status": "partial",
+                          "termination_reason": "plan_revision_conflict",
+                          "answer": "指定步骤与当前计划绑定不一致，请确认要修改的步骤编号。",
+                          "trace": [{"step": 0, "type": "plan_revision_conflict"}],
+                          "steps": 0, "plan_checkpoint": existing_checkpoint,
+                          "plan": existing_checkpoint["steps"],
+                          "plan_revision": existing_checkpoint["revision"],
+                          "plan_events": []}
             # Resolve plan execution intent independently and FIRST, so a
             # revision classifier cannot capture "execute first step" as an edit.
             pending_plan_execution_intent = None
