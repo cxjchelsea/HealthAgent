@@ -9,6 +9,7 @@ from agent.decision import NativeToolDecision
 from agent.tools import TOOL_SCHEMAS, execute_tool
 from agent.skills import exposed_tools, load_instructions, SKILL_VERSION
 from agent.planning import PlanLedger
+from agent.arithmetic_recovery import arithmetic_equivalent
 from agent.tools import SCHEMAS
 from agent.argument_provenance import REQUIRED_USER_VALUES, user_supplied_value, clarification_question
 from pydantic import ValidationError
@@ -26,6 +27,7 @@ class AgentState(TypedDict):
     pending_action: str | None
     rejected_action_keys: list[str]
     unresolved_tool_failures: list[str]
+    unresolved_calculation_errors: dict[str, str]
     iterations: int
     audit_enabled: bool
     audit: list[dict]
@@ -172,6 +174,7 @@ class AgentLoop:
         audit = list(state["audit"])
         rejected_keys = list(state["rejected_action_keys"])
         unresolved_failures = list(state["unresolved_tool_failures"])
+        calculation_errors = dict(state["unresolved_calculation_errors"])
         calls = last.get("tool_calls", [])[:4]
         if any(c["function"].get("name") == "request_clarification" for c in calls):
             allowed_names = {tool["function"]["name"] for tool in state["allowed_tools"]}
@@ -262,8 +265,33 @@ class AgentLoop:
             if name not in {"propose_plan", "revise_plan", "complete_plan_step"}:
                 if result["ok"]:
                     unresolved_failures = [a for a in unresolved_failures if a != action_key]
+                    calculation_errors.pop(action_key, None)
+                    if name == "calculate" and isinstance(arguments, dict):
+                        recovered = []
+                        for old_key in unresolved_failures:
+                            if calculation_errors.get(old_key) != "unsupported_expression":
+                                continue
+                            try:
+                                old_name, old_args = json.loads(old_key)
+                            except (ValueError, TypeError):
+                                continue
+                            if (old_name == "calculate" and isinstance(old_args, dict)
+                                    and arithmetic_equivalent(
+                                        old_args.get("expression"),
+                                        arguments.get("expression"),
+                                        result.get("value"))):
+                                recovered.append(old_key)
+                        if recovered:
+                            unresolved_failures = [a for a in unresolved_failures if a not in recovered]
+                            for key in recovered:
+                                calculation_errors.pop(key, None)
+                            traces.append({"step": state["iterations"],
+                                           "type": "arithmetic_failure_recovered",
+                                           "recovered_count": len(recovered)})
                 elif action_key not in unresolved_failures:
                     unresolved_failures.append(action_key)
+                    if name == "calculate":
+                        calculation_errors[action_key] = str(result.get("error", ""))
             if name == "recall_memory":
                 state["memory_recall_observed"] = True
             if name not in {"propose_plan", "revise_plan", "complete_plan_step"}:
@@ -298,6 +326,7 @@ class AgentLoop:
                   "plan": state["plan"], "last_success": state["last_success"],
                   "rejected_action_keys": rejected_keys,
                   "unresolved_tool_failures": unresolved_failures,
+                  "unresolved_calculation_errors": calculation_errors,
                   "memory_recall_observed": state["memory_recall_observed"]}
         # A rejected plan call is not progress. Permit one correction, then stop
         # safely instead of consuming the whole decision budget.
@@ -528,7 +557,8 @@ class AgentLoop:
             "traces": [], "tasks": [], "final": "", "status": "running",
             "termination_reason": None, "pending_action": None,
             "rejected_action_keys": [],
-            "unresolved_tool_failures": [], "iterations": 0,
+            "unresolved_tool_failures": [],
+            "unresolved_calculation_errors": {}, "iterations": 0,
             "audit_enabled": include_evidence, "audit": [],
             "allowed_tools": selected_tools,
             "plan": resumed, "last_success": None,
