@@ -44,7 +44,7 @@ def test_c05_clear_shell_request_is_denied_without_tool_execution(tmp_path, monk
         assert out["termination_reason"] == "unsupported_capability"
         assert out["trace"][0]["type"] == "unsupported_capability"
         assert out["steps"] == 0
-        assert "不" in out["answer"] and "shell" in out["answer"]
+        assert "无法" in out["answer"] and "shell" in out["answer"]
 
 
 def test_b03_ambiguous_task_still_clarifies(tmp_path, monkeypatch):
