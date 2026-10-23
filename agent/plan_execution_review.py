@@ -39,10 +39,18 @@ async def review_plan_execution_authorization(
         return False
     system = (
         "Return JSON {explicitly_authorizes_pending_steps: boolean}. True only when "
-        "the CURRENT user explicitly instructs you to execute the still pending "
-        "steps of the already saved plan. An instruction to merely inspect, discuss, "
-        "draft, pause, cancel, or revise is false. 'Continue remaining steps' counts "
-        "as explicit execution authorization when a pending plan exists. "
+        "the CURRENT user explicitly instructs you to execute the saved plan "
+        "within the requested scope. IMPORTANT: requested_plan_action=execute_first "
+        "means the user asks to run ONLY the first saved step; authorization of "
+        "that one step is TRUE even if the user expressly says not to run the "
+        "other steps. It does not require authorization for ALL pending steps. "
+        "requested_plan_action=resume means the user authorizes executing "
+        "remaining steps. An instruction to merely inspect, discuss, draft, "
+        "cancel, revise, or do an independent tool calculation is FALSE. "
+        "A negative instruction about executing the entire plan does NOT "
+        "cancel a positive authorization to run the explicitly selected first "
+        "step, but a standalone request saying NOT to execute the saved plan "
+        "is FALSE. Judge the full current message, not isolated negation words. "
         "Do not infer authorization from the old plan itself. This is a read-only "
         "execution check, not permission for writes or new tools."
     )
