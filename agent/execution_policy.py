@@ -65,6 +65,36 @@ async def verify_text_only_policy(provider: HTTPUnderstandingModel, model_name: 
     return decision
 
 
+class MutationReview(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    requests_mutation: bool
+
+
+async def verify_execute_policy(provider: HTTPUnderstandingModel, model_name: str,
+                                message: str, interpretation: dict,
+                                decision: ExecutionPolicyDecision) -> ExecutionPolicyDecision:
+    """Downscope erroneous execute routes; never grant wider authority."""
+    if decision.mode != "execute":
+        return decision
+    raw = await provider.complete(model=model_name, messages=[
+        {"role": "system", "content":
+         "Return ONLY JSON with requests_mutation boolean. True only if the "
+         "CURRENT user asks to actually save, create, update, delete, or persist "
+         "data or a durable goal. False for read-only calculations, retrieval, "
+         "or explanations, even if the model must call real tools. "
+         "Do not infer permission from previous context or a hypothetical."},
+        {"role": "user", "content": json.dumps({
+            "message": message, "understanding": interpretation}, ensure_ascii=False)}
+    ], response_schema=MutationReview.model_json_schema())
+    try:
+        review = MutationReview.model_validate_json(raw)
+    except ValueError as exc:
+        raise UnderstandingError("execution_policy_review_invalid") from exc
+    if not review.requests_mutation:
+        return ExecutionPolicyDecision(mode="read_only", target="tool_action")
+    return decision
+
+
 async def decide_execution_policy_detail(
     provider: HTTPUnderstandingModel, model_name: str, current_message: str,
     interpretation: dict,
