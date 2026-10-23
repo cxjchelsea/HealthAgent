@@ -17,3 +17,14 @@
 4. 后续单独授权执行时，执行 9*9=81 而非 8*8=64。仅在观察到真实工具和状态证据后判 PASS。
 
 自动化 CI 仅验证受控模型/接口行为；**真实 Qwen D05 仍需人工复测**。PR #22 Draft；不得合并 main。
+
+
+## D05-F02 — 计划修改后执行第一步误被修改分类器拦截
+
+真实 Qwen 在“第二步从 8*8 改为 9*9”成功、版本更新、无工具执行后，用户下一轮明确说“现在请帮我执行第一步”，却再次收到 `plan_revision_conflict`，该响应甚至沿用旧的 8*8 冲突文案。直接原因是 API 在已有计划时优先调用 `review_plan_revision`，将其模型输出 `intent=revise` 立即当作当前请求的修改操作，导致执行请求尚未到达 `review_plan_intent`。
+
+修复：在现有计划时独立执行受约束 `review_plan_intent`，优先识别 `execute_first/resume`，匹配后跳过修改分类器，将该判断传给原执行授权及 PlanLedger 恢复链路。计划修改则仍走原来的保守旧/新参数校验。进一步要求修改分类器在当前用户原文中找得到 old/new 两个表达式，否则不能把历史修改参数带入本轮产生修订冲突。这不是 `shell`、`执行` 等关键词路由。
+
+新增 `tests/test_s25_02_d05_execution_priority.py`：正式 Conversation API 贯穿创建计划→修改第二步→执行第一步，验证修改分类器在执行请求中零次调用、MCP 第一步 completed、第二步带 9*9 保持 pending；`tests/test_s25_02_d05_revision_provenance.py`：模型凭空输出旧修改字段时不得把执行请求误判为计划修改。用户可使用现有计划重新发送明确执行第一步的原话，检查 trace 仅 MCP、计划 version 不变、第二步 9*9 pending。
+
+依赖真实 Qwen 的分类可能仍然不稳定；受控自动化无法替代人工验收。PR #22 Draft，未经用户授权不得合并。
