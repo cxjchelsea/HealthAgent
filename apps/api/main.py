@@ -16,6 +16,7 @@ from agent.tools import execute_tool, SCHEMAS
 from agent.argument_provenance import REQUIRED_USER_VALUES
 from agent.pending_reply import classify_pending_reply
 from agent.capability_review import review_unsupported_capability
+from agent.plan_intent import review_plan_intent, build_plan_checkpoint
 from agent.tools import TOOL_SCHEMAS
 from agent.mcp_stdio_client import StdioMCPClient
 from agent.context import build_context
@@ -382,6 +383,54 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                   "trace": [{"step": 0, "type": "goal_confirmation_required"}],
                                   "steps": 0, "proposed_goal": parsed_result.goal.model_dump(),
                                   "expected_goal_version": previous_goal["version"] + 1}
+            plan_control = None
+            # Separate authoring a future plan from executing its steps. Only
+            # the bound checkpoint can authorize later read-only execution.
+            if (result is None and parsed_result is not None
+                    and agent_decider is None and execution_policy is None):
+                plan_decision = await review_plan_intent(
+                    HTTPUnderstandingModel(settings.model_provider,
+                                           settings.model_base_url,
+                                           settings.model_api_key,
+                                           settings.model_timeout_seconds,
+                                           settings.model_max_output_tokens),
+                    settings.understanding_strong_model,
+                    body.content, bool(existing_checkpoint))
+                if plan_decision.intent == "plan_only":
+                    if existing_checkpoint:
+                        result = {"run_id": turn_id, "status": "partial",
+                                  "termination_reason": "existing_plan_requires_revision",
+                                  "answer": "会话已有计划，请先确认修改现有计划。",
+                                  "trace": [{"step": 0, "type": "plan_creation_blocked"}],
+                                  "steps": 0}
+                    else:
+                        try:
+                            checkpoint = build_plan_checkpoint(body.content, plan_decision)
+                        except ValueError:
+                            result = {"run_id": turn_id, "status": "partial",
+                                      "termination_reason": "plan_requires_clarification",
+                                      "answer": "计划步骤或参数不完整，请明确每步的工具与具体参数。",
+                                      "trace": [{"step": 0, "type": "plan_binding_missing"}],
+                                      "steps": 0}
+                        else:
+                            result = {"run_id": turn_id, "status": "partial",
+                                      "termination_reason": "plan_created_pending_execution",
+                                      "answer": "已建立计划，尚未执行任何步骤。请指定执行步骤。",
+                                      "trace": [{"step": 0, "type": "plan_created"}],
+                                      "steps": 0, "plan": checkpoint["steps"],
+                                      "plan_revision": checkpoint["revision"],
+                                      "plan_events": [{"event": "plan_created",
+                                                       "revision": checkpoint["revision"]}],
+                                      "plan_checkpoint": checkpoint}
+                elif plan_decision.intent in {"execute_first", "resume"}:
+                    if existing_checkpoint:
+                        plan_control = plan_decision.intent
+                    else:
+                        result = {"run_id": turn_id, "status": "partial",
+                                  "termination_reason": "plan_not_found",
+                                  "answer": "没有可继续执行的已保存计划，请先建立计划。",
+                                  "trace": [{"step": 0, "type": "plan_not_found"}],
+                                  "steps": 0}
             if result is None:
                 decider = agent_decider if agent_decider is not None else NativeToolDecision(settings)
                 result = await AgentLoop(decider, task_store=ConversationTaskStore(Session, cid),
@@ -390,7 +439,8 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                     skill_budget_chars=settings.skill_budget_chars).run(body.content, history=context,
                                           plan_checkpoint=existing_checkpoint,
                                           understanding_result=interpretation,
-                                          execution_mode=execution_mode)
+                                          execution_mode=execution_mode,
+                                          plan_control=plan_control)
             if result["status"] in {"completed", "partial"}:
                 answer, status = result["answer"], result["status"]
                 if status == "partial" and (
