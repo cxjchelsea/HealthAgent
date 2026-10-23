@@ -83,3 +83,32 @@ def test_c05_allowlisted_tool_cannot_be_denied():
         Model('{"explicitly_requested_tool":"calculate","request_is_clear":true}'),
         "strong", "请执行 calculate", {"calculate"}))
     assert out is None
+
+
+def test_f04_localized_name_of_available_tool_cannot_trigger_denial():
+    class Provider:
+        async def complete(self, *, messages, model, response_schema=None):
+            from json import loads
+            context = loads(messages[-1]["content"])
+            assert "calculate" in context["available_tools"]
+            assert "12/(3-3)" in context["current_message"]
+            return json.dumps({
+                "explicitly_requested_tool": "计算工具",
+                "request_is_clear": True,
+                "matches_available_capability": True,
+            })
+
+    assert asyncio.run(review_unsupported_capability(
+        Provider(), "strong",
+        "请调用计算工具计算 12/(3-3)，并准确报告执行情况。",
+        {"calculate", "mcp_reference_lookup"})) is None
+
+
+def test_f04_named_unsupported_capability_still_denied():
+    assert asyncio.run(review_unsupported_capability(
+        Model(json.dumps({
+            "explicitly_requested_tool": "shell",
+            "request_is_clear": True,
+            "matches_available_capability": False,
+        })),
+        "strong", "请使用 shell 工具执行命令", {"calculate"})) == "shell"
