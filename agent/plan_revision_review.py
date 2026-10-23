@@ -113,3 +113,31 @@ async def check_plan_edit_intent(provider, model, message, checkpoint):
         return PlanEditIntent.model_validate_json(raw).edit_requested
     except (UnderstandingError, ValueError, TypeError):
         return False
+
+
+def explicit_step_binding_conflict(message: str, checkpoint: dict) -> bool:
+    """Conservative conflict-only gate for a stated step and two expressions.
+
+    It never applies a revision. An ambiguous request is left to model review.
+    """
+    steps = PlanLedger.restore(checkpoint).snapshot()
+    ordinals = {"一": 1, "二": 2, "三": 3, "四": 4,
+                "五": 5, "六": 6, "七": 7, "八": 8}
+    refs = re.findall(r"第([一二三四五六七八1-8])步", message)
+    if len(refs) != 1:
+        return False
+    step_number = ordinals.get(refs[0], int(refs[0]) if refs[0].isdigit() else -1)
+    if not 1 <= step_number <= len(steps):
+        return False
+    # Strict grammar, not general intent recognition: require a concrete
+    # before/after arithmetic change in the same message.
+    expressions = re.findall(r"(?<![\\w.])\\d+(?:\\s*[+*/-]\\s*\\d+)+(?![\\w.])", message)
+    if len(expressions) != 2:
+        return False
+    if not re.search(r"(?:不是|改为|修改为|换成|而是)", message):
+        return False
+    target = steps[step_number - 1]
+    old = expressions[0].replace(" ", "")
+    if target.get("expected_tool") != "calculate":
+        return True
+    return target.get("expected_arguments", {}).get("expression") != old
