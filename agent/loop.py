@@ -508,6 +508,8 @@ class AgentLoop:
                       "plan_revision": resumed.revision,
                       "plan_events": list(resumed.events),
                       "plan_checkpoint": resumed.checkpoint()}
+            if execution_mode is not None:
+                output["execution_mode"] = execution_mode
             if include_evidence:
                 output["audit"] = audit
                 output["tasks"] = []
