@@ -25,7 +25,7 @@ async def review_plan_revision(provider: HTTPUnderstandingModel, model: str,
         raw = await provider.complete(model=model, messages=[
         {"role": "system", "content":
          "Return JSON matching schema. Classify a request to EDIT an existing saved "
-         plan as revise, otherwise other. Also set edit_requested=true "
+         "plan as revise, otherwise other. Also set edit_requested=true "
          "whenever the user attempts to edit a saved plan, even if the exact "
          "step binding is unclear; false for execute/resume/status/chat. "
          "For revise identify explicit 1-based "
