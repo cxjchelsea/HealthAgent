@@ -11,6 +11,7 @@ from sqlalchemy.exc import IntegrityError
 from agent.config import Settings
 from agent.understanding import UnderstandingContext, UnderstandingService, HTTPUnderstandingModel, UnderstandingError
 from agent.execution_policy import decide_execution_policy_detail, reconcile_execution_policy
+from agent.route_shadow import evaluate_shadow
 from agent.decision import NativeToolDecision
 from agent.loop import AgentLoop
 from agent.tools import execute_tool, SCHEMAS
@@ -793,7 +794,26 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                        **({"understanding_attempts": understanding_attempts}
                                           if failure_code == "understanding_unavailable"
                                           else {})})
-        return {**result, "conversation_id": cid, "message_id": assistant_id}
+        # M2 diagnostic shadow is AFTER legacy durable finalization.
+        # No effect on tool execution, plan mutation or persisted Turn state.
+        shadow = None
+        if (settings.route_shadow_enabled
+                and settings.understanding_strategy == "structured"
+                and settings.model_provider != "fake"
+                and agent_decider is None
+                and body.goal_confirmation is None):
+            shadow = await evaluate_shadow(
+                HTTPUnderstandingModel(
+                    settings.model_provider, settings.model_base_url,
+                    settings.model_api_key, settings.model_timeout_seconds,
+                    settings.model_max_output_tokens),
+                settings.understanding_strong_model, body.content,
+                has_plan=existing_checkpoint is not None,
+                pending_action=pending_action)
+        response_data = {**result, "conversation_id": cid, "message_id": assistant_id}
+        if shadow is not None:
+            response_data["route_shadow"] = shadow
+        return response_data
 
     @app.get("/conversations/{cid}/turns/{turn_id}/diagnostics")
     def turn_diagnostics(cid: str, turn_id: str, uid=Depends(user_id)):
