@@ -37,7 +37,7 @@ def test_host_admission_missing_checkpoint(intent, missing_reference, expected):
         missing_reference=missing_reference) == intent
 
 
-@pytest.mark.parametrize("request, answer", [
+@pytest.mark.parametrize("utterance, answer", [
     ("请使用计算工具计算 (19+23)*4。", False),
     ("用 calculate 求出(19+23)*4的值", False),
     ("计算一下 19 加 23 的和再乘以四", False),
@@ -47,12 +47,12 @@ def test_host_admission_missing_checkpoint(intent, missing_reference, expected):
     ("继续执行之前保存的计划剩余步骤", True),
     ("按之前计划只执行第一步", True),
 ])
-def test_independent_model_reference_review(request, answer):
+def test_independent_model_reference_review(utterance, answer):
     class Provider:
         async def complete(self, **kwargs):
             return json.dumps({"explicitly_refers_to_saved_plan": answer})
     assert asyncio.run(review_missing_plan_reference(
-        Provider(), "strong", request)) is answer
+        Provider(), "strong", utterance)) is answer
 
 
 def test_invalid_reference_review_never_admits_plan():
