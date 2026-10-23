@@ -57,6 +57,8 @@ async def run(args):
                          and outcome.get("route")==expected else "REVIEW")}
         if outcome.get("error_class"):
             row["error_class"] = outcome["error_class"]
+        if outcome.get("validation_errors"):
+            row["validation_errors"] = outcome["validation_errors"]
         rows.append(row)
         print(cid,row["result"])
     elapsed = [x["elapsed_ms"] for x in rows]
@@ -85,7 +87,7 @@ async def run(args):
 
 def main():
     parser=argparse.ArgumentParser()
-    parser.add_argument("--output",default="s25-02-m2-shadow-live.json")
+    parser.add_argument("--output",default="evals/results/s25-02-m2-shadow-live.json")
     parser.add_argument("--timeout",type=float,default=45)
     args=parser.parse_args()
     if os.environ.get("RUN_S25_02_SHADOW_LIVE")!="1":
