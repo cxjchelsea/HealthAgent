@@ -168,3 +168,41 @@ async def evaluate_shadow(provider: HTTPUnderstandingModel, model_name: str,
     except Exception as exc:
         return {"state":"unavailable","error_class":type(exc).__name__,
                 "elapsed_ms":int((time.perf_counter()-began)*1000)}
+
+
+def compare_to_legacy(shadow: dict, result: dict) -> dict:
+    """Only infer known legacy routes from trusted Host outcome markers.
+
+    Never use answer wording to infer execution and never claim equivalence
+    where a terminal reason cannot uniquely identify the admitted route.
+    """
+    reasons = {
+        "plan_created_pending_execution": "plan_create",
+        "plan_revised_pending_execution": "plan_revise",
+        "plan_first_step_already_completed": "plan_execute_first",
+        "plan_first_step_verified": "plan_execute_first",
+        "needs_input": "clarify",
+        "unsupported_capability": "reject",
+    }
+    reason = result.get("termination_reason")
+    observed = reasons.get(reason)
+    trace = result.get("trace", [])
+    if any(event.get("type") == "plan_resume_execution" for event in trace):
+        # Bounded saved-plan execution is evidence of a plan route, but without
+        # the original Host scope we cannot distinguish execute_first/resume.
+        observed = "saved_plan_execution_unspecified"
+    outcome = "uncomparable"
+    if shadow.get("state") == "valid" and observed is not None:
+        if observed == "saved_plan_execution_unspecified":
+            outcome = ("compatible_plan_execution" if shadow.get("route")
+                       in {"plan_execute_first", "plan_resume"} else "mismatch")
+        elif observed == "reject":
+            outcome = "not_comparable_to_semantic_route"
+        else:
+            outcome = "match" if shadow.get("route") == observed else "mismatch"
+    return {"legacy_route_evidence": observed or "unknown",
+            "comparison": outcome,
+            "legacy_status": result.get("status"),
+            "legacy_termination_reason": reason,
+            "legacy_tool_calls": sum(
+                event.get("type") == "tool" for event in trace)}
