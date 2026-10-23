@@ -81,7 +81,7 @@ async def review_plan_creation_reference(
     prompt = (
         "Return only JSON with explicitly_requests_saved_plan boolean. "
         "True ONLY when the CURRENT user explicitly asks to establish/save a "
-        "FUTURE EXECUTABLE MULTI-STEP PLAN without executing it now. "
+        "FUTURE SAVED EXECUTABLE PLAN (one or more steps) without executing it now. "
         "False for an ordinary single lookup, calculation, task creation, "
         "requests with a missing lookup term, questions, explanations, or "
         "written task drafts that do not request an executable plan. "
