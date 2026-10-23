@@ -20,7 +20,7 @@ from agent.capability_review import review_unsupported_capability
 from agent.clarification_review import review_read_only_clarification
 from agent.control_admission import admit_clarification
 from agent.plan_intent import review_plan_intent, build_plan_checkpoint
-from agent.plan_control import (admit_plan_control, review_missing_plan_reference,
+from agent.plan_control import (resolve_plan_admission, review_missing_plan_reference,
                                 review_plan_creation_reference)
 from agent.plan_execution_review import review_plan_execution_authorization
 from agent.plan_execution_scope import review_plan_execution_scope
@@ -512,69 +512,59 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                            settings.model_max_output_tokens),
                     settings.understanding_strong_model,
                     body.content, bool(existing_checkpoint))
+                # Produce a single mutually exclusive Host route from model
+                # proposals and independently checked saved-plan references.
+                creation_confirmed = False
+                missing_reference = None
                 if plan_decision.intent == "plan_only":
-                    # One model's plan_only label cannot turn an ordinary tool
-                    # request into a persisted execution plan. Check the user's
-                    # plan-creation intent independently before any checkpoint.
-                    admitted_creation = await review_plan_creation_reference(
+                    creation_confirmed = await review_plan_creation_reference(
                         HTTPUnderstandingModel(
                             settings.model_provider, settings.model_base_url,
                             settings.model_api_key, settings.model_timeout_seconds,
                             settings.model_max_output_tokens),
                         settings.understanding_strong_model, body.content)
-                    if not admitted_creation:
+                elif (plan_decision.intent in {"execute_first", "resume"}
+                      and existing_checkpoint is None):
+                    missing_reference = await review_missing_plan_reference(
+                        HTTPUnderstandingModel(
+                            settings.model_provider, settings.model_base_url,
+                            settings.model_api_key, settings.model_timeout_seconds,
+                            settings.model_max_output_tokens),
+                        settings.understanding_strong_model, body.content)
+                plan_route = resolve_plan_admission(
+                    plan_decision, existing_checkpoint=existing_checkpoint,
+                    creation_confirmed=creation_confirmed,
+                    missing_reference=missing_reference)
+                if plan_route.kind == "existing_plan":
+                    result = {"run_id": turn_id, "status": "partial",
+                              "termination_reason": "existing_plan_requires_revision",
+                              "answer": "会话已有计划，请先确认修改现有计划。",
+                              "trace": [{"step": 0, "type": "plan_creation_blocked"}],
+                              "steps": 0}
+                elif plan_route.kind == "create":
+                    try:
+                        checkpoint = build_plan_checkpoint(body.content, plan_decision)
+                    except ValueError:
+                        # An invalid model plan proposal cannot intercept a
+                        # standalone action or grant any write permission.
                         plan_decision = None
-                    elif existing_checkpoint:
-                        result = {"run_id": turn_id, "status": "partial",
-                                  "termination_reason": "existing_plan_requires_revision",
-                                  "answer": "会话已有计划，请先确认修改现有计划。",
-                                  "trace": [{"step": 0, "type": "plan_creation_blocked"}],
-                                  "steps": 0}
                     else:
-                        try:
-                            checkpoint = build_plan_checkpoint(body.content, plan_decision)
-                        except ValueError:
-                            # A model's plan_only label is not authority to
-                            # intercept ordinary drafts or single tool actions.
-                            # Formal plans are admitted only with an executable,
-                            # user-grounded checkpoint. Otherwise the existing
-                            # Understanding/Execution Policy governs the request.
-                            # In particular, never elevate write permissions here.
-                            plan_decision = None
-                        else:
-                            result = {"run_id": turn_id, "status": "partial",
-                                      "termination_reason": "plan_created_pending_execution",
-                                      "answer": "已建立计划，尚未执行任何步骤。请指定执行步骤。",
-                                      "trace": [{"step": 0, "type": "plan_created"}],
-                                      "steps": 0, "plan": checkpoint["steps"],
-                                      "plan_revision": checkpoint["revision"],
-                                      "plan_events": [{"event": "plan_created",
-                                                       "revision": checkpoint["revision"]}],
-                                      "plan_checkpoint": checkpoint}
-                elif plan_decision.intent in {"execute_first", "resume"}:
-                    # A plan-intent model label is only a proposal. Without a
-                    # checkpoint, independently distinguish an actual saved-plan
-                    # reference from an ordinary standalone tool action.
-                    missing_reference = None
-                    if existing_checkpoint is None:
-                        missing_reference = await review_missing_plan_reference(
-                            HTTPUnderstandingModel(
-                                settings.model_provider, settings.model_base_url,
-                                settings.model_api_key, settings.model_timeout_seconds,
-                                settings.model_max_output_tokens),
-                            settings.understanding_strong_model, body.content)
-                    admitted = admit_plan_control(
-                        plan_decision, existing_checkpoint=existing_checkpoint,
-                        missing_reference=missing_reference)
-                    if admitted is None:
-                        plan_decision = None
-                    elif admitted == "missing_plan":
                         result = {"run_id": turn_id, "status": "partial",
-                                  "termination_reason": "plan_not_found",
-                                  "answer": "没有可继续执行的已保存计划，请先建立计划。",
-                                  "trace": [{"step": 0, "type": "plan_not_found"}],
-                                  "steps": 0}
-                    else:
+                                  "termination_reason": "plan_created_pending_execution",
+                                  "answer": "已建立计划，尚未执行任何步骤。请指定执行步骤。",
+                                  "trace": [{"step": 0, "type": "plan_created"}],
+                                  "steps": 0, "plan": checkpoint["steps"],
+                                  "plan_revision": checkpoint["revision"],
+                                  "plan_events": [{"event": "plan_created",
+                                                   "revision": checkpoint["revision"]}],
+                                  "plan_checkpoint": checkpoint}
+                elif plan_route.kind == "missing_plan":
+                    result = {"run_id": turn_id, "status": "partial",
+                              "termination_reason": "plan_not_found",
+                              "answer": "没有可继续执行的已保存计划，请先建立计划。",
+                              "trace": [{"step": 0, "type": "plan_not_found"}],
+                              "steps": 0}
+                elif plan_route.kind in {"execute_first", "resume"}:
                         # Scope is independently reviewed against the current request.
                         # An uncertain result never expands execute_first into resume.
                         if agent_decider is None and execution_policy is None:
