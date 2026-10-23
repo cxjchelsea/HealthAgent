@@ -3,6 +3,45 @@ import json
 import time
 from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+
+class EvidenceSpan(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    start: int = Field(ge=0)
+    end: int = Field(gt=0)
+    exact_text: str = Field(min_length=1, max_length=400)
+
+
+class ShadowReference(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["none", "active_goal", "saved_plan", "saved_step", "pending_slot"] = "none"
+    step_number: int | None = Field(default=None, ge=1, le=8)
+    pending_field: str | None = Field(default=None, max_length=80)
+
+    @model_validator(mode="after")
+    def bound(self):
+        if (self.kind == "saved_step") != (self.step_number is not None):
+            raise ValueError("shadow_step_reference_mismatch")
+        if self.kind != "pending_slot" and self.pending_field is not None:
+            raise ValueError("shadow_pending_reference_mismatch")
+        return self
+
+
+class ShadowClarification(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    required: bool = False
+    reason: Literal["none", "missing_referent", "missing_argument",
+                    "conflicting_constraints", "ambiguous_scope", "uncertain_intent"] = "none"
+    question: str | None = Field(default=None, max_length=500)
+
+    @model_validator(mode="after")
+    def consistent(self):
+        if self.required != (self.reason != "none"):
+            raise ValueError("shadow_clarification_mismatch")
+        if self.required and not self.question:
+            raise ValueError("shadow_missing_question")
+        return self
+
 from agent.understanding import GoalSpec, GoalChangeProposal, HTTPUnderstandingModel
 
 
@@ -18,6 +57,10 @@ class ShadowRoute(BaseModel):
     effect_intent: Literal["none", "read_only", "mutation_requested"]
     ambiguity: Literal["clear", "needs_disambiguation", "unreliable"]
     source_quote: str = Field(max_length=400, default="")
+    source_evidence: list[EvidenceSpan] = Field(default_factory=list, max_length=12)
+    negative_constraints: list[EvidenceSpan] = Field(default_factory=list, max_length=8)
+    reference: ShadowReference = Field(default_factory=ShadowReference)
+    clarification: ShadowClarification = Field(default_factory=ShadowClarification)
     goal: GoalSpec | None = None
     goal_change: GoalChangeProposal | None = None
 
@@ -44,7 +87,50 @@ class ShadowRoute(BaseModel):
             raise ValueError("invalid_shadow_route_combination")
         if self.ambiguity != "clear" and self.primary_route not in {"clarify","respond"}:
             raise ValueError("ambiguous_effect_route")
+        if self.primary_route == "clarify" and not self.clarification.required:
+            raise ValueError("shadow_clarify_requires_question")
+        if self.primary_route != "clarify" and self.clarification.required:
+            raise ValueError("shadow_nonclarify_has_question")
+        if self.reference.kind == "saved_step" and self.primary_route not in {
+                "plan_execute_first", "plan_revise"}:
+            raise ValueError("shadow_step_wrong_route")
+        if self.reference.kind == "pending_slot" and self.route_target != "pending_clarification":
+            raise ValueError("shadow_pending_wrong_target")
         return self
+
+
+def verify_source_spans(route: ShadowRoute, message: str) -> None:
+    if route.source_quote and route.source_quote not in message:
+        raise ValueError("shadow_untrusted_source_quote")
+    for span in [*route.source_evidence, *route.negative_constraints]:
+        if (span.end > len(message) or span.end <= span.start
+                or message[span.start:span.end] != span.exact_text):
+            raise ValueError("shadow_untrusted_source_span")
+    # An ungrounded negative constraint cannot silently be discarded by admission.
+    if route.negative_constraints and route.effect_intent == "mutation_requested":
+        raise ValueError("shadow_mutation_conflicts_negative_constraint")
+
+
+def hypothetical_admission(route: ShadowRoute, *, has_plan: bool,
+                           pending_action: str | None) -> str | None:
+    if route.ambiguity != "clear":
+        return "ambiguous_route"
+    if route.primary_route in {"plan_execute_first", "plan_resume", "plan_revise"} and not has_plan:
+        return "missing_saved_plan"
+    if route.primary_route == "plan_create" and has_plan:
+        return "existing_saved_plan"
+    if route.route_target == "pending_clarification" and pending_action is None:
+        return "missing_pending_action"
+    if route.reference.kind == "pending_slot" and (pending_action is None or
+            route.reference.pending_field is None):
+        return "pending_binding_unverified"
+    if route.primary_route in {"plan_execute_first", "plan_resume", "plan_revise"}:
+        return "checkpoint_binding_unverified"
+    if route.effect_intent == "mutation_requested":
+        return "write_provenance_unverified"
+    if route.primary_route == "agent_loop" and route.effect_intent == "read_only":
+        return "tool_arguments_unverified"
+    return None
 
 
 PROMPT = """Return exactly JSON matching the provided schema. Identify ONE current-turn
@@ -54,7 +140,7 @@ saved plan. A written draft is NOT a persistent plan. Do not infer permission
 to write from history. If ambiguous select clarify. Do not invent plan/step
 authority, tool availability, completed steps or observations. source_quote
 must be exact text from CURRENT user message (or empty if unavailable).
-Never execute tools. This is a diagnostic shadow-only classification."""
+Never execute tools. This is a diagnostic shadow-only classification.\nOnly include source_evidence offsets verified against the current user message;\nuse empty arrays if uncertain. Explicit negative constraints must be quoted with\nexact offsets. A clarification route requires reason and question."""
 
 
 async def evaluate_shadow(provider: HTTPUnderstandingModel, model_name: str,
@@ -72,20 +158,12 @@ async def evaluate_shadow(provider: HTTPUnderstandingModel, model_name: str,
                           "has_pending_action":pending_action is not None
                       },ensure_ascii=False)}]), timeout=timeout_s)
         result = ShadowRoute.model_validate_json(raw)
-        if result.source_quote and result.source_quote not in message:
-            raise ValueError("shadow_untrusted_source_quote")
-        # This is NOT an admission. The bound Host state supplies conservative
-        # hypothetical rejection reasons for comparison, never execution.
-        would_deny = None
-        if result.primary_route in {"plan_execute_first","plan_resume","plan_revise"} and not has_plan:
-            would_deny = "missing_saved_plan"
-        elif result.primary_route == "plan_create" and has_plan:
-            would_deny = "existing_saved_plan"
-        elif result.route_target == "pending_clarification" and pending_action is None:
-            would_deny = "missing_pending_action"
+        verify_source_spans(result, message)
+        would_deny = hypothetical_admission(
+            result, has_plan=has_plan, pending_action=pending_action)
         return {"state":"valid","route":result.primary_route,
                 "scope":result.execution_scope,"effect":result.effect_intent,
-                "ambiguity":result.ambiguity,"host_would_deny":would_deny,
+                "ambiguity":result.ambiguity,"host_would_deny":would_deny,\n                "host_admission_complete":False,\n                "evidence_spans":len(result.source_evidence),
                 "elapsed_ms":int((time.perf_counter()-began)*1000)}
     except Exception as exc:
         return {"state":"unavailable","error_class":type(exc).__name__,
