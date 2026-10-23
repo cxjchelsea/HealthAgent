@@ -17,6 +17,7 @@ from agent.tools import execute_tool, SCHEMAS
 from agent.argument_provenance import REQUIRED_USER_VALUES
 from agent.pending_reply import classify_pending_reply
 from agent.capability_review import review_unsupported_capability
+from agent.clarification_review import review_read_only_clarification
 from agent.plan_intent import review_plan_intent, build_plan_checkpoint
 from agent.plan_control import (admit_plan_control, review_missing_plan_reference,
                                 review_plan_creation_reference)
@@ -309,6 +310,7 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                   "plan_revision": checkpoint["revision"],
                                   "plan_events": [revised["event"]]}
             pending_reply_kind = None
+            clarification_read_only = False
             if result is None and settings.understanding_strategy == "structured":
                 previous_goal = goal_store.load()
                 service = UnderstandingService(
@@ -362,10 +364,31 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                   "trace": [{"step": 0, "type": "unsupported_capability"}],
                                   "steps": 0}
                     else:
-                        result = {"run_id": turn_id, "status": "partial",
-                                  "answer": parsed["result"].clarification.question,
-                                  "trace": [{"step": 0, "type": "goal_clarification"}],
-                                  "steps": 0}
+                        # A second semantic review may veto a spurious generic
+                        # clarification only for an explicit complete read-only
+                        # request. Tool selection and execution remain in AgentLoop.
+                        ready_to_attempt = False
+                        if pending_action is None and body.goal_confirmation is None:
+                            ready_to_attempt = await review_read_only_clarification(
+                                HTTPUnderstandingModel(
+                                    settings.model_provider, settings.model_base_url,
+                                    settings.model_api_key, settings.model_timeout_seconds,
+                                    settings.model_max_output_tokens),
+                                settings.understanding_strong_model, body.content,
+                                parsed["result"].clarification.question,
+                                ["calculate", "mcp_reference_lookup", "utc_time",
+                                 "list_tasks", "recall_memory"])
+                        if ready_to_attempt:
+                            # Do not treat the model's original clarification as
+                            # a durable GoalStore mutation or writing approval.
+                            interpretation = None
+                            parsed_result = None
+                            clarification_read_only = True
+                        else:
+                            result = {"run_id": turn_id, "status": "partial",
+                                      "answer": parsed["result"].clarification.question,
+                                      "trace": [{"step": 0, "type": "goal_clarification"}],
+                                      "steps": 0}
             # Resume only a trustworthy, latest-turn missing-argument request.
             # Semantic change classification remains S25-01's responsibility.
             # The *current user's own reply* is the only source for the new value.
@@ -409,9 +432,9 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                               "trace": [{"step": 0, "type": "clarification_resumed",
                                          "name": pending_action, "ok": bool(observed.get("ok"))}],
                               "steps": 1}
-            execution_mode = None
-            execution_target = "tool_action" if (result is not None and
-                any(t.get("type") == "clarification_resumed" for t in result.get("trace", []))) else "goal_state"  # Legacy injected strategy conservatively preserves revisions.
+            execution_mode = "read_only" if clarification_read_only else None
+            execution_target = "tool_action" if (clarification_read_only or (result is not None and
+                any(t.get("type") == "clarification_resumed" for t in result.get("trace", [])))) else "goal_state"  # Legacy injected strategy conservatively preserves revisions.
             if result is None and interpretation is not None:
                 if execution_policy is not None:
                     policy_result = await execution_policy(body.content, interpretation)
