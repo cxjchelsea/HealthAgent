@@ -15,6 +15,8 @@ from agent.loop import AgentLoop
 from agent.tools import execute_tool, SCHEMAS
 from agent.argument_provenance import REQUIRED_USER_VALUES
 from agent.pending_reply import classify_pending_reply
+from agent.capability_review import review_unsupported_capability
+from agent.tools import TOOL_SCHEMAS
 from agent.mcp_stdio_client import StdioMCPClient
 from agent.context import build_context
 from services.task_store import ConversationTaskStore
@@ -251,10 +253,29 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                         reply=body.content, tool=pending_action)
                 if (parsed["result"].clarification.required
                         and pending_reply_kind != "answer"):
-                    result = {"run_id": turn_id, "status": "partial",
-                              "answer": parsed["result"].clarification.question,
-                              "trace": [{"step": 0, "type": "goal_clarification"}],
-                              "steps": 0}
+                    # Capability unavailability is not missing user information.
+                    # A narrow review may *deny* a clearly named missing tool,
+                    # but never grants access to that or any other tool.
+                    requested_unavailable = await review_unsupported_capability(
+                        HTTPUnderstandingModel(
+                            settings.model_provider, settings.model_base_url,
+                            settings.model_api_key, settings.model_timeout_seconds,
+                            settings.model_max_output_tokens),
+                        settings.understanding_strong_model, body.content,
+                        {t["function"]["name"] for t in TOOL_SCHEMAS})
+                    if requested_unavailable:
+                        result = {"run_id": turn_id, "status": "partial",
+                                  "termination_reason": "unsupported_capability",
+                                  "answer": "当前系统没有提供或授权 " +
+                                            requested_unavailable +
+                                            " 执行工具，因此无法执行该请求。",
+                                  "trace": [{"step": 0, "type": "unsupported_capability"}],
+                                  "steps": 0}
+                    else:
+                        result = {"run_id": turn_id, "status": "partial",
+                                  "answer": parsed["result"].clarification.question,
+                                  "trace": [{"step": 0, "type": "goal_clarification"}],
+                                  "steps": 0}
             # Resume only a trustworthy, latest-turn missing-argument request.
             # Semantic change classification remains S25-01's responsibility.
             # The *current user's own reply* is the only source for the new value.
