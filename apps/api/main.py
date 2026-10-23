@@ -594,12 +594,6 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                       "steps": 0}
                         elif result is None and existing_checkpoint:
                             plan_control = plan_control or plan_decision.intent
-                        elif result is None:
-                            result = {"run_id": turn_id, "status": "partial",
-                                      "termination_reason": "plan_not_found",
-                                      "answer": "没有可继续执行的已保存计划，请先建立计划。",
-                                      "trace": [{"step": 0, "type": "plan_not_found"}],
-                                      "steps": 0}
             if result is None:
                 decider = agent_decider if agent_decider is not None else NativeToolDecision(settings)
                 result = await AgentLoop(decider, task_store=ConversationTaskStore(Session, cid),
