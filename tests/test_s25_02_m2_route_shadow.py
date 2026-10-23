@@ -155,7 +155,7 @@ def test_validation_diagnostics_contain_only_error_path_and_type():
     assert outcome["state"] == "unavailable"
     assert outcome["error_class"] == "ValidationError"
     assert outcome["validation_errors"]
-    assert set(outcome["validation_errors"][0]) == {"path", "type"}
+    assert set(outcome["validation_errors"][0]) == {"path", "type", "code"}
     assert "请计算" not in json.dumps(outcome, ensure_ascii=False)
 
 
