@@ -37,7 +37,13 @@ async def review_plan_revision(provider: HTTPUnderstandingModel, model: str,
                  "arguments": s.get("expected_arguments"), "status": s["status"]}
                 for i, s in enumerate(steps)]}, ensure_ascii=False)}
         ], response_schema=RevisionProposal.model_json_schema())
-        return RevisionProposal.model_validate_json(raw)
+        proposal = RevisionProposal.model_validate_json(raw)
+        if proposal.intent == "revise" and not (
+                proposal.old_argument and proposal.new_argument
+                and proposal.old_argument.casefold() in message.casefold()
+                and proposal.new_argument.casefold() in message.casefold()):
+            return RevisionProposal(intent="other")
+        return proposal
     except (UnderstandingError, ValueError, TypeError):
         return RevisionProposal(intent="other")
 
