@@ -2,7 +2,7 @@
 import json
 import time
 from typing import Literal
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from agent.understanding import GoalSpec, GoalChangeProposal, HTTPUnderstandingModel
 
 
@@ -166,6 +166,13 @@ async def evaluate_shadow(provider: HTTPUnderstandingModel, model_name: str,
                 "ambiguity":result.ambiguity,"host_would_deny":would_deny,
                 "host_admission_complete":False,
                 "evidence_spans":len(result.source_evidence),
+                "elapsed_ms":int((time.perf_counter()-began)*1000)}
+    except ValidationError as exc:
+        diagnostics = [{"path":".".join(str(i) for i in err["loc"])[:120],
+                        "type":err["type"][:80]}
+                       for err in exc.errors(include_url=False)[:8]]
+        return {"state":"unavailable","error_class":"ValidationError",
+                "validation_errors":diagnostics,
                 "elapsed_ms":int((time.perf_counter()-began)*1000)}
     except Exception as exc:
         return {"state":"unavailable","error_class":type(exc).__name__,
