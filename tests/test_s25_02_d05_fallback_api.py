@@ -1,15 +1,4 @@
 
-# These API regression fixtures explicitly supply a formal saved-plan request.
-# Stub only the new semantic admission review; the actual production model
-# contract is tested separately in test_s25_02_f03_plan_admission.py.
-import pytest
-
-@pytest.fixture(autouse=True)
-def admit_fixture_saved_plan(monkeypatch):
-    async def admitted(*args, **kwargs):
-        return True
-    monkeypatch.setattr("apps.api.main.review_plan_creation_reference", admitted)
-
 """D05-F01 fallback is fail-closed and does not affect execution."""
 import json
 from fastapi.testclient import TestClient
@@ -18,6 +7,7 @@ from agent.understanding import HTTPUnderstandingModel
 from agent.plan_intent import PlanRequest
 from agent.plan_revision_review import RevisionProposal
 from apps.api.main import create_app
+import pytest
 
 
 def understood():
@@ -155,3 +145,12 @@ def test_deterministic_precheck_has_narrow_scope():
     assert not explicit_step_binding_conflict("现在执行第一步", cp)
     assert not explicit_step_binding_conflict("请把第二步计算 8*8 修改为 9*9", cp)
     assert not explicit_step_binding_conflict("什么是 8*8 和 9*9？", cp)
+
+# These API regression fixtures explicitly supply a formal saved-plan request.
+# Stub only the new semantic admission review; the actual production model
+# contract is tested separately in test_s25_02_f03_plan_admission.py.
+@pytest.fixture(autouse=True)
+def admit_fixture_saved_plan(monkeypatch):
+    async def admitted(*args, **kwargs):
+        return True
+    monkeypatch.setattr("apps.api.main.review_plan_creation_reference", admitted)
