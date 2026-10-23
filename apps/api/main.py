@@ -18,6 +18,7 @@ from agent.argument_provenance import REQUIRED_USER_VALUES
 from agent.pending_reply import classify_pending_reply
 from agent.capability_review import review_unsupported_capability
 from agent.clarification_review import review_read_only_clarification
+from agent.control_admission import admit_clarification
 from agent.plan_intent import review_plan_intent, build_plan_checkpoint
 from agent.plan_control import (admit_plan_control, review_missing_plan_reference,
                                 review_plan_creation_reference)
@@ -357,39 +358,41 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                             settings.model_max_output_tokens),
                         settings.understanding_strong_model, body.content,
                         {t["function"]["name"] for t in TOOL_SCHEMAS})
-                    if requested_unavailable:
+                    # Resolve competing model proposals through one Host route.
+                    # A pending tool-argument clarification is never silently
+                    # converted into a new read-only action.
+                    ready_to_attempt = False
+                    if (not requested_unavailable and pending_action is None
+                            and body.goal_confirmation is None):
+                        ready_to_attempt = await review_read_only_clarification(
+                            HTTPUnderstandingModel(
+                                settings.model_provider, settings.model_base_url,
+                                settings.model_api_key, settings.model_timeout_seconds,
+                                settings.model_max_output_tokens),
+                            settings.understanding_strong_model, body.content,
+                            parsed["result"].clarification.question,
+                            ["calculate", "mcp_reference_lookup", "utc_time",
+                             "list_tasks", "recall_memory"])
+                    clarification_route = admit_clarification(
+                        missing_argument_action=pending_action,
+                        unsupported_name=requested_unavailable,
+                        complete_read_only_request=ready_to_attempt)
+                    if clarification_route.kind == "unsupported":
                         result = {"run_id": turn_id, "status": "partial",
                                   "termination_reason": "unsupported_capability",
                                   "answer": "当前系统没有提供或授权 " +
-                                            requested_unavailable +
+                                            clarification_route.unsupported_name +
                                             " 执行工具，因此无法执行该请求。",
                                   "trace": [{"step": 0, "type": "unsupported_capability"}],
                                   "steps": 0}
+                    elif clarification_route.kind == "read_only":
+                        suppress_persistent_routing = clarification_route.skip_persistence
+                        clarification_read_only = True
                     else:
-                        # A second semantic review may veto a spurious generic
-                        # clarification only for an explicit complete read-only
-                        # request. Tool selection and execution remain in AgentLoop.
-                        ready_to_attempt = False
-                        if pending_action is None and body.goal_confirmation is None:
-                            ready_to_attempt = await review_read_only_clarification(
-                                HTTPUnderstandingModel(
-                                    settings.model_provider, settings.model_base_url,
-                                    settings.model_api_key, settings.model_timeout_seconds,
-                                    settings.model_max_output_tokens),
-                                settings.understanding_strong_model, body.content,
-                                parsed["result"].clarification.question,
-                                ["calculate", "mcp_reference_lookup", "utc_time",
-                                 "list_tasks", "recall_memory"])
-                        if ready_to_attempt:
-                            # Do not treat the model's original clarification as
-                            # a durable GoalStore mutation or writing approval.
-                            suppress_persistent_routing = True
-                            clarification_read_only = True
-                        else:
-                            result = {"run_id": turn_id, "status": "partial",
-                                      "answer": parsed["result"].clarification.question,
-                                      "trace": [{"step": 0, "type": "goal_clarification"}],
-                                      "steps": 0}
+                        result = {"run_id": turn_id, "status": "partial",
+                                  "answer": parsed["result"].clarification.question,
+                                  "trace": [{"step": 0, "type": "goal_clarification"}],
+                                  "steps": 0}
             # Resume only a trustworthy, latest-turn missing-argument request.
             # Semantic change classification remains S25-01's responsibility.
             # The *current user's own reply* is the only source for the new value.
