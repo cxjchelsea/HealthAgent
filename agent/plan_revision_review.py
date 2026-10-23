@@ -92,3 +92,24 @@ def apply_plan_revision(checkpoint: dict, message: str,
     return {"checkpoint": ledger.checkpoint(), "event": ledger.events[-1]}
 
 # A failed proposal must not be treated as permission to mutate a plan.
+
+class PlanEditIntent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    edit_requested: bool
+
+
+async def check_plan_edit_intent(provider, model, message, checkpoint):
+    steps = PlanLedger.restore(checkpoint).snapshot()
+    try:
+        raw = await provider.complete(model=model, messages=[
+            {"role": "system", "content":
+             "Classify the CURRENT request. Return JSON edit_requested boolean. "
+             "True for requests to change saved plan steps, including conflicting "
+             "step references. False for run, execute, resume or ordinary chat."},
+            {"role": "user", "content": json.dumps({
+                "request": message,
+                "saved_steps": [x["goal"] for x in steps]}, ensure_ascii=False)}
+        ], response_schema=PlanEditIntent.model_json_schema())
+        return PlanEditIntent.model_validate_json(raw).edit_requested
+    except (UnderstandingError, ValueError, TypeError):
+        return False
