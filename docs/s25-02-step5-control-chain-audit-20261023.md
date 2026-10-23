@@ -1,0 +1,68 @@
+# S25-02 Step 5 — Control-chain audit and convergence (2026-10-23)
+
+Status: IN PROGRESS. Scope: PR #22 only; no Step 6 or merge authorization.
+
+## Baseline and observed incidents
+
+Baseline at audit start: `8e7099bad5bc68b0d8a0791cf42f91f29e2c67fd`.
+Real Qwen acceptance incidents: D03 plan authoring/execution, D05 revision/execution,
+D06 resume scope, E06 drafts/write vs saved plans, F02 standalone math vs
+resume, F03 missing reference term vs plan creation, F04 unsupported capability
+and spurious goal clarification. Automated green does not prove live acceptance.
+
+## Actual control flow
+
+`apps/api/main.py`: owner/idempotency/concurrent-turn guard → load checkpoints
+→ early plan step conflict check → plan intent review (if saved plan)
+→ saved-plan revision review and unresolved-edit review → S25-01 Understanding
+→ pending-reply classification, unsupported capability and clarification review
+→ execution-policy proposal and one of its correction reviews → goal-state
+admission → plan-intent handling, creation review, missing-plan review, scope
+review and possible execution authorization review → AgentLoop → finalize
+Turn, GoalStore, PlanStore. The model's answers are proposals, not authority.
+
+`agent/loop.py`: read-only/write tool exposure governed by execution mode,
+tool schema/allowlist, source-provenance guard for create_task/MCP, real
+Observation, retry budget, PlanLedger evidence and terminal statuses.
+
+## Findings and disposition
+
+| ID | Finding | Risk | Disposition |
+|---|---|---|---|
+| CC-01 | A saved-plan turn could call `review_plan_intent` twice: once before revision and again after Understanding if the first intent was `other` or `plan_only` | Two contradictory model outputs for one request; unnecessary model latency | FIXED in this PR: reuse single turn-scoped proposal, still check step binding/authority separately |
+| CC-02 | Understanding clarification can be contradicted by an independent read-only completeness classifier | Semantics duplicated; potential false positive/false negative | OPEN: consolidate into coherent control contract; keep fail-closed mode/Host tool checks |
+| CC-03 | Normal requests can traverse independent execution-policy, plan-intent, plan-creation and missing-plan classifiers | Routing instability and cost | OPEN: single typed route proposal, followed by strict state and permission admission |
+| CC-04 | Capability-review interprets natural-language tool names separately from registered tool selection | False `unsupported_capability` | OPEN: produce unsupported-capability outcome only from grounded registry facts, never from a model's invented label |
+| CC-05 | Pending clarification has separate classifier; prior `needs_input:<tool>` recorded in Turn | Replay/ambiguous reply can cause wrong operation | KEEP the persisted pending-action provenance; consolidate semantic understanding without removing source/owner checks |
+| CC-06 | Revision and plan scope checks are partly repeated and include contextual/error strings hardcoding specific RAG/8*8 steps | Generality and regression risk | OPEN: derive conflict descriptions from trusted current PlanLedger, not hardcoded sample steps |
+| CC-07 | Read-only execution override after spurious clarification mutates `parsed_result=None` while retaining interpretation | Implicit coupling, difficult to reason about GoalStore | OPEN: replace with explicit immutable route result and Host policy fields |
+| CC-08 | PlanLedger checkpoint, allowed tool set, external side effects, Turn idempotency, conversation lock and trace | Critical trust boundaries | PRESERVE; no weakening for classifier convergence |
+
+## Target control contract (design direction, not yet implemented)
+
+Exactly one primary *semantic* route proposal for the current turn:
+`respond | clarify | agent_loop | plan_create | plan_execute_first |
+plan_resume | plan_revise | cancel`, with explicit `confidence/ambiguity`
+information, current-user authorization evidence, and optional bounded
+argument references. Neither this result nor Understanding alone executes
+tools or persists PlanLedger. Host deterministically validates checkpoint
+existence/version/step binding, original-request parameter provenance,
+tool schema, read/write permissions, and replay/idempotency. Only then execute
+normal AgentLoop or bounded saved-plan executor. A secondary review may narrow
+permissions or require clarification; it must not silently broaden write access.
+
+Do **not** replace the running system wholesale until the contract is covered by
+cross-route API tests and real model evaluations. Do **not** infer that all
+findings are repaired based on this audit document.
+
+## Required acceptance gates before Step 5 can close
+
+1. No double plan-intent classification on saved-plan normal turns.
+2. Standalone calculate/MCP/task/draft should not create or resume plans.
+3. Real plan create/first/all/revise/recover preserve ledger and authority.
+4. Missing arguments clarify and safely resume only with trusted pending action.
+5. Unsupported tools are denied, available tools not falsely denied.
+6. Model/schema failure cannot create write authority or claim success.
+7. Run all existing D03/D05/D06/E03/E04/E06/F02/F03/F04 API tests, complete CI,
+   then a live Qwen multi-phrase matrix. Existing manual PASS is historical
+   evidence, not a blanket regression waiver.
