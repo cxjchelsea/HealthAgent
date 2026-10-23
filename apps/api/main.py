@@ -387,7 +387,7 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
             # Separate authoring a future plan from executing its steps. Only
             # the bound checkpoint can authorize later read-only execution.
             if (result is None and parsed_result is not None
-                    and agent_decider is None and execution_policy is None):
+                    and agent_decider is None):
                 plan_decision = await review_plan_intent(
                     HTTPUnderstandingModel(settings.model_provider,
                                            settings.model_base_url,
