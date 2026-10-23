@@ -28,9 +28,13 @@ def host_unsupported_capability(
     if not review.request_is_clear or not review.explicitly_requested_tool:
         return None
     registered = {x.casefold() for x in registered_names}
-    if review.resolved_tool_id and review.resolved_tool_id.casefold() in registered:
-        return None
     requested = review.explicitly_requested_tool.strip()
+    # A literal identifier for an absent named tool cannot be semantically
+    # relabeled as an unrelated registered capability by the model.
+    explicit_identifier = requested.isascii() and requested.replace('_', '').replace('-', '').isalnum()
+    if (not explicit_identifier and review.resolved_tool_id
+            and review.resolved_tool_id.casefold() in registered):
+        return None
     if (not requested or requested.casefold() not in message.casefold()
             or requested.casefold() in registered):
         return None
