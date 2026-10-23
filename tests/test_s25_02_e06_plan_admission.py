@@ -1,15 +1,4 @@
 
-# These API regression fixtures explicitly supply a formal saved-plan request.
-# Stub only the new semantic admission review; the actual production model
-# contract is tested separately in test_s25_02_f03_plan_admission.py.
-import pytest
-
-@pytest.fixture(autouse=True)
-def admit_fixture_saved_plan(monkeypatch):
-    async def admitted(*args, **kwargs):
-        return True
-    monkeypatch.setattr("apps.api.main.review_plan_creation_reference", admitted)
-
 """E06 ordinary drafts and tasks are not formal executable plans."""
 import json
 from fastapi.testclient import TestClient
@@ -18,6 +7,7 @@ from agent.decision import Decision
 from agent.plan_intent import PlanRequest
 from agent.understanding import HTTPUnderstandingModel
 from apps.api.main import create_app
+import pytest
 
 
 def understood():
@@ -92,3 +82,12 @@ def test_valid_formal_plan_still_creates_checkpoint(tmp_path,monkeypatch):
         assert res.status_code == 200,res.text
         assert res.json()["termination_reason"] == "plan_created_pending_execution"
         assert len(res.json()["plan"]) == 2
+
+# These API regression fixtures explicitly supply a formal saved-plan request.
+# Stub only the new semantic admission review; the actual production model
+# contract is tested separately in test_s25_02_f03_plan_admission.py.
+@pytest.fixture(autouse=True)
+def admit_fixture_saved_plan(monkeypatch):
+    async def admitted(*args, **kwargs):
+        return True
+    monkeypatch.setattr("apps.api.main.review_plan_creation_reference", admitted)
