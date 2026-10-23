@@ -4,7 +4,8 @@ import json
 from fastapi.testclient import TestClient
 from agent.config import Settings
 from agent.understanding import HTTPUnderstandingModel
-from agent.capability_review import review_unsupported_capability
+from agent.capability_review import (review_unsupported_capability, host_unsupported_capability,
+                                     CapabilityReview)
 from apps.api.main import create_app
 
 
@@ -95,7 +96,7 @@ def test_f04_localized_name_of_available_tool_cannot_trigger_denial():
             return json.dumps({
                 "explicitly_requested_tool": "计算工具",
                 "request_is_clear": True,
-                "matches_available_capability": True,
+                "resolved_tool_id": "calculate",
             })
 
     assert asyncio.run(review_unsupported_capability(
@@ -109,6 +110,38 @@ def test_f04_named_unsupported_capability_still_denied():
         Model(json.dumps({
             "explicitly_requested_tool": "shell",
             "request_is_clear": True,
-            "matches_available_capability": False,
+            "resolved_tool_id": None,
         })),
         "strong", "请使用 shell 工具执行命令", {"calculate"})) == "shell"
+
+
+def test_cc04_registry_outvotes_model_hallucinated_unavailable_name():
+    review = CapabilityReview(
+        explicitly_requested_tool="计算工具", request_is_clear=True,
+        resolved_tool_id="calculate")
+    assert host_unsupported_capability(
+        review, "请使用计算工具计算 12/(3-3)", {"calculate"}) is None
+
+
+def test_cc04_model_cannot_register_a_fabricated_tool():
+    review = CapabilityReview(
+        explicitly_requested_tool="shell", request_is_clear=True,
+        resolved_tool_id="shell")
+    assert host_unsupported_capability(
+        review, "请调用 shell 执行命令", {"calculate"}) == "shell"
+
+
+def test_cc04_unknown_name_without_user_grounding_cannot_block():
+    review = CapabilityReview(
+        explicitly_requested_tool="shell", request_is_clear=True,
+        resolved_tool_id=None)
+    assert host_unsupported_capability(
+        review, "请帮我创建一个任务", {"calculate", "create_task"}) is None
+
+
+def test_cc04_registered_tool_is_never_denied_even_without_model_mapping():
+    review = CapabilityReview(
+        explicitly_requested_tool="calculate", request_is_clear=True,
+        resolved_tool_id=None)
+    assert host_unsupported_capability(
+        review, "请执行 calculate", {"calculate"}) is None
