@@ -19,6 +19,7 @@ from agent.pending_reply import classify_pending_reply
 from agent.capability_review import review_unsupported_capability
 from agent.plan_intent import review_plan_intent, build_plan_checkpoint
 from agent.plan_execution_review import review_plan_execution_authorization
+from agent.plan_revision_review import review_plan_revision, apply_plan_revision
 from agent.tools import TOOL_SCHEMAS
 from agent.mcp_stdio_client import StdioMCPClient
 from agent.context import build_context
@@ -221,6 +222,42 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                           "trace": [{"step": 0, "type": "goal_confirmation"}], "steps": 0}
             if settings.understanding_strategy not in {"direct", "structured"}:
                 raise UnderstandingError("invalid_understanding_strategy")
+            # Saved plan edits have their own bounded contract. Apply only a
+            # proven single pending-step binding change before generic goal
+            # Understanding, which must not rewrite the PlanLedger on its own.
+            if (result is None and existing_checkpoint
+                    and settings.understanding_strategy == "structured"
+                    and agent_decider is None and body.goal_confirmation is None):
+                revision_proposal = await review_plan_revision(
+                    HTTPUnderstandingModel(
+                        settings.model_provider, settings.model_base_url,
+                        settings.model_api_key, settings.model_timeout_seconds,
+                        settings.model_max_output_tokens),
+                    settings.understanding_strong_model,
+                    body.content, existing_checkpoint)
+                if revision_proposal.intent == "revise":
+                    revised = apply_plan_revision(
+                        existing_checkpoint, body.content, revision_proposal)
+                    if revised is None:
+                        result = {"run_id": turn_id, "status": "partial",
+                                  "termination_reason": "plan_revision_conflict",
+                                  "answer": "修改描述与已有步骤不一致。当前第一步是查询 RAG，第二步才是计算 8*8；请明确要修改哪一步。",
+                                  "trace": [{"step": 0, "type": "plan_revision_conflict"}],
+                                  "steps": 0,
+                                  "plan_checkpoint": existing_checkpoint,
+                                  "plan": existing_checkpoint["steps"],
+                                  "plan_revision": existing_checkpoint["revision"],
+                                  "plan_events": []}
+                    else:
+                        checkpoint = revised["checkpoint"]
+                        result = {"run_id": turn_id, "status": "partial",
+                                  "termination_reason": "plan_revised_pending_execution",
+                                  "answer": "已更新计划指定步骤，其他步骤不变；本次没有执行工具。",
+                                  "trace": [{"step": 0, "type": "plan_revised"}],
+                                  "steps": 0, "plan_checkpoint": checkpoint,
+                                  "plan": checkpoint["steps"],
+                                  "plan_revision": checkpoint["revision"],
+                                  "plan_events": [revised["event"]]}
             pending_reply_kind = None
             if result is None and settings.understanding_strategy == "structured":
                 previous_goal = goal_store.load()
