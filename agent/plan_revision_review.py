@@ -90,3 +90,5 @@ def apply_plan_revision(checkpoint: dict, message: str,
     ledger.events.append({"event": "plan_step_revised", "revision": ledger.revision,
                           "id": target["id"], "source": "user_verified_binding"})
     return {"checkpoint": ledger.checkpoint(), "event": ledger.events[-1]}
+
+# A failed proposal must not be treated as permission to mutate a plan.
