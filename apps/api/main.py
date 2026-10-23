@@ -381,7 +381,6 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                         if ready_to_attempt:
                             # Do not treat the model's original clarification as
                             # a durable GoalStore mutation or writing approval.
-                            interpretation = None
                             parsed_result = None
                             clarification_read_only = True
                         else:
@@ -435,7 +434,7 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
             execution_mode = "read_only" if clarification_read_only else None
             execution_target = "tool_action" if (clarification_read_only or (result is not None and
                 any(t.get("type") == "clarification_resumed" for t in result.get("trace", [])))) else "goal_state"  # Legacy injected strategy conservatively preserves revisions.
-            if result is None and interpretation is not None:
+            if result is None and interpretation is not None and not clarification_read_only:
                 if execution_policy is not None:
                     policy_result = await execution_policy(body.content, interpretation)
                     execution_mode = (policy_result.mode if hasattr(policy_result, "mode")
