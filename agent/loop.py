@@ -420,11 +420,6 @@ class AgentLoop:
             return result
         # Resume an unchanged, fully tool-bound pending plan without asking the
         # model to recreate or revise it. A changed goal follows the ordinary loop.
-        continuation = bool(re.search(
-            r"(继续|接着).{0,20}(完成|执行|处理).{0,24}(剩余|未完成|计划)|"
-            r"(继续|接着).{0,12}(剩余|未完成).{0,12}(步骤|任务)", goal))
-        changed_goal = any(word in goal for word in (
-            "更正", "修改计划", "改成", "换成", "不是", "新增", "增加", "取消", "替换"))
         outstanding = [step for step in resumed.snapshot()
                        if step["status"] == "pending"]
         authorized_plan_run = (
@@ -435,14 +430,7 @@ class AgentLoop:
                      "recall_memory"}
                     and isinstance(step.get("expected_arguments"), dict)
                     for step in outstanding))
-        if ((authorized_plan_run)
-                or (understanding_result is None and continuation and not changed_goal
-                    and outstanding
-                    and all(step.get("expected_tool") in
-                            {"calculate", "mcp_reference_lookup", "utc_time", "list_tasks",
-                             "recall_memory"}
-                            and isinstance(step.get("expected_arguments"), dict)
-                            for step in outstanding))):
+        if authorized_plan_run:
             if plan_control == "execute_first":
                 outstanding = outstanding[:1]
             trace = []
