@@ -53,7 +53,7 @@ def test_all_expected_physical_rows_pass(tmp_path):
     path = tmp_path / "physical.db"
     fixture_db(path)
     result = check_db(path, live_meta())
-    assert result["summary"] == {"PASS":15,"FAIL":0,"BLOCKED":0}
+    assert result["summary"] == {"PASS":19,"FAIL":0,"BLOCKED":0}
 
 
 def test_corrupt_probe_state_detected(tmp_path):
