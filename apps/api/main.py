@@ -17,6 +17,7 @@ from agent.argument_provenance import REQUIRED_USER_VALUES
 from agent.pending_reply import classify_pending_reply
 from agent.capability_review import review_unsupported_capability
 from agent.plan_intent import review_plan_intent, build_plan_checkpoint
+from agent.plan_execution_review import review_plan_execution_authorization
 from agent.tools import TOOL_SCHEMAS
 from agent.mcp_stdio_client import StdioMCPClient
 from agent.context import build_context
@@ -423,6 +424,19 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                                        "revision": checkpoint["revision"]}],
                                       "plan_checkpoint": checkpoint}
                 elif plan_decision.intent in {"execute_first", "resume"}:
+                    if execution_mode == "respond_only" and existing_checkpoint:
+                        authorized = await review_plan_execution_authorization(
+                            HTTPUnderstandingModel(
+                                settings.model_provider, settings.model_base_url,
+                                settings.model_api_key, settings.model_timeout_seconds,
+                                settings.model_max_output_tokens),
+                            settings.understanding_strong_model,
+                            body.content, existing_checkpoint, plan_decision.intent)
+                        if authorized:
+                            # Re-review can only permit the saved, read-only,
+                            # schema-bound pending steps, never arbitrary tools.
+                            execution_mode = "read_only"
+                            execution_target = "tool_action"
                     if execution_mode == "respond_only":
                         result = {"run_id": turn_id, "status": "partial",
                                   "termination_reason": "execution_not_authorized",
