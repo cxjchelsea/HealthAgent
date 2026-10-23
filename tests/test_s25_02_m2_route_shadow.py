@@ -219,3 +219,13 @@ def test_cancel_pending_forged_step_reference_rejected():
         has_plan=False, pending_action="mcp_reference_lookup"))
     assert result["state"] == "unavailable"
     assert result["validation_errors"][0]["path"] == "reference"
+
+
+def test_value_error_diagnostic_is_bounded_and_source_scoped():
+    data = route(source_quote="untrusted")
+    result = asyncio.run(evaluate_shadow(
+        Stub(data), "fake", "请计算 19+23", has_plan=False, pending_action=None))
+    assert result["state"] == "unavailable"
+    assert result["failure_stage"] == "source_provenance"
+    assert result["validation_code"] == "shadow_untrusted_source_quote"
+    assert "untrusted" not in json.dumps(result)
