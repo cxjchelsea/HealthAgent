@@ -88,6 +88,7 @@ def test_d03_f02_misrouted_respond_only_can_resume_verified_pending_plan(tmp_pat
              "expected_arguments": {"expression": "3+3"}}]),
         PlanRequest(intent="execute_first"),
         PlanRequest(intent="resume"),
+        PlanRequest(intent="resume"),
     ])
     async def fake_plan_intent(provider, model, message, existing_plan):
         return next(intents)
@@ -120,6 +121,16 @@ def test_d03_f02_misrouted_respond_only_can_resume_verified_pending_plan(tmp_pat
         assert [s["status"] for s in third["plan"]] == ["completed", "completed"]
         assert len([x for x in third["trace"] if x["type"] == "tool"]) == 1
         assert reviews == [("resume", 1)]
+        fourth = send("请继续完成计划中剩余步骤，不要重复第一步", "d03f02-004")
+        assert fourth["status"] == "completed"
+        assert fourth["termination_reason"] == "plan_already_completed"
+        assert fourth["trace"] == [{"step": 0, "type": "plan_already_completed"}]
+        assert fourth["steps"] == 0
+        assert fourth["plan"] == third["plan"]
+        assert fourth["plan_checkpoint"] == third["plan_checkpoint"]
+        assert fourth["plan_revision"] == third["plan_revision"]
+        assert reviews == [("resume", 1)]  # No fourth-round execution re-review.
+
 
 
 def test_d03_f02_explicit_denial_remains_fail_closed(tmp_path, monkeypatch):
