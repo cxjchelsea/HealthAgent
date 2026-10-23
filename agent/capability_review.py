@@ -33,7 +33,7 @@ async def review_unsupported_capability(provider: HTTPUnderstandingModel,
                     {"current_message": message}, ensure_ascii=False)}],
             response_schema=CapabilityReview.model_json_schema())
         review = CapabilityReview.model_validate_json(raw)
-    except (UnderstandingError, ValueError, ValidationError):
+    except (UnderstandingError, ValueError, ValidationError, TypeError):
         return None
     if not review.request_is_clear or not review.explicitly_requested_tool:
         return None
