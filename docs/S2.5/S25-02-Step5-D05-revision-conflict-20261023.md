@@ -28,3 +28,14 @@
 新增 `tests/test_s25_02_d05_execution_priority.py`：正式 Conversation API 贯穿创建计划→修改第二步→执行第一步，验证修改分类器在执行请求中零次调用、MCP 第一步 completed、第二步带 9*9 保持 pending；`tests/test_s25_02_d05_revision_provenance.py`：模型凭空输出旧修改字段时不得把执行请求误判为计划修改。用户可使用现有计划重新发送明确执行第一步的原话，检查 trace 仅 MCP、计划 version 不变、第二步 9*9 pending。
 
 依赖真实 Qwen 的分类可能仍然不稳定；受控自动化无法替代人工验收。PR #22 Draft，未经用户授权不得合并。
+
+
+## D05-F01 再次复现后的安全兜底（2026-10-23）
+
+真实 Qwen 第二次复现：已有第一步 MCP 查 RAG、第二步计算 8*8 的计划；用户提出矛盾描述“第一步不是计算 8*8，而是计算 9*9，其他步骤保持不变”，却返回 HTTP 503（light/strong `missing_goal`，强模型重试 `clarification_status_mismatch`）。独立代码审查发现先前的 `review_plan_revision` 在无可信字段时统一返回 `other`，导致未完成的计划修改判断回落到普通 Understanding，直接触发上述结构化校验失败。
+
+已新增与接入 `check_plan_edit_intent`：在已有合法计划、执行意图未被优先识别、完整 RevisionProposal 无法通过时，独立用结构化 `PlanEditIntent.edit_requested` 仅判断本轮是否确实是在修改原计划；肯定时返回 `partial/plan_revision_conflict`、`steps=0`、保持原有 `plan_checkpoint/revision/steps`，**不执行工具，不擅自根据错误步骤编号重写计划**，也不再回落到通用 Understanding；否定或检查失败时则不把一般聊天/执行请求强制拦截。此前合法完整 RevisionProposal 的版本更新路径继续保持不变，明确执行计划仍优先走 Plan Intent。模型判别本身仍非确定性，因此不能宣称消除了所有 Qwen 分类错误。
+
+`tests/test_s25_02_d05_fallback_api.py` 新增两组正式 Conversation API + SQLite 回归：计划修改分类器返回 other、独立兜底为真时没有 503、没有工具执行、检查点不变；执行第一步时不调用计划修改分类和兜底、仍完成工具调用。精确代码 HEAD `6e3b9f151e68d943b2160912cf91a4a8c06b9168`，CI <https://github.com/cxjchelsea/HealthAgent/actions/runs/39890403145> SUCCESS（234 passed / 3 skipped）。
+
+人工复测：在更新 PR #22 后新建会话、建两步计划，再使用上述**完全相同**矛盾修改输入；预期 200、`plan_revision_conflict`、0 工具调用、原检查点不变。如果再度发生 503，则应进一步诊断模型的 plan edit intent 二次判别，不能单靠增加通用 Understanding 重试。PR #22 Draft，不得合并 main。
