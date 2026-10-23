@@ -184,3 +184,21 @@ def test_shadow_reports_target_without_granting_tool_permission():
     assert outcome["route_target"] == "pending_clarification"
     assert outcome["reference_kind"] == "pending_slot"
     assert outcome["host_admission_complete"] is False
+
+
+def test_shadow_pending_clarify_requires_host_review():
+    data = route("clarify", source_quote="", route_target="pending_clarification",
+                 execution_scope="none", effect_intent="none",
+                 clarification={"required":True,"reason":"missing_argument",
+                                "question":"请确认参数？"})
+    result = asyncio.run(evaluate_shadow(
+        Stub(data), "fake", "RAG",
+        has_plan=False, pending_action="mcp_reference_lookup"))
+    assert result["state"] == "valid"
+    assert result["host_would_deny"] == "pending_clarification_requires_host_review"
+
+
+def test_shadow_prompt_explains_single_task_vs_executable_plan():
+    from agent.route_shadow import PROMPT
+    assert "single task has one title" in PROMPT
+    assert "formal executable plan has ordered steps" in PROMPT
