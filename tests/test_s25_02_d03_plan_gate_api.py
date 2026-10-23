@@ -1,3 +1,15 @@
+
+# These API regression fixtures explicitly supply a formal saved-plan request.
+# Stub only the new semantic admission review; the actual production model
+# contract is tested separately in test_s25_02_f03_plan_admission.py.
+import pytest
+
+@pytest.fixture(autouse=True)
+def admit_fixture_saved_plan(monkeypatch):
+    async def admitted(*args, **kwargs):
+        return True
+    monkeypatch.setattr("apps.api.main.review_plan_creation_reference", admitted)
+
 """D03-F01: plan authoring cannot execute; explicit step commands resume saved evidence."""
 import json
 
