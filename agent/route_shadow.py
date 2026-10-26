@@ -132,6 +132,30 @@ def verify_source_spans(route: ShadowRoute, message: str) -> None:
     # execute" does not prohibit the revision itself. Host resolves scope.
 
 
+
+def validate_semantic_grounding(route: ShadowRoute, message: str) -> None:
+    """Cross-field evidence guards, never reinterpret the model's route.
+
+    This check operates after exact source-span verification. It neither
+    assigns a route nor changes reference/effect; unknown proof is unavailable.
+    """
+    if route.primary_route == "plan_create":
+        steps = sorted(route.plan_step_evidence, key=lambda x: (x.start, x.end))
+        if len(steps) < 2 or any(
+                first.end > second.start for first, second in zip(steps, steps[1:])):
+            raise ValueError("shadow_plan_steps_ungrounded")
+    if route.primary_route == "plan_revise":
+        if route.reference.kind != "saved_step" or route.reference.step_number is None:
+            raise ValueError("shadow_revision_step_unverified")
+    if route.primary_route == "agent_loop" and route.route_target in {
+            "tool_action", "pending_clarification"} and route.effect_intent == "none":
+        raise ValueError("shadow_tool_effect_unspecified")
+    if (route.primary_route == "agent_loop"
+            and route.route_target == "pending_clarification"
+            and route.reference.kind != "pending_slot"):
+        raise ValueError("shadow_pending_reference_unverified")
+
+
 def hypothetical_admission(route: ShadowRoute, *, has_plan: bool,
                            pending_action: str | None) -> str | None:
     if route.ambiguity != "clear":
@@ -321,6 +345,7 @@ async def evaluate_shadow(provider: HTTPUnderstandingModel, model_name: str,
         result = ShadowRoute.model_validate_json(raw)
         stage = "source_provenance"
         verify_source_spans(result, message)
+        validate_semantic_grounding(result, message)
         stage = "host_preview"
         would_deny = hypothetical_admission(
             result, has_plan=has_plan, pending_action=pending_action)
@@ -361,7 +386,11 @@ async def evaluate_shadow(provider: HTTPUnderstandingModel, model_name: str,
                 "shadow_source_offset_out_of_bounds",
                 "shadow_source_offset_mismatch",
                 "shadow_source_text_not_found",
-                "shadow_mutation_conflicts_negative_constraint"}
+                "shadow_mutation_conflicts_negative_constraint",
+                "shadow_plan_steps_ungrounded",
+                "shadow_revision_step_unverified",
+                "shadow_tool_effect_unspecified",
+                "shadow_pending_reference_unverified"}
         code = str(exc) if str(exc) in safe else "other_value_error"
         return {"state":"unavailable","error_class":"ValueError",
                 "failure_stage":stage,"validation_code":code,
