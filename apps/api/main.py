@@ -13,6 +13,7 @@ from agent.understanding import UnderstandingContext, UnderstandingService, HTTP
 from agent.execution_policy import decide_execution_policy_detail, reconcile_execution_policy
 from agent.route_shadow import evaluate_shadow, compare_to_legacy
 from agent.route_shadow_host import facts_from_legacy_observation
+from agent.m3_turn_capture import capture_turn, compare_captured_identity
 from agent.decision import NativeToolDecision
 from agent.loop import AgentLoop
 from agent.tools import execute_tool, SCHEMAS
