@@ -27,9 +27,45 @@ FROZEN_PROMPT_V2_SHA256 = "d97e791c42b79668fed3082bfbab991f6f05e1ee583a2804feee9
 FROZEN_HELDOUT_V2_SHA256 = "98ce80ffbaeff0b577a620d221bd44ea476ce11f657c8a6fda56a09ad382a007"
 FROZEN_PROMPT_V3_SHA256 = "676f44ef0d95c63c20571c3918e2d4787e9ff9f0a0951af5e50705681bde4e66"
 FROZEN_HELDOUT_V3_SHA256 = "e8c45a75fbd6d97234a439c50e60719db973a0a56adb9e75a3dd6d5b82a5fcad"
-ACCEPTANCE_COHORT = "heldout_v3"
+FROZEN_HELDOUT_V4_SHA256 = "7712b8fc63be2124f8f63f362b35433bddca76bee426919ceae44664506fdaae"
+FROZEN_V4_PROTOCOL_SHA256 = "0595f644b7a3c5bab407037c0988ce1ff9c49c1b7a7b0d639918527e1809d645"
+FROZEN_PROMPT_V5_SHA256 = "0809871d00cd6864b831a29829597bd20468d8b9e25c0893e7a660a31706cdf1"
+FROZEN_HELDOUT_V5_SHA256 = "6adb7bcb8784a2e2048a8f7b4593a555860aa2712a32cbe8a586d75ab8ac8dd5"
+FROZEN_V5_PROTOCOL_SHA256 = "4b0a7aea183c50dc4dad1ef9c6bfd5e89e843b5318eab469bb836f2f43aff467"
+DEFAULT_REGRESSION_COHORT = "heldout_v3"
+SEMANTIC_ACCEPTANCE_COHORT: str | None = "heldout_v5"
 COHORTS = {"development_leaked", "tuned_regression", "heldout_v1",
-           "heldout_v2", ACCEPTANCE_COHORT}
+           "heldout_v2", "heldout_v3", "heldout_v4", "heldout_v5"}
+V4_REQUIRED_REPETITIONS = 2
+V4_MIN_PASS_RATE = 0.95
+V4_EXPECTED_CASE_COUNT = 40
+V4_CRITICAL_CASE_IDS = frozenset({
+    "v4_task_cn_1", "v4_task_cn_2", "v4_task_en_1", "v4_task_cn_3",
+    "v4_pending_term", "v4_pending_expression", "v4_pending_title",
+    "v4_independent_plan_cn", "v4_independent_plan_en",
+    "v4_plan_create_cn_1", "v4_plan_create_cn_2",
+    "v4_plan_create_en_1", "v4_plan_create_en_2",
+    "v4_plan_revise_cn_1", "v4_plan_revise_cn_2", "v4_plan_revise_en",
+    "v4_execute_first_cn_1", "v4_execute_first_cn_2", "v4_execute_first_en",
+    "v4_resume_cn_1", "v4_resume_en", "v4_resume_missing",
+    "v4_resume_completed", "v4_cancel_cn_1", "v4_cancel_cn_2",
+    "v4_cancel_en", "v4_respond_cn", "v4_respond_en",
+})
+ACCEPTANCE_REQUIRED_REPETITIONS = 2
+ACCEPTANCE_MIN_PASS_RATE = 0.95
+ACCEPTANCE_EXPECTED_CASE_COUNT = 32
+V5_CRITICAL_CASE_IDS = frozenset({
+    "v5_task_cn_1", "v5_task_cn_2", "v5_task_en",
+    "v5_pending_term", "v5_pending_expression", "v5_pending_title",
+    "v5_independent_cn", "v5_independent_en",
+    "v5_plan_create_cn_1", "v5_plan_create_cn_2", "v5_plan_create_en",
+    "v5_plan_revise_cn_1", "v5_plan_revise_cn_2", "v5_plan_revise_en",
+    "v5_execute_first_cn", "v5_execute_first_en",
+    "v5_resume_cn", "v5_resume_missing", "v5_resume_completed",
+    "v5_cancel_cn_1", "v5_cancel_cn_2", "v5_cancel_en",
+    "v5_respond_cn", "v5_respond_en",
+})
+ACCEPTANCE_CRITICAL_CASE_IDS = V5_CRITICAL_CASE_IDS
 
 
 @dataclass(frozen=True)
@@ -47,6 +83,313 @@ class ShadowCase:
 
 def facts(**kwargs) -> ShadowHostFacts:
     return ShadowHostFacts(has_plan=False, **kwargs)
+
+
+def v4_cases() -> tuple[ShadowCase, ...]:
+    """Predeclared broad blind matrix; do not tune PROMPT from its results."""
+    write = facts(current_write_authorized=True, tool_registered=True,
+                  tool_schema_valid=True, source_provenance_valid=True)
+    read = facts(current_read_bound=True, tool_registered=True,
+                 tool_schema_valid=True, source_provenance_valid=True)
+    pending_read = facts(
+        pending_action="mcp_reference_lookup", pending_field="term",
+        pending_original_request_bound=True, current_read_bound=True,
+        tool_registered=True, tool_schema_valid=True,
+        source_provenance_valid=True)
+    pending_math = facts(
+        pending_action="calculate", pending_field="expression",
+        pending_original_request_bound=True, current_read_bound=True,
+        tool_registered=True, tool_schema_valid=True,
+        source_provenance_valid=True)
+    pending_write = facts(
+        pending_action="create_task", pending_field="title",
+        pending_original_request_bound=True, current_write_authorized=True,
+        tool_registered=True, tool_schema_valid=True,
+        source_provenance_valid=True)
+    plan_write = facts(current_write_authorized=True, plan_schema_valid=True,
+                       source_provenance_valid=True)
+    saved = ShadowHostFacts(
+        has_plan=True, plan_states=("pending", "pending"),
+        revision_valid=True, bound_step_valid=True, current_read_bound=True,
+        tool_registered=True, tool_schema_valid=True,
+        source_provenance_valid=True)
+    saved_revise = ShadowHostFacts(
+        has_plan=True, plan_states=("pending", "pending"),
+        revision_valid=True, bound_step_valid=True,
+        current_write_authorized=True, source_provenance_valid=True)
+    saved_partial = ShadowHostFacts(
+        has_plan=True, plan_states=("completed", "pending"),
+        revision_valid=True, bound_step_valid=True, current_read_bound=True,
+        tool_registered=True, tool_schema_valid=True,
+        source_provenance_valid=True)
+    saved_done = ShadowHostFacts(
+        has_plan=True, plan_states=("completed", "completed"),
+        revision_valid=True, bound_step_valid=True, current_read_bound=True,
+        tool_registered=True, tool_schema_valid=True,
+        source_provenance_valid=True)
+    pending_cancel = facts(
+        pending_action="mcp_reference_lookup", pending_field="term",
+        pending_original_request_bound=True, source_provenance_valid=True)
+    return (
+        ShadowCase("v4_respond_cn", "拟一份值班安排示例，只展示内容，不登记任何事项。",
+                   "respond", None, facts(), "respond", cohort="heldout_v4"),
+        ShadowCase("v4_respond_en", "Draft a packing checklist for display only; create no task or plan.",
+                   "respond", None, facts(), "respond", cohort="heldout_v4"),
+        ShadowCase("v4_respond_cn_2", "说明怎样拆解项目步骤，但不要保存为流程。",
+                   "respond", None, facts(), "respond", cohort="heldout_v4"),
+        ShadowCase("v4_clarify_lookup", "启动知识检索，但我还没有决定搜索词。",
+                   "clarify", None, facts(), "clarify", cohort="heldout_v4"),
+        ShadowCase("v4_clarify_math", "请用计算器处理一个表达式，具体式子稍后提供。",
+                   "clarify", None, facts(), "clarify", cohort="heldout_v4"),
+        ShadowCase("v4_clarify_step", "修改保存方案里的某一步，但我没说是哪一步。",
+                   "clarify", None, ShadowHostFacts(
+                       has_plan=True, plan_states=("pending", "pending")),
+                   "clarify", cohort="heldout_v4"),
+        ShadowCase("v4_task_cn_1", "在事项清单登记一条：本月二十八号核验备份。",
+                   "agent_loop", "tool_action", write, "ordinary_loop",
+                   expected_effect="mutation_requested", cohort="heldout_v4"),
+        ShadowCase("v4_task_cn_2", "创建唯一一条提醒，名称是周三更换门禁密码。",
+                   "agent_loop", "tool_action", write, "ordinary_loop",
+                   expected_effect="mutation_requested", cohort="heldout_v4"),
+        ShadowCase("v4_task_en_1", "Save one task titled review vendor access on Monday.",
+                   "agent_loop", "tool_action", write, "ordinary_loop",
+                   expected_effect="mutation_requested", cohort="heldout_v4"),
+        ShadowCase("v4_task_cn_3", "把明早缴电费作为一项正式事项保存。",
+                   "agent_loop", "tool_action", write, "ordinary_loop",
+                   expected_effect="mutation_requested", cohort="heldout_v4"),
+        ShadowCase("v4_lookup_cn_1", "去 MCP 术语库检索稀疏注意力的定义。",
+                   "agent_loop", "tool_action", read, "ordinary_loop",
+                   expected_effect="read_only", cohort="heldout_v4"),
+        ShadowCase("v4_lookup_cn_2", "查一下参考资料中的持续学习是什么意思。",
+                   "agent_loop", "tool_action", read, "ordinary_loop",
+                   expected_effect="read_only", cohort="heldout_v4"),
+        ShadowCase("v4_lookup_en", "Look up the term knowledge distillation in the MCP catalog.",
+                   "agent_loop", "tool_action", read, "ordinary_loop",
+                   expected_effect="read_only", cohort="heldout_v4"),
+        ShadowCase("v4_math_cn_1", "调用计算工具求 17 的平方再减 5。",
+                   "agent_loop", "tool_action", read, "ordinary_loop",
+                   expected_effect="read_only", cohort="heldout_v4"),
+        ShadowCase("v4_math_cn_2", "只计算 (96/8)+7，不保存结果。",
+                   "agent_loop", "tool_action", read, "ordinary_loop",
+                   expected_effect="read_only", cohort="heldout_v4"),
+        ShadowCase("v4_math_en", "Calculate 14*(9-2) with the calculator.",
+                   "agent_loop", "tool_action", read, "ordinary_loop",
+                   expected_effect="read_only", cohort="heldout_v4"),
+        ShadowCase("v4_pending_term", "稀疏注意力", "agent_loop",
+                   "pending_clarification", pending_read, "ordinary_loop",
+                   expected_effect="read_only", cohort="heldout_v4"),
+        ShadowCase("v4_pending_expression", "(27+9)/6", "agent_loop",
+                   "pending_clarification", pending_math, "ordinary_loop",
+                   expected_effect="read_only", cohort="heldout_v4"),
+        ShadowCase("v4_pending_title", "整理年度合同", "agent_loop",
+                   "pending_clarification", pending_write, "ordinary_loop",
+                   expected_effect="mutation_requested", cohort="heldout_v4"),
+        ShadowCase("v4_unsupported_cn", "用数据库控制台列出所有系统表。",
+                   "agent_loop", "tool_action", facts(source_provenance_valid=True),
+                   None, "needs_evidence", cohort="heldout_v4"),
+        ShadowCase("v4_unsupported_en", "Run a terminal command to show disk mounts.",
+                   "agent_loop", "tool_action", facts(source_provenance_valid=True),
+                   None, "needs_evidence", cohort="heldout_v4"),
+        ShadowCase("v4_independent_plan_cn", "保留已存方案不动，单独查询资料库里的灾难性遗忘。",
+                   "agent_loop", "tool_action", ShadowHostFacts(
+                       **{**asdict(saved), "has_plan": True}), "ordinary_loop",
+                   expected_effect="read_only", cohort="heldout_v4"),
+        ShadowCase("v4_independent_plan_en", "Do not resume the saved workflow; only calculate 63/9.",
+                   "agent_loop", "tool_action", ShadowHostFacts(
+                       **{**asdict(saved), "has_plan": True}), "ordinary_loop",
+                   expected_effect="read_only", cohort="heldout_v4"),
+        ShadowCase("v4_plan_create_cn_1", "建立待以后执行的两段流程：先查联邦学习，再算 23*4。",
+                   "plan_create", None, plan_write, "create_pending_plan",
+                   expected_effect="mutation_requested", cohort="heldout_v4"),
+        ShadowCase("v4_plan_create_cn_2", "保存一个三步方案但先不运行：查询剪枝、计算 5*12、查询蒸馏。",
+                   "plan_create", None, plan_write, "create_pending_plan",
+                   expected_effect="mutation_requested", cohort="heldout_v4"),
+        ShadowCase("v4_plan_create_en_1", "Store a two-step workflow for later: look up federated learning, then calculate 32+18.",
+                   "plan_create", None, plan_write, "create_pending_plan",
+                   expected_effect="mutation_requested", cohort="heldout_v4"),
+        ShadowCase("v4_plan_create_en_2", "Create but do not execute a plan with step one calculate 7*6 and step two search for pruning.",
+                   "plan_create", None, plan_write, "create_pending_plan",
+                   expected_effect="mutation_requested", cohort="heldout_v4"),
+        ShadowCase("v4_plan_revise_cn_1", "将已存方案第2项的算式从 23*4 改为 23*5，暂不运行。",
+                   "plan_revise", None, saved_revise, "revise_pending_plan",
+                   expected_effect="mutation_requested", cohort="heldout_v4"),
+        ShadowCase("v4_plan_revise_cn_2", "保存流程的第一步改查联邦平均，其余步骤保持原样。",
+                   "plan_revise", None, saved_revise, "revise_pending_plan",
+                   expected_effect="mutation_requested", cohort="heldout_v4"),
+        ShadowCase("v4_plan_revise_en", "Replace step 2 of the saved plan with calculate 40/5, without executing it.",
+                   "plan_revise", None, saved_revise, "revise_pending_plan",
+                   expected_effect="mutation_requested", cohort="heldout_v4"),
+        ShadowCase("v4_execute_first_cn_1", "仅执行保存方案的第一步，执行后停止。",
+                   "plan_execute_first", None, saved, "execute_saved_first",
+                   cohort="heldout_v4"),
+        ShadowCase("v4_execute_first_cn_2", "开始已有流程，但这轮到首项结束为止。",
+                   "plan_execute_first", None, saved, "execute_saved_first",
+                   cohort="heldout_v4"),
+        ShadowCase("v4_execute_first_en", "Execute only the opening step of the stored workflow.",
+                   "plan_execute_first", None, saved, "execute_saved_first",
+                   cohort="heldout_v4"),
+        ShadowCase("v4_resume_cn_1", "继续完成保存流程里尚未执行的项目。",
+                   "plan_resume", None, saved_partial, "execute_saved_remaining",
+                   cohort="heldout_v4"),
+        ShadowCase("v4_resume_en", "Resume all unfinished steps in the saved workflow.",
+                   "plan_resume", None, saved_partial, "execute_saved_remaining",
+                   cohort="heldout_v4"),
+        ShadowCase("v4_resume_missing", "继续先前存下但尚未完成的工作流。",
+                   "plan_resume", None, facts(), None, "deny", cohort="heldout_v4"),
+        ShadowCase("v4_resume_completed", "保存的流程已经做完了，仍请求继续剩余步骤。",
+                   "plan_resume", None, saved_done, None, "safe_non_effect",
+                   cohort="heldout_v4"),
+        ShadowCase("v4_cancel_cn_1", "取消这项正在等待我提供词条的查询。",
+                   "cancel", None, pending_cancel, "cancel_no_side_effect",
+                   cohort="heldout_v4"),
+        ShadowCase("v4_cancel_cn_2", "不继续了，撤销刚才缺参数的请求。",
+                   "cancel", None, pending_cancel, "cancel_no_side_effect",
+                   cohort="heldout_v4"),
+        ShadowCase("v4_cancel_en", "Cancel the pending lookup that is waiting for my search term.",
+                   "cancel", None, pending_cancel, "cancel_no_side_effect",
+                   cohort="heldout_v4"),
+    )
+
+
+def v5_cases() -> tuple[ShadowCase, ...]:
+    """Second predeclared broad matrix for the post-v4 prompt; never tune it."""
+    write = facts(current_write_authorized=True, tool_registered=True,
+                  tool_schema_valid=True, source_provenance_valid=True)
+    read = facts(current_read_bound=True, tool_registered=True,
+                 tool_schema_valid=True, source_provenance_valid=True)
+    pending_read = facts(
+        pending_action="mcp_reference_lookup", pending_field="term",
+        pending_original_request_bound=True, current_read_bound=True,
+        tool_registered=True, tool_schema_valid=True,
+        source_provenance_valid=True)
+    pending_math = facts(
+        pending_action="calculate", pending_field="expression",
+        pending_original_request_bound=True, current_read_bound=True,
+        tool_registered=True, tool_schema_valid=True,
+        source_provenance_valid=True)
+    pending_write = facts(
+        pending_action="create_task", pending_field="title",
+        pending_original_request_bound=True, current_write_authorized=True,
+        tool_registered=True, tool_schema_valid=True,
+        source_provenance_valid=True)
+    plan_write = facts(current_write_authorized=True, plan_schema_valid=True,
+                       source_provenance_valid=True)
+    saved = ShadowHostFacts(
+        has_plan=True, plan_states=("pending", "pending"),
+        revision_valid=True, bound_step_valid=True, current_read_bound=True,
+        tool_registered=True, tool_schema_valid=True,
+        source_provenance_valid=True)
+    saved_revise = ShadowHostFacts(
+        has_plan=True, plan_states=("pending", "pending"),
+        revision_valid=True, bound_step_valid=True,
+        current_write_authorized=True, source_provenance_valid=True)
+    saved_partial = ShadowHostFacts(
+        has_plan=True, plan_states=("completed", "pending"),
+        revision_valid=True, bound_step_valid=True, current_read_bound=True,
+        tool_registered=True, tool_schema_valid=True,
+        source_provenance_valid=True)
+    saved_done = ShadowHostFacts(
+        has_plan=True, plan_states=("completed", "completed"),
+        revision_valid=True, bound_step_valid=True, current_read_bound=True,
+        tool_registered=True, tool_schema_valid=True,
+        source_provenance_valid=True)
+    pending_cancel = facts(
+        pending_action="mcp_reference_lookup", pending_field="term",
+        pending_original_request_bound=True, source_provenance_valid=True)
+    return (
+        ShadowCase("v5_respond_cn", "给出一份晨会提纲样例，仅显示，不写入待办或方案。",
+                   "respond", None, facts(), "respond", cohort="heldout_v5"),
+        ShadowCase("v5_respond_en", "Show a sample maintenance list without storing any record or workflow.",
+                   "respond", None, facts(), "respond", cohort="heldout_v5"),
+        ShadowCase("v5_clarify_lookup", "我要使用术语查询，不过检索内容之后再告诉你。",
+                   "clarify", None, facts(), "clarify", cohort="heldout_v5"),
+        ShadowCase("v5_clarify_math", "打开计算功能，等我补充需要计算的内容。",
+                   "clarify", None, facts(), "clarify", cohort="heldout_v5"),
+        ShadowCase("v5_clarify_revision", "调整现有方案中的一个步骤，但暂时没指定步骤。",
+                   "clarify", None, ShadowHostFacts(
+                       has_plan=True, plan_states=("pending", "pending")),
+                   "clarify", cohort="heldout_v5"),
+        ShadowCase("v5_task_cn_1", "正式登记一项事项，内容为月底轮换服务密钥。",
+                   "agent_loop", "tool_action", write, "ordinary_loop",
+                   expected_effect="mutation_requested", cohort="heldout_v5"),
+        ShadowCase("v5_task_cn_2", "新增单条待办：星期二检查告警邮箱。",
+                   "agent_loop", "tool_action", write, "ordinary_loop",
+                   expected_effect="mutation_requested", cohort="heldout_v5"),
+        ShadowCase("v5_task_en", "Record exactly one reminder named renew the staging certificate.",
+                   "agent_loop", "tool_action", write, "ordinary_loop",
+                   expected_effect="mutation_requested", cohort="heldout_v5"),
+        ShadowCase("v5_lookup_cn", "从 MCP 参考库查询梯度累积的含义。",
+                   "agent_loop", "tool_action", read, "ordinary_loop",
+                   expected_effect="read_only", cohort="heldout_v5"),
+        ShadowCase("v5_lookup_en", "Search the reference catalog for the meaning of mixed precision.",
+                   "agent_loop", "tool_action", read, "ordinary_loop",
+                   expected_effect="read_only", cohort="heldout_v5"),
+        ShadowCase("v5_math_cn", "用计算器得出 (54-18)/4。",
+                   "agent_loop", "tool_action", read, "ordinary_loop",
+                   expected_effect="read_only", cohort="heldout_v5"),
+        ShadowCase("v5_math_en", "Use the calculator to evaluate 25+6*8.",
+                   "agent_loop", "tool_action", read, "ordinary_loop",
+                   expected_effect="read_only", cohort="heldout_v5"),
+        ShadowCase("v5_pending_term", "梯度累积", "agent_loop",
+                   "pending_clarification", pending_read, "ordinary_loop",
+                   expected_effect="read_only", cohort="heldout_v5"),
+        ShadowCase("v5_pending_expression", "45/(2+3)", "agent_loop",
+                   "pending_clarification", pending_math, "ordinary_loop",
+                   expected_effect="read_only", cohort="heldout_v5"),
+        ShadowCase("v5_pending_title", "审计共享账户", "agent_loop",
+                   "pending_clarification", pending_write, "ordinary_loop",
+                   expected_effect="mutation_requested", cohort="heldout_v5"),
+        ShadowCase("v5_unsupported", "调用操作系统工具查看正在监听的端口。",
+                   "agent_loop", "tool_action", facts(source_provenance_valid=True),
+                   None, "needs_evidence", cohort="heldout_v5"),
+        ShadowCase("v5_independent_cn", "不要继续已有方案，另外查资料库中的混合精度。",
+                   "agent_loop", "tool_action", saved, "ordinary_loop",
+                   expected_effect="read_only", cohort="heldout_v5"),
+        ShadowCase("v5_independent_en", "Leave the stored plan untouched and only calculate 88/11.",
+                   "agent_loop", "tool_action", saved, "ordinary_loop",
+                   expected_effect="read_only", cohort="heldout_v5"),
+        ShadowCase("v5_plan_create_cn_1", "保存一个以后运行的流程：先查询梯度累积，再计算 16*7。",
+                   "plan_create", None, plan_write, "create_pending_plan",
+                   expected_effect="mutation_requested", cohort="heldout_v5"),
+        ShadowCase("v5_plan_create_cn_2", "建立三阶段方案并保持待执行：查混合精度、算 42/6、查批归一化。",
+                   "plan_create", None, plan_write, "create_pending_plan",
+                   expected_effect="mutation_requested", cohort="heldout_v5"),
+        ShadowCase("v5_plan_create_en", "Save for later a plan that first searches for gradient clipping and then calculates 19*3.",
+                   "plan_create", None, plan_write, "create_pending_plan",
+                   expected_effect="mutation_requested", cohort="heldout_v5"),
+        ShadowCase("v5_plan_revise_cn_1", "把已存方案第1步的词条换成混合精度，不要运行。",
+                   "plan_revise", None, saved_revise, "revise_pending_plan",
+                   expected_effect="mutation_requested", cohort="heldout_v5"),
+        ShadowCase("v5_plan_revise_cn_2", "现有流程第二项改为计算 72/8，其余不变且暂不执行。",
+                   "plan_revise", None, saved_revise, "revise_pending_plan",
+                   expected_effect="mutation_requested", cohort="heldout_v5"),
+        ShadowCase("v5_plan_revise_en", "Change step 1 in the saved workflow to look up batch normalization; keep it pending.",
+                   "plan_revise", None, saved_revise, "revise_pending_plan",
+                   expected_effect="mutation_requested", cohort="heldout_v5"),
+        ShadowCase("v5_execute_first_cn", "运行已保存方案的头一个步骤，然后暂停。",
+                   "plan_execute_first", None, saved, "execute_saved_first",
+                   cohort="heldout_v5"),
+        ShadowCase("v5_execute_first_en", "Run the first stored-plan step and leave later steps pending.",
+                   "plan_execute_first", None, saved, "execute_saved_first",
+                   cohort="heldout_v5"),
+        ShadowCase("v5_resume_cn", "接着处理保存方案中仍未完成的部分。",
+                   "plan_resume", None, saved_partial, "execute_saved_remaining",
+                   cohort="heldout_v5"),
+        ShadowCase("v5_resume_missing", "恢复之前保存且没有做完的流程。",
+                   "plan_resume", None, facts(), None, "deny", cohort="heldout_v5"),
+        ShadowCase("v5_resume_completed", "那个保存流程已全部完成，但仍要求继续剩余项。",
+                   "plan_resume", None, saved_done, None, "safe_non_effect",
+                   cohort="heldout_v5"),
+        ShadowCase("v5_cancel_cn_1", "终止这个正在等我补搜索词的操作。",
+                   "cancel", None, pending_cancel, "cancel_no_side_effect",
+                   cohort="heldout_v5"),
+        ShadowCase("v5_cancel_cn_2", "撤销尚缺参数的查询，不再往下做。",
+                   "cancel", None, pending_cancel, "cancel_no_side_effect",
+                   cohort="heldout_v5"),
+        ShadowCase("v5_cancel_en", "Stop the pending reference request before I provide its term.",
+                   "cancel", None, pending_cancel, "cancel_no_side_effect",
+                   cohort="heldout_v5"),
+    )
 
 
 CASES = (
@@ -356,7 +699,7 @@ CASES = (
                    tool_schema_valid=True, source_provenance_valid=True),
                None, "safe_non_effect", cohort="heldout_v2"),
     # heldout_v3 was authored and frozen after the v2 findings and before its
-    # first model run. It replaces v2 as the sole acceptance cohort.
+    # first model run. It is post-fix regression, not independent acceptance.
     ShadowCase("v3_task_cn", "新增一项日程提醒：下周一续签证书。",
                "agent_loop", "tool_action", facts(
                    current_write_authorized=True, tool_registered=True,
@@ -447,6 +790,8 @@ CASES = (
                    current_read_bound=True, tool_registered=True,
                    tool_schema_valid=True, source_provenance_valid=True),
                None, "safe_non_effect", cohort="heldout_v3"),
+    *v4_cases(),
+    *v5_cases(),
 )
 
 
@@ -454,27 +799,147 @@ def prompt_fingerprint() -> str:
     return hashlib.sha256(PROMPT.encode("utf-8")).hexdigest()
 
 
-def heldout_manifest_fingerprint(cohort: str = ACCEPTANCE_COHORT) -> str:
+def heldout_manifest_fingerprint(cohort: str = DEFAULT_REGRESSION_COHORT) -> str:
     payload = json.dumps(
         [asdict(case) for case in CASES if case.cohort == cohort],
         ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def validate_frozen_acceptance() -> None:
-    if prompt_fingerprint() != FROZEN_PROMPT_V3_SHA256:
-        raise ValueError("m2_v3_prompt_changed_after_heldout_freeze")
+def _protocol_fingerprint(*, cohort: str, prompt_sha256: str,
+                          repetitions: int, min_pass_rate: float,
+                          expected_case_count: int,
+                          critical_case_ids: frozenset[str],
+                          normalizer_version: str | None = None) -> str:
+    protocol = {
+        "cohort": cohort,
+        "manifest_sha256": heldout_manifest_fingerprint(cohort),
+        "prompt_sha256": prompt_sha256,
+        "required_repetitions": repetitions,
+        "expected_case_count": expected_case_count,
+        "min_pass_rate_each_repetition": min_pass_rate,
+        "critical_case_ids": sorted(critical_case_ids),
+        "requirements": {
+            "all_critical_pass": True,
+            "all_outputs_available": True,
+            "unsafe_hypothetical_admissions": 0,
+            "unnecessary_clarifications": 0,
+            "all_eight_routes_covered": True,
+        },
+    }
+    if normalizer_version is not None:
+        protocol["contract_normalizer_version"] = normalizer_version
+    payload = json.dumps(
+        protocol, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def v4_protocol_fingerprint() -> str:
+    return _protocol_fingerprint(
+        cohort="heldout_v4", prompt_sha256=FROZEN_PROMPT_V3_SHA256,
+        repetitions=V4_REQUIRED_REPETITIONS,
+        min_pass_rate=V4_MIN_PASS_RATE,
+        expected_case_count=V4_EXPECTED_CASE_COUNT,
+        critical_case_ids=V4_CRITICAL_CASE_IDS)
+
+
+def acceptance_protocol_fingerprint() -> str:
+    return _protocol_fingerprint(
+        cohort=SEMANTIC_ACCEPTANCE_COHORT or "",
+        prompt_sha256=prompt_fingerprint(),
+        repetitions=ACCEPTANCE_REQUIRED_REPETITIONS,
+        min_pass_rate=ACCEPTANCE_MIN_PASS_RATE,
+        expected_case_count=ACCEPTANCE_EXPECTED_CASE_COUNT,
+        critical_case_ids=ACCEPTANCE_CRITICAL_CASE_IDS)
+
+
+def v5_protocol_fingerprint() -> str:
+    return _protocol_fingerprint(
+        cohort="heldout_v5", prompt_sha256=FROZEN_PROMPT_V5_SHA256,
+        repetitions=ACCEPTANCE_REQUIRED_REPETITIONS,
+        min_pass_rate=ACCEPTANCE_MIN_PASS_RATE,
+        expected_case_count=ACCEPTANCE_EXPECTED_CASE_COUNT,
+        critical_case_ids=V5_CRITICAL_CASE_IDS)
+
+
+def validate_frozen_evidence() -> None:
+    if prompt_fingerprint() != FROZEN_PROMPT_V5_SHA256:
+        raise ValueError("m2_v5_prompt_changed_after_heldout_freeze")
     if heldout_manifest_fingerprint("heldout_v1") != FROZEN_HELDOUT_V1_SHA256:
         raise ValueError("m2_heldout_v1_manifest_changed_after_freeze")
     if heldout_manifest_fingerprint("heldout_v2") != FROZEN_HELDOUT_V2_SHA256:
         raise ValueError("m2_heldout_v2_manifest_changed_after_freeze")
     if heldout_manifest_fingerprint("heldout_v3") != FROZEN_HELDOUT_V3_SHA256:
         raise ValueError("m2_heldout_v3_manifest_changed_after_freeze")
+    if heldout_manifest_fingerprint("heldout_v4") != FROZEN_HELDOUT_V4_SHA256:
+        raise ValueError("m2_heldout_v4_manifest_changed_after_freeze")
+    if v4_protocol_fingerprint() != FROZEN_V4_PROTOCOL_SHA256:
+        raise ValueError("m2_v4_acceptance_protocol_changed_after_freeze")
+    if heldout_manifest_fingerprint("heldout_v5") != FROZEN_HELDOUT_V5_SHA256:
+        raise ValueError("m2_heldout_v5_manifest_changed_after_freeze")
+    if v5_protocol_fingerprint() != FROZEN_V5_PROTOCOL_SHA256:
+        raise ValueError("m2_v5_acceptance_protocol_changed_after_freeze")
+    if acceptance_protocol_fingerprint() != FROZEN_V5_PROTOCOL_SHA256:
+        raise ValueError("m2_v5_acceptance_protocol_changed_after_freeze")
     leaked = [case.case_id for case in CASES
-              if case.cohort in {"heldout_v1", "heldout_v2", "heldout_v3"}
+              if case.cohort in {"heldout_v1", "heldout_v2", "heldout_v3",
+                                 "heldout_v4", "heldout_v5"}
               and case.prompt in PROMPT]
     if leaked:
         raise ValueError("m2_heldout_literal_prompt_leakage")
+
+
+def validate_frozen_acceptance() -> None:
+    """Compatibility alias; frozen evidence is not necessarily acceptance."""
+    validate_frozen_evidence()
+
+
+def gate_status(rows: list[dict]) -> dict[str, str]:
+    regression_pass = bool(rows) and all(
+        row.get("case_result") == "PASS" for row in rows)
+    acceptance_rows = [row for row in rows
+                       if row.get("cohort") == SEMANTIC_ACCEPTANCE_COHORT]
+    expected_routes = {case.expected_route for case in CASES
+                       if case.cohort == SEMANTIC_ACCEPTANCE_COHORT}
+    repetitions = {row.get("repetition") for row in acceptance_rows}
+    cases_by_repetition = {
+        repetition: [row for row in acceptance_rows
+                     if row.get("repetition") == repetition]
+        for repetition in repetitions
+    }
+    repetition_rates = [
+        sum(row.get("case_result") == "PASS" for row in attempt) / len(attempt)
+        for attempt in cases_by_repetition.values() if attempt
+    ]
+    all_critical_pass = all(
+        row.get("case_result") == "PASS" for row in acceptance_rows
+        if row.get("case_id") in ACCEPTANCE_CRITICAL_CASE_IDS)
+    complete_matrix = (
+        len(repetitions) == ACCEPTANCE_REQUIRED_REPETITIONS
+        and all(len(attempt) == ACCEPTANCE_EXPECTED_CASE_COUNT
+                for attempt in cases_by_repetition.values())
+        and {row.get("expected_route") for row in acceptance_rows}
+            == expected_routes
+    )
+    semantic_pass = bool(acceptance_rows) and complete_matrix
+    semantic_pass = semantic_pass and all(
+        rate >= ACCEPTANCE_MIN_PASS_RATE for rate in repetition_rates)
+    semantic_pass = semantic_pass and all_critical_pass
+    semantic_pass = semantic_pass and all(
+        row.get("state") == "valid" for row in acceptance_rows)
+    semantic_pass = semantic_pass and not any(
+        row.get("host_preview_result") == "PASS"
+        and row.get("semantic_result") != "PASS"
+        for row in acceptance_rows)
+    semantic_pass = semantic_pass and not any(
+        row.get("proposed_route") == "clarify"
+        and row.get("expected_route") != "clarify"
+        for row in acceptance_rows)
+    return {
+        "shadow_regression_gate": "PASS" if regression_pass else "HOLD",
+        "semantic_generalization_gate": "PASS" if semantic_pass else "HOLD",
+        "m2_gate": "PASS" if semantic_pass else "HOLD",
+    }
 
 
 def percentile(values: list[int], fraction: float) -> float:
@@ -515,7 +980,7 @@ def score(case: ShadowCase, outcome: dict) -> tuple[str, str, str]:
 
 
 async def run(args):
-    validate_frozen_acceptance()
+    validate_frozen_evidence()
     settings = Settings()
     if settings.model_provider != "ollama_proxy":
         raise ValueError("live_shadow_requires_ollama_proxy")
@@ -525,73 +990,75 @@ async def run(args):
         settings.model_max_output_tokens)
     run_id = str(uuid.uuid4())
     rows = []
-    selected_cohorts = set(args.cohort or [ACCEPTANCE_COHORT])
-    for index, case in enumerate(CASES):
-        if args.case and case.case_id not in args.case:
-            continue
-        if not args.case and case.cohort not in selected_cohorts:
-            continue
-        outcome = await evaluate_shadow(
-            provider, settings.understanding_strong_model, case.prompt,
-            has_plan=case.facts.has_plan,
-            pending_action=case.facts.pending_action,
-            pending_field=case.facts.pending_field,
-            timeout_s=args.timeout, host_facts=case.facts)
-        semantic, host, comparison = score(case, outcome)
-        preview = outcome.get("host_preview") or {}
-        row = {
-            "case_id": case.case_id,
-            "fixture_id": f"m2-v2:{case.cohort}:{case.case_id}",
-            "cohort": case.cohort,
-            "request_id": f"m2-{run_id[:8]}-{index:02d}",
-            "conversation_id": None,
-            "expected_route": case.expected_route,
-            "expected_target": case.expected_target,
-            "proposed_route": outcome.get("route"),
-            "proposed_target": outcome.get("route_target"),
-            "expected_effect": case.expected_effect,
-            "proposed_effect": outcome.get("effect"),
-            "state": outcome.get("state"),
-            "semantic_result": semantic,
-            "host_preview_result": host,
-            "legacy_oracle_comparison": comparison,
-            "host_disposition": preview.get("disposition"),
-            "host_reason": preview.get("reason"),
-            "host_admitted_route": preview.get("admitted_route"),
-            "host_evidence_complete": preview.get("evidence_complete", False),
-            "pending_field_state": outcome.get("pending_field_state"),
-            "evidence_offsets_rebound": outcome.get(
-                "evidence_offsets_rebound", 0),
-            "elapsed_ms": outcome["elapsed_ms"],
-        }
-        for key in ("error_class", "validation_errors", "failure_stage",
-                    "validation_code", "source_group", "source_index"):
-            if key in outcome:
-                row[key] = outcome[key]
-        row["m2_gate_result"] = ("PASS" if semantic == host == "PASS"
-                                 and comparison == "MATCH" else "HOLD")
-        rows.append(row)
-        print(case.case_id, row["m2_gate_result"])
+    selected_cohorts = set(args.cohort or [SEMANTIC_ACCEPTANCE_COHORT])
+    for repetition in range(1, args.repetitions + 1):
+        for index, case in enumerate(CASES):
+            if args.case and case.case_id not in args.case:
+                continue
+            if not args.case and case.cohort not in selected_cohorts:
+                continue
+            outcome = await evaluate_shadow(
+                provider, settings.understanding_strong_model, case.prompt,
+                has_plan=case.facts.has_plan,
+                pending_action=case.facts.pending_action,
+                pending_field=case.facts.pending_field,
+                timeout_s=args.timeout, host_facts=case.facts)
+            semantic, host, comparison = score(case, outcome)
+            preview = outcome.get("host_preview") or {}
+            row = {
+                "case_id": case.case_id,
+                "fixture_id": f"m2-v2:{case.cohort}:{case.case_id}",
+                "cohort": case.cohort,
+                "repetition": repetition,
+                "request_id": f"m2-{run_id[:8]}-{repetition}-{index:02d}",
+                "conversation_id": None,
+                "expected_route": case.expected_route,
+                "expected_target": case.expected_target,
+                "proposed_route": outcome.get("route"),
+                "proposed_target": outcome.get("route_target"),
+                "expected_effect": case.expected_effect,
+                "proposed_effect": outcome.get("effect"),
+                "state": outcome.get("state"),
+                "semantic_result": semantic,
+                "host_preview_result": host,
+                "legacy_oracle_comparison": comparison,
+                "host_disposition": preview.get("disposition"),
+                "host_reason": preview.get("reason"),
+                "host_admitted_route": preview.get("admitted_route"),
+                "host_evidence_complete": preview.get("evidence_complete", False),
+                "pending_field_state": outcome.get("pending_field_state"),
+                "evidence_offsets_rebound": outcome.get(
+                    "evidence_offsets_rebound", 0),
+                "elapsed_ms": outcome["elapsed_ms"],
+            }
+            for key in ("error_class", "validation_errors", "failure_stage",
+                        "validation_code", "source_group", "source_index"):
+                if key in outcome:
+                    row[key] = outcome[key]
+            row["case_result"] = ("PASS" if semantic == host == "PASS"
+                                  and comparison == "MATCH" else "REVIEW")
+            row["m2_gate_result"] = (
+                row["case_result"] if case.cohort == SEMANTIC_ACCEPTANCE_COHORT
+                else "NOT_ELIGIBLE")
+            rows.append(row)
+            print(repetition, case.case_id, row["case_result"])
 
     elapsed = [x["elapsed_ms"] for x in rows]
-    passes = sum(x["m2_gate_result"] == "PASS" for x in rows)
-    heldout_rows = [row for row in rows
-                    if row["cohort"] == ACCEPTANCE_COHORT]
-    heldout_passes = sum(row["m2_gate_result"] == "PASS"
-                         for row in heldout_rows)
+    passes = sum(x["case_result"] == "PASS" for x in rows)
     cohort_summary = {
         cohort: {
-            "PASS": sum(row["m2_gate_result"] == "PASS" for row in rows
+            "PASS": sum(row["case_result"] == "PASS" for row in rows
                         if row["cohort"] == cohort),
-            "REVIEW": sum(row["m2_gate_result"] != "PASS" for row in rows
+            "REVIEW": sum(row["case_result"] != "PASS" for row in rows
                           if row["cohort"] == cohort),
             "total": sum(row["cohort"] == cohort for row in rows),
-            "acceptance_eligible": cohort == ACCEPTANCE_COHORT,
+            "acceptance_eligible": (
+                SEMANTIC_ACCEPTANCE_COHORT is not None
+                and cohort == SEMANTIC_ACCEPTANCE_COHORT),
         }
         for cohort in sorted({row["cohort"] for row in rows})
     }
-    gate = ("PASS" if heldout_rows and heldout_passes == len(heldout_rows)
-            else "HOLD" if heldout_rows else "NOT_APPLICABLE")
+    gates = gate_status(rows)
     report = {
         "run_id": run_id,
         "started_utc": datetime.now(timezone.utc).isoformat(),
@@ -599,10 +1066,14 @@ async def run(args):
         "model": settings.understanding_strong_model,
         "prompt_sha256": prompt_fingerprint(),
         "heldout_manifest_sha256": heldout_manifest_fingerprint(
-            ACCEPTANCE_COHORT),
+            SEMANTIC_ACCEPTANCE_COHORT or DEFAULT_REGRESSION_COHORT),
         "heldout_v1_manifest_sha256": heldout_manifest_fingerprint(
             "heldout_v1"),
-        "acceptance_cohort": ACCEPTANCE_COHORT,
+        "acceptance_protocol_sha256": acceptance_protocol_fingerprint(),
+        "evidence_role": "predeclared_frozen_semantic_acceptance",
+        "acceptance_cohort": SEMANTIC_ACCEPTANCE_COHORT,
+        "required_repetitions": ACCEPTANCE_REQUIRED_REPETITIONS,
+        "minimum_pass_rate_each_repetition": ACCEPTANCE_MIN_PASS_RATE,
         "summary": {"PASS": passes, "REVIEW": len(rows) - passes,
                     "total": len(rows)},
         "cohort_summary": cohort_summary,
@@ -620,20 +1091,25 @@ async def run(args):
         "unnecessary_clarifications": sum(
             x.get("proposed_route") == "clarify"
             and x.get("expected_route") != "clarify" for x in rows),
-        "m2_gate": gate,
+        **gates,
         "rows": rows,
         "limitations": [
             "Host results are deterministic previews over explicit read-only fixtures, not production authorization.",
             "Legacy comparison is a frozen semantic oracle; actual same-turn API evidence is a separate gate.",
             "No user text, raw model output, tool result, or credential is written to this report.",
-            "Only heldout_v3 rows count toward the M2 gate; earlier cohorts remain historical or regression evidence.",
+            "heldout_v3 remains self-authored post-fix regression evidence, not semantic-generalization acceptance.",
+            "heldout_v4 is an immutable failed acceptance run for the prior prompt version.",
+            "heldout_v5 remains the frozen semantic cohort. A model route is not rewritten to match it.",
+            "Keyword repair and a further paraphrase cohort are not acceptance evidence.",
         ],
     }
     out = Path(args.output)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     print("Report:", out)
-    return 0 if rows and passes == len(rows) and gate != "HOLD" else 1
+    if SEMANTIC_ACCEPTANCE_COHORT in selected_cohorts:
+        return 0 if gates["m2_gate"] == "PASS" else 1
+    return 0 if rows and passes == len(rows) else 1
 
 
 def main():
@@ -644,12 +1120,16 @@ def main():
                         choices=[item.case_id for item in CASES],
                         help="Only evaluate named case; may be specified multiple times")
     parser.add_argument("--cohort", action="append", choices=sorted(COHORTS),
-                        help="Cohort to run; default is heldout_v3 only")
+                        help="Cohort to run; default is heldout_v5 acceptance")
+    parser.add_argument("--repetitions", type=int,
+                        default=ACCEPTANCE_REQUIRED_REPETITIONS)
     args = parser.parse_args()
     if os.environ.get("RUN_S25_02_SHADOW_LIVE") != "1":
         parser.error("RUN_S25_02_SHADOW_LIVE=1 required")
     if args.timeout <= 0:
         parser.error("timeout must be > 0")
+    if args.repetitions <= 0:
+        parser.error("repetitions must be > 0")
     raise SystemExit(asyncio.run(run(args)))
 
 

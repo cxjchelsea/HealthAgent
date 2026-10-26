@@ -420,9 +420,15 @@ def test_heldout_manifests_and_v2_prompt_are_frozen_and_literal_disjoint():
         FROZEN_HELDOUT_V1_SHA256,
         FROZEN_HELDOUT_V2_SHA256,
         FROZEN_HELDOUT_V3_SHA256,
+        FROZEN_HELDOUT_V4_SHA256,
+        FROZEN_HELDOUT_V5_SHA256,
         FROZEN_PROMPT_V1_SHA256,
         FROZEN_PROMPT_V2_SHA256,
         FROZEN_PROMPT_V3_SHA256,
+        FROZEN_PROMPT_V5_SHA256,
+        FROZEN_V4_PROTOCOL_SHA256,
+        FROZEN_V5_PROTOCOL_SHA256,
+        acceptance_protocol_fingerprint,
         heldout_manifest_fingerprint,
         prompt_fingerprint,
         validate_frozen_acceptance,
@@ -432,13 +438,22 @@ def test_heldout_manifests_and_v2_prompt_are_frozen_and_literal_disjoint():
         "a87abb6e73079d265f3ab4bffdb4765a57d7a01608b1ee6fec2b7ec3aff24bb3")
     assert FROZEN_PROMPT_V2_SHA256 == (
         "d97e791c42b79668fed3082bfbab991f6f05e1ee583a2804feee9f4cb01e1b6b")
-    assert prompt_fingerprint() == FROZEN_PROMPT_V3_SHA256
+    assert FROZEN_PROMPT_V3_SHA256 == (
+        "676f44ef0d95c63c20571c3918e2d4787e9ff9f0a0951af5e50705681bde4e66")
+    assert prompt_fingerprint() == FROZEN_PROMPT_V5_SHA256
     assert heldout_manifest_fingerprint("heldout_v1") == FROZEN_HELDOUT_V1_SHA256
     assert heldout_manifest_fingerprint("heldout_v2") == FROZEN_HELDOUT_V2_SHA256
     assert heldout_manifest_fingerprint("heldout_v3") == FROZEN_HELDOUT_V3_SHA256
+    assert heldout_manifest_fingerprint("heldout_v4") == FROZEN_HELDOUT_V4_SHA256
+    assert heldout_manifest_fingerprint("heldout_v5") == FROZEN_HELDOUT_V5_SHA256
+    from evals.s25_02_m2_shadow_live import v4_protocol_fingerprint
+    assert v4_protocol_fingerprint() == FROZEN_V4_PROTOCOL_SHA256
+    assert acceptance_protocol_fingerprint() == FROZEN_V5_PROTOCOL_SHA256
     assert sum(case.cohort == "heldout_v1" for case in CASES) == 16
     assert sum(case.cohort == "heldout_v2" for case in CASES) == 17
     assert sum(case.cohort == "heldout_v3" for case in CASES) == 17
+    assert sum(case.cohort == "heldout_v4" for case in CASES) == 40
+    assert sum(case.cohort == "heldout_v5" for case in CASES) == 32
 
 
 def test_contaminated_cases_are_development_only():
@@ -449,3 +464,142 @@ def test_contaminated_cases_are_development_only():
         "plan_revision", "pending_reference_reply",
     }:
         assert cohorts[case_id] == "development_leaked"
+
+
+def _passing_acceptance_rows():
+    from evals.s25_02_m2_shadow_live import (
+        ACCEPTANCE_REQUIRED_REPETITIONS, CASES, SEMANTIC_ACCEPTANCE_COHORT,
+    )
+    cases = [case for case in CASES
+             if case.cohort == SEMANTIC_ACCEPTANCE_COHORT]
+    return [{
+        "case_id": case.case_id,
+        "cohort": case.cohort,
+        "repetition": repetition,
+        "expected_route": case.expected_route,
+        "proposed_route": case.expected_route,
+        "case_result": "PASS",
+        "semantic_result": "PASS",
+        "host_preview_result": "PASS",
+        "state": "valid",
+    } for repetition in range(1, ACCEPTANCE_REQUIRED_REPETITIONS + 1)
+      for case in cases]
+
+
+def test_regression_cohorts_do_not_replace_frozen_v5_acceptance():
+    from evals.s25_02_m2_shadow_live import (
+        DEFAULT_REGRESSION_COHORT, SEMANTIC_ACCEPTANCE_COHORT, gate_status,
+    )
+    assert DEFAULT_REGRESSION_COHORT == "heldout_v3"
+    assert SEMANTIC_ACCEPTANCE_COHORT == "heldout_v5"
+    gates = gate_status(_passing_acceptance_rows())
+    assert gates == {
+        "shadow_regression_gate": "PASS",
+        "semantic_generalization_gate": "PASS",
+        "m2_gate": "PASS",
+    }
+
+
+def test_failed_regression_keeps_both_regression_and_m2_on_hold():
+    from evals.s25_02_m2_shadow_live import gate_status
+    rows = _passing_acceptance_rows()
+    rows[0]["case_result"] = "REVIEW"
+    gates = gate_status(rows)
+    assert gates["shadow_regression_gate"] == "HOLD"
+    assert gates["semantic_generalization_gate"] == "HOLD"
+    assert gates["m2_gate"] == "HOLD"
+
+
+def test_incomplete_acceptance_repetition_cannot_pass():
+    from evals.s25_02_m2_shadow_live import gate_status
+    rows = [row for row in _passing_acceptance_rows()
+            if row["repetition"] == 1]
+    assert gate_status(rows)["m2_gate"] == "HOLD"
+
+
+def test_plan_revision_without_step_number_is_unavailable():
+    data = route(
+        "plan_revise", route_target="saved_plan", execution_scope="none",
+        effect_intent="mutation_requested", source_quote="",
+        reference={"kind": "saved_step", "step_number": 1, "pending_field": None})
+    outcome = asyncio.run(evaluate_shadow(
+        Stub(data), "fake", "调整现有方案中的一个步骤，但暂时没指定步骤。",
+        has_plan=True, pending_action=None))
+    assert outcome["state"] == "unavailable"
+    assert outcome["validation_code"] == "shadow_revision_step_ungrounded"
+    assert outcome.get("route") is None
+
+
+def test_single_record_plan_create_without_two_steps_is_unavailable():
+    data = route(
+        "plan_create", route_target="saved_plan", execution_scope="none",
+        effect_intent="mutation_requested", source_quote="正式登记一项事项")
+    outcome = asyncio.run(evaluate_shadow(
+        Stub(data), "fake", "正式登记一项事项，内容为月底轮换服务密钥。",
+        has_plan=False, pending_action=None))
+    assert outcome["state"] == "unavailable"
+    assert outcome["validation_code"] == "shadow_plan_steps_ungrounded"
+    assert outcome.get("route") is None
+
+
+def test_pending_reply_without_effect_is_unavailable():
+    data = route(
+        source_quote="梯度累积", route_target="pending_clarification",
+        effect_intent="none",
+        reference={"kind": "pending_slot", "pending_field": "term"})
+    outcome = asyncio.run(evaluate_shadow(
+        Stub(data), "fake", "梯度累积",
+        has_plan=False, pending_action="mcp_reference_lookup",
+        pending_field="term"))
+    assert outcome["state"] == "unavailable"
+    assert outcome["validation_code"] == "shadow_pending_effect_unspecified"
+    assert outcome.get("route") is None
+
+
+def test_longer_step_number_does_not_ground_shorter_revision():
+    data = route(
+        "plan_revise", route_target="saved_plan", execution_scope="none",
+        effect_intent="mutation_requested", source_quote="第10步",
+        reference={"kind": "saved_step", "step_number": 1})
+    outcome = asyncio.run(evaluate_shadow(
+        Stub(data), "fake", "把已存方案第10步的阈值换掉，不要运行。",
+        has_plan=True, pending_action=None))
+    assert outcome["state"] == "unavailable"
+    assert outcome["validation_code"] == "shadow_revision_step_ungrounded"
+
+
+def test_overlapping_plan_steps_are_unavailable():
+    message = "先查询梯度累积再计算"
+    data = route(
+        "plan_create", route_target="saved_plan", execution_scope="none",
+        effect_intent="mutation_requested", source_quote="查询梯度累积",
+        plan_step_evidence=[
+            {"start": 1, "end": 7, "exact_text": "查询梯度累积"},
+            {"start": 5, "end": 7, "exact_text": "累积"},
+        ])
+    outcome = asyncio.run(evaluate_shadow(
+        Stub(data), "fake", message, has_plan=False, pending_action=None))
+    assert outcome["state"] == "unavailable"
+    assert outcome["validation_code"] == "shadow_plan_steps_ungrounded"
+
+
+def test_tool_action_without_effect_is_unavailable():
+    data = route(effect_intent="none", source_quote="登记一项事项")
+    outcome = asyncio.run(evaluate_shadow(
+        Stub(data), "fake", "正式登记一项事项，内容为月底轮换服务密钥。",
+        has_plan=False, pending_action=None))
+    assert outcome["state"] == "unavailable"
+    assert outcome["validation_code"] == "shadow_tool_effect_unspecified"
+    assert outcome.get("route") is None
+
+
+def test_plan_revision_keeps_step_number_present_in_current_message():
+    data = route(
+        "plan_revise", route_target="saved_plan", execution_scope="none",
+        effect_intent="mutation_requested", source_quote="第1步",
+        reference={"kind": "saved_step", "step_number": 1, "pending_field": None})
+    outcome = asyncio.run(evaluate_shadow(
+        Stub(data), "fake", "把已存方案第1步的词条换掉，不要运行。",
+        has_plan=True, pending_action=None))
+    assert outcome["state"] == "valid"
+    assert outcome["route"] == "plan_revise"

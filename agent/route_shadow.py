@@ -1,5 +1,6 @@
 """S25-02 M2: side-effect-free V2 semantic shadow, never Host execution authority."""
 import json
+import re
 import time
 from dataclasses import asdict
 from typing import Any, Literal
@@ -112,6 +113,50 @@ class SourceSpanError(ValueError):
         self.index = index
 
 
+_STEP_ORDINALS = {1: "一", 2: "二", 3: "三", 4: "四", 5: "五", 6: "六", 7: "七", 8: "八"}
+
+
+def revision_step_grounded(route: ShadowRoute, message: str) -> bool:
+    """计划修改的步骤编号必须能在当前用户原文中逐字找到。"""
+    if route.primary_route != "plan_revise":
+        return True
+    step_number = route.reference.step_number
+    if step_number is None:
+        return False
+    # 「第1」不能借「第10」成立；中文序号按完整词检查。
+    if re.search(rf"第{step_number}(?!\d)", message):
+        return True
+    ordinal = _STEP_ORDINALS.get(step_number)
+    if ordinal is not None and f"第{ordinal}" in message:
+        return True
+    return re.search(rf"(?i)\bstep\s*{step_number}\b", message) is not None
+
+
+def plan_create_steps_grounded(route: ShadowRoute) -> bool:
+    """正式建计划必须带上两段互不重叠、且已通过原文核对的步骤证据。"""
+    if route.primary_route != "plan_create":
+        return True
+    spans = route.plan_step_evidence
+    if len(spans) < 2 or len({(span.start, span.end) for span in spans}) < 2:
+        return False
+    ordered = sorted(spans, key=lambda span: (span.start, span.end))
+    return all(earlier.end <= later.start for earlier, later in zip(ordered, ordered[1:]))
+
+
+def pending_effect_declared(route: ShadowRoute) -> bool:
+    """待补参数指向工具时，效果必须由模型声明，不能为空后再补成只读或写入。"""
+    if route.primary_route != "agent_loop" or route.route_target != "pending_clarification":
+        return True
+    return route.effect_intent != "none"
+
+
+def tool_effect_declared(route: ShadowRoute) -> bool:
+    """指向工具动作时必须声明效果，不能把未声明效果当成纯文本循环。"""
+    if route.primary_route != "agent_loop" or route.route_target != "tool_action":
+        return True
+    return route.effect_intent != "none"
+
+
 def verify_source_spans(route: ShadowRoute, message: str) -> None:
     if route.source_quote and route.source_quote not in message:
         raise ValueError("shadow_untrusted_source_quote")
@@ -212,6 +257,8 @@ For all routes OTHER THAN clarify, set clarification exactly to
 For clarify, set clarification.required=true, reason to one of
 missing_referent/missing_argument/conflicting_constraints/ambiguous_scope/
 uncertain_intent (NEVER "none"), and supply a nonempty question.
+Clarify always uses execution_scope="none" and effect_intent="none", even when
+the eventual operation would write or revise something after clarification.
 Never provide a non-none clarification reason when required=false.
 For a clear request set ambiguity="clear". For uncertain requests choose
 primary_route="clarify" and provide a matching clarification object.
@@ -232,6 +279,9 @@ Routing distinctions (semantic proposals ONLY, never authorizations):
   record is agent_loop/tool_action even when it has a date or the user asks to
   create it formally. plan_create requires TWO OR MORE separately stated,
   ordered executable actions plus an explicit saved-plan lifecycle.
+- Saving, registering, recording or formally creating ONE named item never
+  supplies ordered steps. With no two grounded step spans, do not use
+  plan_create; route the single record through agent_loop/tool_action.
 - Answering an existing missing tool argument completes a bound pending slot:
   route agent_loop, target pending_clarification, not clarify. Clarify asks
   for information that is STILL missing; don't ask again after the user
@@ -275,6 +325,11 @@ Routing distinctions (semantic proposals ONLY, never authorizations):
 - Negative constraints such as "don't execute" narrow action scope.
   A plan edit that says "don't execute" still requests a plan revision,
   which is a durable plan mutation but NOT tool execution.
+- For every plan revision, route_target is "saved_plan". Put a specific step
+  only in reference.kind="saved_step" plus reference.step_number. If the user
+  requests a revision but omits which step and the target cannot be uniquely
+  bound, use clarify with scope none/effect none; never invent a step number or
+  emit a revision combination outside the schema.
 Use EXACTLY one route with a combination allowed by the schema.
 Do not output inconsistent route_target, scope, effect or clarification.
 Reference fields: kind none requires null step_number and null pending_field.
@@ -352,11 +407,20 @@ async def evaluate_shadow(provider: HTTPUnderstandingModel, model_name: str,
                            "index_guide":_index_guide(message)
                        },ensure_ascii=False)}]), timeout=timeout_s)
         stage = "schema"
+        # 模型提案保持原样。宿主只校验，不按关键词改写路由。
         result = ShadowRoute.model_validate_json(raw)
         stage = "source_provenance"
         evidence_offsets_rebound = _rebind_safe_non_effect_source_offsets(
             result, message)
         verify_source_spans(result, message)
+        if not revision_step_grounded(result, message):
+            raise ValueError("shadow_revision_step_ungrounded")
+        if not plan_create_steps_grounded(result):
+            raise ValueError("shadow_plan_steps_ungrounded")
+        if not pending_effect_declared(result):
+            raise ValueError("shadow_pending_effect_unspecified")
+        if not tool_effect_declared(result):
+            raise ValueError("shadow_tool_effect_unspecified")
         stage = "host_preview"
         would_deny = hypothetical_admission(
             result, has_plan=has_plan, pending_action=pending_action)
@@ -378,6 +442,7 @@ async def evaluate_shadow(provider: HTTPUnderstandingModel, model_name: str,
                 "host_admission_complete":False,
                 "evidence_spans":len(result.source_evidence),
                 "evidence_offsets_rebound":evidence_offsets_rebound,
+                "semantic_model_calls":1,
                 **({"host_preview":host_preview} if host_preview is not None else {}),
                 **({"pending_field_state":pending_field_state}
                    if pending_field_state is not None else {}),
@@ -398,7 +463,11 @@ async def evaluate_shadow(provider: HTTPUnderstandingModel, model_name: str,
                 "shadow_source_offset_out_of_bounds",
                 "shadow_source_offset_mismatch",
                 "shadow_source_text_not_found",
-                "shadow_mutation_conflicts_negative_constraint"}
+                "shadow_mutation_conflicts_negative_constraint",
+                "shadow_revision_step_ungrounded",
+                "shadow_plan_steps_ungrounded",
+                "shadow_pending_effect_unspecified",
+                "shadow_tool_effect_unspecified"}
         code = str(exc) if str(exc) in safe else "other_value_error"
         return {"state":"unavailable","error_class":"ValueError",
                 "failure_stage":stage,"validation_code":code,

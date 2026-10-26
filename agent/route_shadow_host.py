@@ -188,11 +188,17 @@ def preview_admission(proposal: ShadowRoute, facts: ShadowHostFacts) -> ShadowAd
                 return out("needs_evidence", "tool_registration_unverified")
             if not facts.tool_schema_valid:
                 return out("needs_evidence", "tool_schema_unverified")
+            # 待补参数指向真实工具时，效果未声明不能当成可准入，也不补成只读或写入。
+            if proposal.effect_intent == "none":
+                return out("needs_evidence", "pending_effect_unspecified")
             return out("potentially_admissible", "shadow_evidence_complete",
                        "ordinary_loop", True)
         if (proposal.route_target == "none"
                 and proposal.effect_intent != "none"):
             return out("deny", "effectful_loop_missing_tool_target")
+        # 只有不指向工具的循环才能当成纯文本。指向工具却未声明效果不能补成只读或写入。
+        if proposal.route_target == "tool_action" and proposal.effect_intent == "none":
+            return out("needs_evidence", "tool_effect_unspecified")
         if proposal.effect_intent == "none":
             return out("safe_non_effect", "text_only_loop", "ordinary_loop", True)
         if not facts.tool_registered:

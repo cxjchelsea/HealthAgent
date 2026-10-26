@@ -122,6 +122,38 @@ def test_pending_reply_with_complete_readonly_binding_is_previewable():
     assert result.evidence_complete is True
 
 
+def test_tool_action_without_effect_is_not_text_only():
+    request = proposal(
+        "agent_loop", target="tool_action", scope="single_tool", effect="none")
+    result = preview_admission(request, ShadowHostFacts(
+        has_plan=False, tool_registered=True, tool_schema_valid=True,
+        current_read_bound=True, source_provenance_valid=True))
+    assert result.disposition == "needs_evidence"
+    assert result.reason == "tool_effect_unspecified"
+    assert result.admitted_route is None
+    assert result.evidence_complete is False
+
+
+def test_loop_without_tool_target_can_stay_text_only():
+    request = proposal("agent_loop", target="none", scope="none", effect="none")
+    result = preview_admission(request, ShadowHostFacts(has_plan=False))
+    assert result.disposition == "safe_non_effect"
+    assert result.reason == "text_only_loop"
+
+
+def test_pending_reply_without_effect_is_not_admissible():
+    request = proposal(
+        "agent_loop", target="pending_clarification", scope="single_tool",
+        effect="none", reference={"kind": "pending_slot", "pending_field": "term"})
+    result = preview_admission(request, ShadowHostFacts(
+        has_plan=False, pending_action="mcp_reference_lookup", pending_field="term",
+        pending_original_request_bound=True, source_provenance_valid=True,
+        tool_registered=True, tool_schema_valid=True))
+    assert result.disposition == "needs_evidence"
+    assert result.reason == "pending_effect_unspecified"
+    assert result.evidence_complete is False
+
+
 def test_pending_reply_may_abstain_from_host_owned_field_name():
     request = proposal(
         "agent_loop",target="pending_clarification",scope="single_tool",
