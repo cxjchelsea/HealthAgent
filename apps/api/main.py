@@ -835,6 +835,11 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                          "message_id": assistant_id, "turn_id": turn_id}
         if shadow is not None:
             response_data["route_shadow"] = {**shadow, **compare_to_legacy(shadow, result)}
+            if m3_preturn_snapshot is not None:
+                response_data["route_shadow"]["m3_preturn_identity"] = (
+                    compare_captured_identity(
+                        m3_preturn_snapshot, conversation_id=cid,
+                        request_id=body.client_request_id, turn_id=turn_id))
         return response_data
 
     @app.get("/conversations/{cid}/turns/{turn_id}/diagnostics")
