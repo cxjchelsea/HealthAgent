@@ -280,7 +280,7 @@ def test_plan_step_source_offsets_still_fail_closed():
         "route_target":"saved_plan","execution_scope":"none",
         "effect_intent":"mutation_requested","ambiguity":"clear",
         "plan_step_evidence":[{"start":0,"end":3,"exact_text":"虚构步骤"}]})
-    with pytest.raises(ValueError,match="shadow_untrusted_source_span"):
+    with pytest.raises(ValueError,match="shadow_source_text_not_found"):
         verify_source_spans(route,"创建计划")
 
 
@@ -295,3 +295,21 @@ def test_pending_reply_needs_original_request_binding_even_if_model_names_field(
         "pending_original_request_binding_unverified")
     assert hypothetical_admission(route,has_plan=False,pending_action=None) == (
         "missing_pending_action")
+
+
+def test_source_span_error_types_are_distinguished():
+    from agent.route_shadow import verify_source_spans
+    message = "取消此前操作"
+    base = {
+        "schema_version":"s25-route-v2","primary_route":"cancel",
+        "route_target":"none","execution_scope":"none",
+        "effect_intent":"none","ambiguity":"clear"}
+    cases = [
+        ({"start":0,"end":100,"exact_text":"取消"}, "shadow_source_offset_out_of_bounds"),
+        ({"start":1,"end":3,"exact_text":"取消"}, "shadow_source_offset_mismatch"),
+        ({"start":0,"end":2,"exact_text":"不存在"}, "shadow_source_text_not_found"),
+    ]
+    for span, expected in cases:
+        proposal = ShadowRoute.model_validate({**base, "source_evidence":[span]})
+        with pytest.raises(ValueError, match=expected):
+            verify_source_spans(proposal, message)
