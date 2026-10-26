@@ -45,10 +45,14 @@ def check_db(path: Path, report: dict) -> dict:
     checks = []
     found = {}
     try:
+        exact_conversations = report.get("conversations", {})
         for label, prompts in CASES.items():
-            candidates = con.execute(
-                "SELECT DISTINCT conversation_id FROM messages "
-                "WHERE role='user' AND content=?", (prompts[0],)).fetchall()
+            report_group = "plan_probe" if label == "probe" else label
+            supplied = exact_conversations.get(report_group)
+            candidates = ([{"conversation_id": supplied}] if supplied else
+                con.execute(
+                    "SELECT DISTINCT conversation_id FROM messages "
+                    "WHERE role='user' AND content=?", (prompts[0],)).fetchall())
             matches = []
             for candidate in candidates:
                 cid = candidate["conversation_id"]
@@ -59,16 +63,35 @@ def check_db(path: Path, report: dict) -> dict:
                     matches.append(cid)
             if len(matches) != 1:
                 checks.append({"name": label + "_unique_conversation",
-                               "result": "FAIL", "matched": len(matches)})
+                               "result": "FAIL", "matched": len(matches),
+                               "identity_source": ("report" if supplied else "prompt_scan")})
             else:
                 found[label] = matches[0]
                 checks.append({"name": label + "_unique_conversation",
-                               "result": "PASS"})
+                               "result": "PASS",
+                               "identity_source": ("report" if supplied else "prompt_scan")})
         if len(set(found.values())) != len(found):
             checks.append({"name": "conversation_isolation", "result": "FAIL"})
         else:
             checks.append({"name": "conversation_isolation",
                            "result": "PASS" if len(found) == len(CASES) else "BLOCKED"})
+        identity_rows = [row for row in rows if row.get("conversation_id")
+                         and row.get("client_request_id") and row.get("turn_id")]
+        if identity_rows:
+            bound = 0
+            for row in identity_rows:
+                match = con.execute(
+                    "SELECT count(*) FROM turns WHERE id=? AND conversation_id=? "
+                    "AND request_id=?",
+                    (row["turn_id"], row["conversation_id"],
+                     row["client_request_id"])).fetchone()[0]
+                bound += match == 1
+            checks.append({"name":"exact_turn_request_binding",
+                           "result":"PASS" if bound == len(rows) else "FAIL",
+                           "bound":bound,"expected":len(rows)})
+        elif report.get("route_shadow_required"):
+            checks.append({"name":"exact_turn_request_binding",
+                           "result":"BLOCKED","bound":0,"expected":len(rows)})
         for label, cid in found.items():
             turns = con.execute(
                 "SELECT t.state,t.failure_code,t.output_chars,m.status,m.content "

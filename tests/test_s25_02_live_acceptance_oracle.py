@@ -1,5 +1,5 @@
 """Offline checks for the centralized live acceptance oracle, not Qwen evidence."""
-from evals.s25_02_step5_live_acceptance import check
+from evals.s25_02_step5_live_acceptance import check, check_shadow
 
 
 def test_live_oracle_rejects_claim_without_tool_observation():
@@ -29,3 +29,13 @@ def test_live_oracle_requires_failed_calculator_observation():
     result, _ = check("F04_division_zero", {"trace": [
         {"type": "tool", "name": "calculate", "ok": False}]})
     assert result == "PASS"
+
+
+def test_m2_same_turn_shadow_oracle_requires_route_target_and_host_preview():
+    data = {"route_shadow": {
+        "state":"valid", "route":"agent_loop", "route_target":"tool_action",
+        "comparison":"match",
+        "host_preview":{"disposition":"potentially_admissible"}}}
+    assert check_shadow("F02_calculation", data)[0] == "PASS"
+    data["route_shadow"]["route"] = "plan_create"
+    assert check_shadow("F02_calculation", data)[0] == "FAIL"

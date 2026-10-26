@@ -94,11 +94,51 @@ def check(case, data):
     return "REVIEW", "no automatic semantic oracle"
 
 
+SHADOW_EXPECTED = {
+    "F02_calculation": ("agent_loop", "tool_action"),
+    "F03_lookup": ("agent_loop", "tool_action"),
+    "F03_missing_term": ("clarify", None),
+    "F03_clarification_reply": ("agent_loop", "pending_clarification"),
+    "F04_division_zero": ("agent_loop", "tool_action"),
+    "F04_unsupported_shell": ("agent_loop", "tool_action"),
+    "E06_unsaved_draft": ("respond", None),
+    "E03_task_create": ("agent_loop", "tool_action"),
+    "D03_plan_create": ("plan_create", None),
+    "E06_standalone_with_plan": ("agent_loop", "tool_action"),
+    "D03_plan_create_fresh": ("plan_create", None),
+    "D05_plan_revision": ("plan_revise", None),
+    "D03_execute_first": ("plan_execute_first", None),
+    "D06_resume": ("plan_resume", None),
+}
+
+
+def check_shadow(case, data):
+    """Validate same-response shadow diagnostics without treating them as authority."""
+    shadow = data.get("route_shadow") if isinstance(data, dict) else None
+    if not isinstance(shadow, dict):
+        return "FAIL", "missing route_shadow diagnostics"
+    expected_route, expected_target = SHADOW_EXPECTED[case]
+    if shadow.get("state") != "valid":
+        return "FAIL", "shadow proposal unavailable"
+    if shadow.get("route") != expected_route:
+        return "FAIL", "shadow route mismatch"
+    if expected_target is not None and shadow.get("route_target") != expected_target:
+        return "FAIL", "shadow target mismatch"
+    if shadow.get("comparison") == "mismatch":
+        return "FAIL", "shadow conflicts with structured legacy evidence"
+    preview = shadow.get("host_preview")
+    if not isinstance(preview, dict) or not preview.get("disposition"):
+        return "FAIL", "missing trusted Host preview"
+    return "PASS", "same-turn semantic and Host preview diagnostics present"
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--endpoint", default="http://127.0.0.1:8000")
     parser.add_argument("--output", default="s25_02_step5_live_acceptance.json")
     parser.add_argument("--timeout", type=float, default=240)
+    parser.add_argument("--require-route-shadow", action="store_true",
+                        help="Require same-turn M2 route_shadow diagnostics")
     args = parser.parse_args()
     parsed = urlparse(args.endpoint)
     if os.getenv("RUN_S25_02_LIVE") != "1":
@@ -152,15 +192,26 @@ def main():
                     resp = client.post("/conversations")
                     resp.raise_for_status()
                     conversations[group] = resp.json()["id"]
+                request_id = f"step5-{index:02d}-{uuid.uuid4().hex[:12]}"
                 response = client.post(
                     f"/conversations/{conversations[group]}/agent/messages",
                     json={"content": utterance,
-                          "client_request_id": f"step5-{index:02d}-{uuid.uuid4().hex[:12]}"})
+                          "client_request_id": request_id})
                 data = response.json()
                 verdict, rationale = check(case, data) if response.status_code == 200 else (
                     "FAIL", "API returned non-200")
+                shadow_verdict, shadow_rationale = (check_shadow(case, data)
+                    if response.status_code == 200 and args.require_route_shadow
+                    else ("NOT_REQUESTED", "route shadow gate disabled"))
+                if args.require_route_shadow and shadow_verdict != "PASS":
+                    verdict, rationale = "FAIL", shadow_rationale
                 rows.append({
-                    "case": case, "http_status": response.status_code,
+                    "case": case, "group": group,
+                    "conversation_id": conversations[group],
+                    "client_request_id": request_id,
+                    "turn_id": data.get("turn_id") if isinstance(data, dict) else None,
+                    "message_id": data.get("message_id") if isinstance(data, dict) else None,
+                    "http_status": response.status_code,
                     "status": data.get("status") if isinstance(data, dict) else None,
                     "termination_reason": data.get("termination_reason") if isinstance(data, dict) else None,
                     "failure_code": ((data.get("detail") or {}).get("code")
@@ -171,6 +222,10 @@ def main():
                     "plan_progress": ([x.get("status") for x in data.get("plan", [])]
                                       if isinstance(data, dict) else None),
                     "result": verdict, "rationale": rationale,
+                    "shadow_result": shadow_verdict,
+                    "shadow_rationale": shadow_rationale,
+                    "route_shadow": (data.get("route_shadow")
+                                     if isinstance(data, dict) else None),
                     "answer": (str(data.get("answer", ""))[:1500]
                                if isinstance(data, dict) else ""),
                 })
@@ -180,8 +235,11 @@ def main():
                              "elapsed_ms": round((time.perf_counter()-start)*1000)})
             last_by_group[group] = rows[-1]["result"]
             print(case, rows[-1]["result"])
-    results = {"started_utc": started, "source": "real Conversation API",
+    results = {"run_id": str(uuid.uuid4()), "started_utc": started,
+               "source": "real Conversation API",
                "model": metadata, "rows": rows,
+               "conversations": conversations,
+               "route_shadow_required": args.require_route_shadow,
                "summary": {name: sum(x["result"] == name for x in rows)
                            for name in ("PASS", "FAIL", "REVIEW", "BLOCKED")},
                "limitations": [
@@ -189,6 +247,19 @@ def main():
                    "Answer consistency, model request counts, user-visible browser behavior and side-effect DB inspection require independent review.",
                    "Some natural language phrasings may require repeated sampling before accepting stability.",
                ]}
+    if args.require_route_shadow:
+        shadow_elapsed = [x.get("route_shadow", {}).get("elapsed_ms") for x in rows
+                          if isinstance(x.get("route_shadow"), dict)
+                          and isinstance(x.get("route_shadow", {}).get("elapsed_ms"), int)]
+        ordered = sorted(shadow_elapsed)
+        results["m2_shadow_summary"] = {
+            "PASS": sum(x.get("shadow_result") == "PASS" for x in rows),
+            "FAIL": sum(x.get("shadow_result") == "FAIL" for x in rows),
+            "model_calls_observed": len(shadow_elapsed),
+            "p50_latency_ms": (ordered[len(ordered)//2] if ordered else 0),
+            "p95_latency_ms": (ordered[min(len(ordered)-1,
+                int((len(ordered)-1)*.95))] if ordered else 0),
+        }
     out = Path(args.output)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")

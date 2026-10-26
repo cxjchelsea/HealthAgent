@@ -1,7 +1,8 @@
 """S25-02 M2: side-effect-free V2 semantic shadow, never Host execution authority."""
 import json
 import time
-from typing import Literal
+from dataclasses import asdict
+from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from agent.understanding import GoalSpec, GoalChangeProposal, HTTPUnderstandingModel
 
@@ -17,7 +18,9 @@ class ShadowReference(BaseModel):
     model_config = ConfigDict(extra="forbid")
     kind: Literal["none", "active_goal", "saved_plan", "saved_step", "pending_slot"] = "none"
     step_number: int | None = Field(default=None, ge=1, le=8)
-    pending_field: str | None = Field(default=None, max_length=80)
+    pending_field: str | None = Field(
+        default=None, max_length=80,
+        description="Exact Host pending_action_field; never translate or rename")
 
     @model_validator(mode="after")
     def bound(self):
@@ -216,10 +219,14 @@ Routing distinctions (semantic proposals ONLY, never authorizations):
   executable PLAN explicitly requested for FUTURE work, not a normal write.
 - "Use calculate tool" and "query MCP definition of RAG" are agent_loop,
   read_only and single_tool, not respond/clarify when parameters are present.
+- effect_intent describes the external effect of the requested operation, not
+  the fact that a tool call occurs. calculate and MCP lookup are read_only.
+  Creating a task or changing stored plan data is mutation_requested.
 - When has_pending_action=true and the user replies only with a value
   answering the prior missing argument, choose agent_loop,
   route_target=pending_clarification and reference.kind=pending_slot.
-  Pending field is unverified unless the Host supplies its exact binding.
+  If pending_action_field is supplied by Host, copy that exact field into
+  reference.pending_field; never rename or infer a different field.
 - An independent calculator request while a plan exists is agent_loop,
   NOT respond and NOT plan_resume, especially with "do not execute plan".
 - The lack of a saved plan does not change the semantic request to resume it;
@@ -241,12 +248,60 @@ For plan_create, plan_step_evidence must contain TWO distinct exact spans
 for separately requested ordered steps; never invent missing plan steps.
 Negative constraints are operation-scoped, not global write prohibitions.
 Do not fabricate source spans or reference fields; use empty/default
-values if original text does not prove the field."""
+ values if original text does not prove the field."""
+
+PROMPT += """
+Offset protocol:
+- start/end are zero-based Python Unicode code-point indexes; end is exclusive.
+- The user payload may include index_guide entries [index, character]. Use them
+  directly. Never count UTF-8 bytes and never guess an offset.
+- If an exact span cannot be proved from index_guide, emit an empty span list.
+  Empty source_evidence is valid for a non-effect cancel/respond proposal and
+  will be reviewed by Host; a wrong span makes the whole proposal unavailable.
+Task/plan counterexample:
+- "请正式创建任务：周五提交测试报告。" is ONE task-manager write, therefore
+  agent_loop/tool_action/single_tool/mutation_requested. A deadline or colon
+  does not turn one task into a plan.
+- plan_create requires an explicitly requested durable plan with at least two
+  separately stated ordered executable steps. Never use plan_create for a
+  single task item.
+Read-only effect counterexample:
+- "请使用计算工具计算 (19+23)*4。" and an independent calculation while a
+  plan exists both use effect_intent="read_only", never mutation_requested.
+Plan revision exact combination:
+- "将已保存计划第二步的 8*8 修改为 9*9，不执行。" uses
+  primary_route="plan_revise", route_target="saved_plan",
+  execution_scope="none", effect_intent="mutation_requested",
+  reference.kind="saved_step", reference.step_number=2. "不执行" forbids
+  running tools; it does not make the durable revision read_only.
+Pending-slot exact-binding example:
+- If has_pending_action=true, pending_action_tool="mcp_reference_lookup",
+  pending_action_field="term", and message="RAG", use agent_loop,
+  pending_clarification, reference.kind="pending_slot", and
+  reference.pending_field="term" exactly. Do not output "query", "keyword",
+  the supplied value, or a translated label as the pending field.
+  Because the value already answers the pending question, clarification must be
+  exactly {"required":false,"reason":"none","question":null}.
+Standalone lookup exact combination:
+- "请查询 MCP 中 RAG 的定义。" has a complete term and no pending context:
+  agent_loop, route_target="tool_action", execution_scope="single_tool",
+  effect_intent="read_only", reference.kind="none". It is not text-only and
+  route_target must not be "none".
+"""
+
+
+def _index_guide(message: str) -> list[list[Any]]:
+    """Give short live inputs an exact Unicode index map without changing evidence."""
+    if len(message) > 1000:
+        return []
+    return [[index, char] for index, char in enumerate(message)]
 
 
 async def evaluate_shadow(provider: HTTPUnderstandingModel, model_name: str,
-                          message: str, *, has_plan: bool,
-                          pending_action: str | None, timeout_s: float = 12) -> dict:
+                           message: str, *, has_plan: bool,
+                           pending_action: str | None, timeout_s: float = 12,
+                           host_facts: Any | None = None,
+                           pending_field: str | None = None) -> dict:
     """Isolated evaluation: never invokes AgentLoop, tools, stores or permissions."""
     import asyncio
     began = time.perf_counter()
@@ -256,10 +311,12 @@ async def evaluate_shadow(provider: HTTPUnderstandingModel, model_name: str,
             model=model_name, response_schema=ShadowRoute.model_json_schema(),
             messages=[{"role":"system","content":PROMPT},
                       {"role":"user","content":json.dumps({
-                          "message":message,"has_saved_plan":has_plan,
-                          "has_pending_action":pending_action is not None,
-                          "pending_action_tool":pending_action
-                      },ensure_ascii=False)}]), timeout=timeout_s)
+                           "message":message,"has_saved_plan":has_plan,
+                           "has_pending_action":pending_action is not None,
+                           "pending_action_tool":pending_action,
+                           "pending_action_field":pending_field,
+                           "index_guide":_index_guide(message)
+                       },ensure_ascii=False)}]), timeout=timeout_s)
         stage = "schema"
         result = ShadowRoute.model_validate_json(raw)
         stage = "source_provenance"
@@ -267,6 +324,16 @@ async def evaluate_shadow(provider: HTTPUnderstandingModel, model_name: str,
         stage = "host_preview"
         would_deny = hypothetical_admission(
             result, has_plan=has_plan, pending_action=pending_action)
+        host_preview = None
+        if host_facts is not None:
+            from agent.route_shadow_host import preview_admission
+            host_preview = asdict(preview_admission(result, host_facts))
+        pending_field_state = None
+        if host_facts is not None and getattr(host_facts, "pending_field", None):
+            pending_field_state = (
+                "missing" if result.reference.pending_field is None else
+                "match" if result.reference.pending_field == host_facts.pending_field
+                else "conflict")
         return {"state":"valid","route":result.primary_route,
                 "route_target":result.route_target,
                 "reference_kind":result.reference.kind,
@@ -274,6 +341,9 @@ async def evaluate_shadow(provider: HTTPUnderstandingModel, model_name: str,
                 "ambiguity":result.ambiguity,"host_would_deny":would_deny,
                 "host_admission_complete":False,
                 "evidence_spans":len(result.source_evidence),
+                **({"host_preview":host_preview} if host_preview is not None else {}),
+                **({"pending_field_state":pending_field_state}
+                   if pending_field_state is not None else {}),
                 "elapsed_ms":int((time.perf_counter()-began)*1000)}
     except ValidationError as exc:
         diagnostics = [{"path":".".join(str(i) for i in err["loc"])[:120],
@@ -312,14 +382,24 @@ def compare_to_legacy(shadow: dict, result: dict) -> dict:
     reasons = {
         "plan_created_pending_execution": "plan_create",
         "plan_revised_pending_execution": "plan_revise",
+        "plan_revision_conflict": "plan_revise",
+        "existing_plan_requires_revision": "plan_create",
         "plan_first_step_already_completed": "plan_execute_first",
         "plan_first_step_verified": "plan_execute_first",
+        "plan_not_found": "plan_resume",
+        "plan_already_completed": "plan_resume",
         "needs_input": "clarify",
+        "verified_clarification_execution": "agent_loop",
+        "clarification_tool_failed": "agent_loop",
         "unsupported_capability": "reject",
     }
     reason = result.get("termination_reason")
     observed = reasons.get(reason)
     trace = result.get("trace", [])
+    if observed is None and any(
+            event.get("type") in {"tool", "clarification_resumed"}
+            for event in trace):
+        observed = "agent_loop"
     if any(event.get("type") == "plan_resume_execution" for event in trace):
         # Bounded saved-plan execution is evidence of a plan route, but without
         # the original Host scope we cannot distinguish execute_first/resume.

@@ -2,6 +2,7 @@
 import pytest
 from agent.route_shadow import ShadowRoute
 from agent.route_shadow_host import ShadowHostFacts, preview_admission
+from agent.route_shadow_host import facts_from_legacy_observation
 
 
 def proposal(route, target="saved_plan", scope="none", effect="mutation_requested",
@@ -99,6 +100,73 @@ def test_all_evidence_still_only_potential_not_authorized():
     result = preview_admission(proposal(
         "plan_resume",scope="remaining_steps",effect="read_only"),
         ShadowHostFacts(has_plan=True,plan_states=("completed","pending"),
-                        revision_valid=True,bound_step_valid=True,current_read_bound=True))
+                        revision_valid=True,bound_step_valid=True,current_read_bound=True,
+                        source_provenance_valid=True,tool_registered=True,
+                        tool_schema_valid=True))
     assert result.disposition == "potentially_admissible"
-    assert result.reason == "requires_tool_permission_verification"
+    assert result.reason == "shadow_evidence_complete"
+    assert result.admitted_route == "execute_saved_remaining"
+    assert result.evidence_complete is True
+
+
+def test_pending_reply_with_complete_readonly_binding_is_previewable():
+    request = proposal(
+        "agent_loop",target="pending_clarification",scope="single_tool",
+        effect="read_only",reference={"kind":"pending_slot","pending_field":"term"})
+    result = preview_admission(request, ShadowHostFacts(
+        has_plan=False,pending_action="mcp_reference_lookup",pending_field="term",
+        pending_original_request_bound=True,source_provenance_valid=True,
+        tool_registered=True,tool_schema_valid=True))
+    assert result.disposition == "potentially_admissible"
+    assert result.admitted_route == "ordinary_loop"
+    assert result.evidence_complete is True
+
+
+def test_pending_reply_may_abstain_from_host_owned_field_name():
+    request = proposal(
+        "agent_loop",target="pending_clarification",scope="single_tool",
+        effect="read_only",reference={"kind":"pending_slot"})
+    result = preview_admission(request, ShadowHostFacts(
+        has_plan=False,pending_action="mcp_reference_lookup",pending_field="term",
+        pending_original_request_bound=True,source_provenance_valid=True,
+        tool_registered=True,tool_schema_valid=True))
+    assert result.disposition == "potentially_admissible"
+    assert result.admitted_route == "ordinary_loop"
+
+
+def test_readonly_legacy_facts_ignore_answer_text_and_bind_observed_tool():
+    checkpoint = {"revision":2,"steps":[
+        {"status":"completed","expected_tool":"mcp_reference_lookup"},
+        {"status":"pending","expected_tool":"calculate"},
+    ]}
+    result = facts_from_legacy_observation(
+        checkpoint=checkpoint,pending_action=None,pending_field=None,
+        pending_original_request_bound=False,execution_mode="read_only",
+        result={"answer":"UNTRUSTED", "termination_reason":"model_final",
+                "trace":[{"type":"tool","name":"calculate","ok":True}]},
+        registered_tools={"calculate","mcp_reference_lookup"})
+    assert result.has_plan is True
+    assert result.plan_states == ("completed","pending")
+    assert result.current_read_bound is True
+    assert result.tool_registered is True
+    assert result.source_provenance_valid is True
+
+
+def test_legacy_fact_reducer_does_not_invent_unregistered_tool_permission():
+    result = facts_from_legacy_observation(
+        checkpoint=None,pending_action=None,pending_field=None,
+        pending_original_request_bound=False,execution_mode="read_only",
+        result={"trace":[{"type":"tool","name":"shell","ok":True}]},
+        registered_tools={"calculate"})
+    assert result.tool_registered is False
+    assert result.tool_schema_valid is False
+
+
+def test_effectful_agent_loop_without_tool_target_is_denied():
+    request = proposal("agent_loop",target="none",scope="single_tool",
+                       effect="read_only")
+    result = preview_admission(request, ShadowHostFacts(
+        has_plan=False,current_read_bound=True,tool_registered=True,
+        tool_schema_valid=True,source_provenance_valid=True))
+    assert result.disposition == "deny"
+    assert result.reason == "effectful_loop_missing_tool_target"

@@ -12,6 +12,7 @@ from agent.config import Settings
 from agent.understanding import UnderstandingContext, UnderstandingService, HTTPUnderstandingModel, UnderstandingError
 from agent.execution_policy import decide_execution_policy_detail, reconcile_execution_policy
 from agent.route_shadow import evaluate_shadow, compare_to_legacy
+from agent.route_shadow_host import facts_from_legacy_observation
 from agent.decision import NativeToolDecision
 from agent.loop import AgentLoop
 from agent.tools import execute_tool, SCHEMAS
@@ -802,6 +803,18 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                 and settings.model_provider != "fake"
                 and agent_decider is None
                 and body.goal_confirmation is None):
+            pending_field = (REQUIRED_USER_VALUES[pending_action][0]
+                             if pending_action in REQUIRED_USER_VALUES else None)
+            host_facts = facts_from_legacy_observation(
+                checkpoint=existing_checkpoint,
+                pending_action=pending_action,
+                pending_field=pending_field,
+                pending_original_request_bound=bool(
+                    pending_action and clarification_id and pending_question),
+                execution_mode=execution_mode,
+                result=result,
+                registered_tools=set(SCHEMAS),
+            )
             shadow = await evaluate_shadow(
                 HTTPUnderstandingModel(
                     settings.model_provider, settings.model_base_url,
@@ -809,8 +822,10 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                     settings.model_max_output_tokens),
                 settings.understanding_strong_model, body.content,
                 has_plan=existing_checkpoint is not None,
-                pending_action=pending_action)
-        response_data = {**result, "conversation_id": cid, "message_id": assistant_id}
+                pending_action=pending_action, pending_field=pending_field,
+                host_facts=host_facts)
+        response_data = {**result, "conversation_id": cid,
+                         "message_id": assistant_id, "turn_id": turn_id}
         if shadow is not None:
             response_data["route_shadow"] = {**shadow, **compare_to_legacy(shadow, result)}
         return response_data

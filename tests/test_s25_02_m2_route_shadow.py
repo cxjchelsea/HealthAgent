@@ -130,7 +130,8 @@ def test_legacy_comparison_grounded_and_abstains():
     unknown = compare_to_legacy(shadow, {
         "status":"completed","termination_reason":"model_final",
         "trace":[{"type":"tool","name":"calculate","ok":True}]})
-    assert unknown["comparison"] == "uncomparable"
+    assert unknown["comparison"] == "mismatch"
+    assert unknown["legacy_route_evidence"] == "agent_loop"
     assert unknown["legacy_tool_calls"] == 1
     conflict = compare_to_legacy(shadow, {
         "status":"partial","termination_reason":"plan_revised_pending_execution",
@@ -144,6 +145,21 @@ def test_plan_execution_scope_is_not_invented_from_trace():
     same = compare_to_legacy({"state":"valid","route":"plan_resume"},actual)
     assert same["comparison"] == "compatible_plan_execution"
     assert same["legacy_route_evidence"] == "saved_plan_execution_unspecified"
+
+
+def test_legacy_comparison_uses_structured_tool_and_missing_plan_evidence():
+    from agent.route_shadow import compare_to_legacy
+    tool = compare_to_legacy(
+        {"state":"valid","route":"agent_loop"},
+        {"status":"completed","termination_reason":"model_final",
+         "trace":[{"type":"tool","name":"calculate","ok":True}]})
+    assert tool["legacy_route_evidence"] == "agent_loop"
+    assert tool["comparison"] == "match"
+    absent = compare_to_legacy(
+        {"state":"valid","route":"plan_resume"},
+        {"status":"partial","termination_reason":"plan_not_found","trace":[]})
+    assert absent["legacy_route_evidence"] == "plan_resume"
+    assert absent["comparison"] == "match"
 
 
 
@@ -233,7 +249,6 @@ def test_value_error_diagnostic_is_bounded_and_source_scoped():
 
 def test_single_task_cannot_pass_plan_step_preview():
     from agent.route_shadow import hypothetical_admission
-    message = "请正式创建任务：周五提交测试报告。"
     span = {"start":3,"end":7,"exact_text":"创建任务"}
     plan = ShadowRoute.model_validate({
         "schema_version":"s25-route-v2","primary_route":"plan_create",
@@ -327,3 +342,38 @@ def test_source_span_error_includes_only_group_and_index():
     assert outcome["source_group"] == "negative_constraints"
     assert outcome["source_index"] == 0
     assert "请不要执行" not in json.dumps(outcome, ensure_ascii=False)
+
+
+def test_prompt_payload_supplies_exact_unicode_index_guide():
+    class CapturingStub(Stub):
+        async def complete(self, **kwargs):
+            self.messages = kwargs["messages"]
+            return await super().complete(**kwargs)
+
+    stub = CapturingStub(route(source_quote=""))
+    asyncio.run(evaluate_shadow(stub, "fake", "取消操作",
+                                has_plan=False, pending_action=None))
+    payload = json.loads(stub.messages[1]["content"])
+    assert payload["index_guide"] == [[0,"取"],[1,"消"],[2,"操"],[3,"作"]]
+    assert payload["pending_action_field"] is None
+
+
+def test_evaluate_shadow_can_apply_complete_readonly_host_fixture():
+    from agent.route_shadow_host import ShadowHostFacts
+    outcome = asyncio.run(evaluate_shadow(
+        Stub(route(source_quote="")), "fake", "计算 19+23",
+        has_plan=False, pending_action=None,
+        host_facts=ShadowHostFacts(
+            has_plan=False,current_read_bound=True,tool_registered=True,
+            tool_schema_valid=True,source_provenance_valid=True)))
+    assert outcome["host_preview"]["admitted_route"] == "ordinary_loop"
+    assert outcome["host_preview"]["evidence_complete"] is True
+
+
+def test_confusion_matrix_handles_unasserted_optional_field():
+    from evals.s25_02_m2_shadow_live import confusion
+    result = confusion([
+        {"expected_effect":None,"proposed_effect":"none"},
+        {"expected_effect":"read_only","proposed_effect":"read_only"},
+    ], "expected_effect", "proposed_effect")
+    assert {row["expected"] for row in result} == {"not_asserted", "read_only"}
