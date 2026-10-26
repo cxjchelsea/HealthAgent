@@ -1,5 +1,6 @@
 """S25-02 M2: side-effect-free V2 semantic shadow, never Host execution authority."""
 import json
+import re
 import time
 from dataclasses import asdict
 from typing import Any, Literal
@@ -194,6 +195,32 @@ def bind_diagnostic_pending_reference(route: ShadowRoute, *,
     # Explicit conflicting references cannot be rewritten; none is abstention.
     reference = ShadowReference(kind="pending_slot", pending_field=pending_field)
     return route.model_copy(update={"reference": reference})
+
+
+def bind_explicit_revision_step(route: ShadowRoute, message: str,
+                                host_facts: Any | None) -> ShadowRoute:
+    """Bind an explicitly numbered saved step, never infer the operation.
+
+    The LLM must already choose plan_revise. Unique exact user ordinal and
+    trusted checkpoint length are required. Missing/conflicting evidence stays
+    unbound; source strings are never copied into diagnostic reports.
+    """
+    if route.primary_route != "plan_revise" or route.reference.kind != "none":
+        return route
+    states = getattr(host_facts, "plan_states", ()) if host_facts is not None else ()
+    if not (getattr(host_facts, "has_plan", False)
+            and getattr(host_facts, "revision_valid", False) and states):
+        return route
+    numbers = {"一": 1, "二": 2, "三": 3, "四": 4,
+               "五": 5, "六": 6, "七": 7, "八": 8}
+    matches = re.findall(r"第([一二三四五六七八1-8])步", message)
+    if len(matches) != 1:
+        return route
+    number = numbers.get(matches[0], int(matches[0]) if matches[0].isascii() else 0)
+    if number > len(states):
+        return route
+    return route.model_copy(update={
+        "reference": ShadowReference(kind="saved_step", step_number=number)})
 
 
 def verify_trusted_reference(route: ShadowRoute, *,
@@ -434,6 +461,7 @@ async def evaluate_shadow(provider: HTTPUnderstandingModel, model_name: str,
         result = bind_diagnostic_pending_reference(
             result, pending_action=pending_action, pending_field=pending_field,
             host_facts=host_facts)
+        result = bind_explicit_revision_step(result, message, host_facts)
         validate_semantic_grounding(result, message)
         verify_trusted_reference(result, pending_field=pending_field,
                                  host_facts=host_facts)
@@ -462,6 +490,45 @@ async def evaluate_shadow(provider: HTTPUnderstandingModel, model_name: str,
                    if pending_field_state is not None else {}),
                 "elapsed_ms":int((time.perf_counter()-began)*1000)}
     except ValidationError as exc:
+        combination = None
+        if stage == "schema":
+            try:
+                candidate = json.loads(raw)
+                if isinstance(candidate, dict):
+                    route_name = candidate.get("primary_route")
+                    target = candidate.get("route_target")
+                    scope = candidate.get("execution_scope")
+                    effect = candidate.get("effect_intent")
+                    allowed = {
+                        "respond": ({"none", "active_goal"}, {"none"}, {"none"}),
+                        "clarify": ({"none", "active_goal", "saved_plan",
+                                     "pending_clarification", "tool_action"}, {"none"}, {"none"}),
+                        "agent_loop": ({"none", "tool_action", "pending_clarification"},
+                                       {"none", "single_tool"},
+                                       {"none", "read_only", "mutation_requested"}),
+                        "plan_create": ({"none", "saved_plan"}, {"none"},
+                                        {"mutation_requested"}),
+                        "plan_revise": ({"saved_plan"}, {"none"}, {"mutation_requested"}),
+                        "plan_resume": ({"saved_plan"}, {"remaining_steps", "all_steps"},
+                                        {"read_only", "mutation_requested"}),
+                        "plan_execute_first": ({"saved_plan"}, {"first_step"},
+                                               {"read_only", "mutation_requested"}),
+                        "cancel": ({"none", "active_goal", "saved_plan",
+                                    "pending_clarification"}, {"none"}, {"none"}),
+                    }
+                    if isinstance(route_name, str) and route_name in allowed:
+                        groups = allowed[route_name]
+                        combination = {
+                            "route": route_name,
+                            "invalid_fields": [
+                                key for key, value, accepted in zip(
+                                    ("route_target", "execution_scope", "effect_intent"),
+                                    (target, scope, effect), groups)
+                                if value not in accepted
+                            ],
+                        }
+            except (ValueError, TypeError):
+                pass
         diagnostics = [{"path":".".join(str(i) for i in err["loc"])[:120],
                         "type":err["type"][:80],
                         "code": (str(err.get("ctx", {}).get("error", ""))[:80]
@@ -469,6 +536,7 @@ async def evaluate_shadow(provider: HTTPUnderstandingModel, model_name: str,
                        for err in exc.errors(include_url=False)[:8]]
         return {"state":"unavailable","error_class":"ValidationError",
                 "validation_errors":diagnostics,
+                **({"combination_diagnostic": combination} if combination else {}),
                 "elapsed_ms":int((time.perf_counter()-began)*1000)}
     except ValueError as exc:
         # Fixed allowlist; never reflect raw exception or model/user content.
