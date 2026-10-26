@@ -14,6 +14,12 @@ class EvidenceSpan(BaseModel):
     exact_text: str = Field(min_length=1, max_length=400)
 
 
+class QuoteEvidence(BaseModel):
+    """Unlocated model quote; Host resolves it only when occurrence is unique."""
+    model_config = ConfigDict(extra="forbid")
+    exact_text: str = Field(min_length=1, max_length=400)
+
+
 class ShadowReference(BaseModel):
     model_config = ConfigDict(extra="forbid")
     kind: Literal["none", "active_goal", "saved_plan", "saved_step", "pending_slot"] = "none"
@@ -61,6 +67,9 @@ class ShadowRoute(BaseModel):
     ambiguity: Literal["clear", "needs_disambiguation", "unreliable"]
     source_quote: str = Field(max_length=400, default="")
     source_evidence: list[EvidenceSpan] = Field(default_factory=list, max_length=12)
+    source_quote_evidence: list[QuoteEvidence] = Field(default_factory=list, max_length=12)
+    negative_quote_evidence: list[QuoteEvidence] = Field(default_factory=list, max_length=8)
+    plan_step_quote_evidence: list[QuoteEvidence] = Field(default_factory=list, max_length=8)
     negative_constraints: list[EvidenceSpan] = Field(default_factory=list, max_length=8)
     plan_step_evidence: list[EvidenceSpan] = Field(default_factory=list, max_length=8)
     reference: ShadowReference = Field(default_factory=ShadowReference)
@@ -133,6 +142,36 @@ def verify_source_spans(route: ShadowRoute, message: str) -> None:
 
 
 
+def bind_unique_quotes(route: ShadowRoute, message: str) -> ShadowRoute:
+    """Return a new proposal with exact, unique quote offsets.
+
+    Explicit model offsets remain strict and untouched. Missing or repeated
+    quotes fail closed. No route/effect/permission is inferred or repaired.
+    """
+    updates = {}
+    for quote_field, span_field in (
+        ("source_quote_evidence", "source_evidence"),
+        ("negative_quote_evidence", "negative_constraints"),
+        ("plan_step_quote_evidence", "plan_step_evidence"),
+    ):
+        found = list(getattr(route, span_field))
+        for quote in getattr(route, quote_field):
+            start = message.find(quote.exact_text)
+            if start < 0:
+                raise ValueError("shadow_quote_not_found")
+            if message.find(quote.exact_text, start + 1) >= 0:
+                raise ValueError("shadow_quote_ambiguous")
+            end = start + len(quote.exact_text)
+            if any(start < old.end and old.start < end for old in found):
+                raise ValueError("shadow_quote_overlapping")
+            found.append(EvidenceSpan(start=start, end=end, exact_text=quote.exact_text))
+        if len(found) > {"source_evidence": 12, "negative_constraints": 8,
+                         "plan_step_evidence": 8}[span_field]:
+            raise ValueError("shadow_quote_limit_exceeded")
+        updates[span_field] = found
+    return route.model_copy(update=updates)
+
+
 def validate_semantic_grounding(route: ShadowRoute, message: str) -> None:
     """Cross-field evidence guards, never reinterpret the model's route.
 
@@ -203,7 +242,14 @@ saved plan. A written draft is NOT a persistent plan. Do not infer permission
 to write from history. If ambiguous select clarify. Do not invent plan/step
 authority, tool availability, completed steps or observations. source_quote
 must be exact text from CURRENT user message (or empty if unavailable).
-Never execute tools. This is a diagnostic shadow-only classification.\nOnly include source_evidence offsets verified against the current user message;\nuse empty arrays if uncertain. Explicit negative constraints must be quoted with\nexact offsets. A clarification route requires reason and question.
+Never execute tools. This is a diagnostic shadow-only classification.
+For evidence, prefer source_quote_evidence / negative_quote_evidence /
+plan_step_quote_evidence as lists of {"exact_text": "..."} when you can quote
+the CURRENT user's literal wording. Host will bind unique quotes to exact
+Unicode offsets. Never invent missing text, and do not quote a repeated
+substring without a unique referent. If supplying source_evidence or
+plan_step_evidence with offsets, those offsets MUST be correct; Host never
+repairs them. Do not infer execution permission from bound quotations.\nOnly include source_evidence offsets verified against the current user message;\nuse empty arrays if uncertain. Explicit negative constraints must be quoted with\nexact offsets. A clarification route requires reason and question.
 IMPORTANT clarification JSON rules (for EVERY route):
 For all routes OTHER THAN clarify, set clarification exactly to
 {"required":false,"reason":"none","question":null}.
@@ -344,6 +390,9 @@ async def evaluate_shadow(provider: HTTPUnderstandingModel, model_name: str,
         stage = "schema"
         result = ShadowRoute.model_validate_json(raw)
         stage = "source_provenance"
+        # Explicit offsets are immutable assertions; validate before binding quotes.
+        verify_source_spans(result, message)
+        result = bind_unique_quotes(result, message)
         verify_source_spans(result, message)
         validate_semantic_grounding(result, message)
         stage = "host_preview"
@@ -390,7 +439,9 @@ async def evaluate_shadow(provider: HTTPUnderstandingModel, model_name: str,
                 "shadow_plan_steps_ungrounded",
                 "shadow_revision_step_unverified",
                 "shadow_tool_effect_unspecified",
-                "shadow_pending_reference_unverified"}
+                "shadow_pending_reference_unverified",
+                "shadow_quote_not_found", "shadow_quote_ambiguous",
+                "shadow_quote_overlapping", "shadow_quote_limit_exceeded"}
         code = str(exc) if str(exc) in safe else "other_value_error"
         return {"state":"unavailable","error_class":"ValueError",
                 "failure_stage":stage,"validation_code":code,
