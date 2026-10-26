@@ -9,6 +9,25 @@ from agent.understanding import HTTPUnderstandingModel
 from agent.route_semantic_hierarchical import classify_hierarchical
 from evals.s25_02_m2_ab_comparison import CASES, core_match
 
+
+def expected_core(case):
+    route=case.expected_route
+    if route=="agent_loop":
+        if case.expected_target=="pending_clarification":
+            return "pending_slot", "invoke"
+        if case.expected_effect=="mutation_requested":
+            return "task", "create"
+        return "tool", "invoke"
+    mapping={"respond":("none","answer"),"clarify":("none","clarify"),
+             "plan_create":("plan","create"),
+             "plan_revise":("plan_step","revise"),
+             "plan_execute_first":("plan","execute_first"),
+             "plan_resume":("plan","resume")}
+    if route=="cancel":
+        return "pending_slot" if case.expected_target=="pending_clarification" else "plan", "cancel"
+    return mapping[route]
+
+
 async def run(args):
     settings=Settings()
     if settings.model_provider!="ollama_proxy":
@@ -24,7 +43,13 @@ async def run(args):
             try:
                 core=await classify_hierarchical(provider,
                     settings.understanding_strong_model,case.prompt,case.facts,args.timeout)
-                row.update(state="classified",object_type=core.object_type,
+                wanted_object,wanted_operation=expected_core(case)
+                row.update(state="classified",
+                           object_correct=core.object_type==wanted_object,
+                           operation_correct=core.operation==wanted_operation,
+                           expected_object=wanted_object,
+                           expected_operation=wanted_operation,
+                           object_type=core.object_type,
                            operation=core.operation,
                            core_correct=core_match(case,core.object_type,core.operation))
             except Exception as exc:
@@ -36,6 +61,8 @@ async def run(args):
             "cohort":"KNOWN_DEVELOPMENT_NOT_BLIND","m2_gate":"HOLD",
             "host_authorization":False,"variant":"D_hierarchical_core_only",
             "summary":{"correct":sum(r["core_correct"] for r in rows),
+                       "object_correct":sum(r.get("object_correct",False) for r in rows),
+                       "operation_correct":sum(r.get("operation_correct",False) for r in rows),
                        "total":len(rows),"stable_cases":stable},
             "rows":rows}
     path=Path(args.output)
