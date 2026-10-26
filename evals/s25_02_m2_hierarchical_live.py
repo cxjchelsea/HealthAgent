@@ -24,7 +24,7 @@ def expected_core(case):
              "plan_execute_first":("plan","execute_first"),
              "plan_resume":("plan","resume")}
     if route=="cancel":
-        return "pending_slot" if case.expected_target=="pending_clarification" else "plan", "cancel"
+        return ("pending_slot" if case.facts.pending_action else "plan"), "cancel"
     return mapping[route]
 
 
