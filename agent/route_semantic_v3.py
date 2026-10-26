@@ -19,6 +19,11 @@ class SemanticIntent(BaseModel):
     operation: Literal["answer", "clarify", "create", "revise", "execute_first",
                        "resume", "cancel", "invoke"]
     effect_intent: Literal["none", "read_only", "mutation_requested"]
+    action_kind: Literal["unspecified", "answer", "draft", "task_record", "tool_call", "plan_management", "pending_reply"] = "unspecified"
+    persistence_intent: Literal["unspecified", "none", "draft_only", "save", "modify"] = "unspecified"
+    execution_intent: Literal["unspecified", "none", "first_step", "remaining_steps", "all_steps", "single_tool"] = "unspecified"
+    context_relation: Literal["unspecified", "independent", "pending_reply", "saved_plan"] = "unspecified"
+    negative_constraints: list[str] = Field(default_factory=list, max_length=5)
     reference_text: str | None = Field(default=None, max_length=200)
     step_number: int | None = Field(default=None, ge=1, le=8)
     plan_steps: list[str] = Field(default_factory=list, max_length=8)
@@ -39,7 +44,16 @@ not whether the reply itself writes anything. For unclear targets or
 arguments use clarify and provide a question. Independent tools are
 tool/invoke. A request to resume a missing plan remains plan/resume.
 For text references use exact quotations from the current request.
-Do not invent authorization, checkpoints, arguments or source coordinates."""
+Do not invent authorization, checkpoints, arguments or source coordinates.
+Specify action_kind separately: draft, task_record, tool_call, plan_management,
+pending_reply, or answer. A calculation or retrieval is tool_call, not task_record.
+A draft without saving is draft/answer, not task creation.
+Specify persistence_intent: draft_only, save, modify, or none.
+Specify execution_intent: first_step, remaining_steps, all_steps, single_tool, none.
+Specify context_relation: independent, pending_reply, saved_plan.
+A missing tool argument without a real pending request is clarification.
+Cancellation uses operation cancel, not invoke. Quote explicit prohibitions
+in negative_constraints and do not invent positive actions."""
 
 
 def _unique_span(message: str, quote: str) -> EvidenceSpan:
@@ -71,6 +85,41 @@ def compile_semantic(intent: SemanticIntent, message: str,
     if (obj, op) not in routes:
         raise ValueError("unsupported_semantic_pair")
     route, target, scope = routes[obj, op]
+    expected_kinds = {
+        ("none", "answer"): {"answer", "draft"},
+        ("task", "create"): {"task_record"},
+        ("tool", "invoke"): {"tool_call"},
+        ("pending_slot", "invoke"): {"pending_reply"},
+        ("plan", "create"): {"plan_management"},
+        ("plan", "execute_first"): {"plan_management"},
+        ("plan", "resume"): {"plan_management"},
+        ("plan_step", "revise"): {"plan_management"},
+        ("pending_slot", "cancel"): {"pending_reply", "plan_management"},
+        ("plan", "cancel"): {"plan_management"},
+    }
+    if (intent.action_kind != "unspecified"
+            and intent.action_kind not in expected_kinds.get((obj, op), set())):
+        raise ValueError("semantic_action_kind_conflict")
+    if intent.persistence_intent == "draft_only" and op in {"create", "revise", "invoke"}:
+        raise ValueError("draft_must_not_mutate")
+    if intent.persistence_intent == "none" and op in {"create", "revise"}:
+        raise ValueError("persistence_intent_conflict")
+    if intent.context_relation == "pending_reply" and obj != "pending_slot":
+        raise ValueError("pending_context_conflict")
+    if intent.context_relation == "independent" and obj == "pending_slot":
+        raise ValueError("independent_pending_conflict")
+    if intent.execution_intent == "first_step" and op != "execute_first":
+        raise ValueError("first_step_scope_conflict")
+    if op == "execute_first" and intent.execution_intent not in {"unspecified", "first_step"}:
+        raise ValueError("first_step_scope_conflict")
+    if op == "resume" and intent.execution_intent not in {"unspecified", "remaining_steps", "all_steps"}:
+        raise ValueError("resume_scope_conflict")
+    for quote in intent.negative_constraints:
+        _unique_span(message, quote)
+    if intent.negative_constraints and op in {"create", "revise", "invoke", "resume", "execute_first"}:
+        raise ValueError("negative_constraint_requires_scope_review")
+    if intent.action_kind == "draft" and op != "answer":
+        raise ValueError("draft_action_conflict")
     ref = {"kind": "none"}
     if obj == "pending_slot" and op == "invoke":
         if not (facts.pending_action and facts.pending_field
@@ -159,6 +208,10 @@ async def evaluate_semantic_v3(provider, model_name: str, message: str,
         preview = preview_admission(compiled, facts)
         return {"state": "valid", "semantic_object": semantic.object_type,
                 "semantic_operation": semantic.operation,
+                "action_kind": semantic.action_kind,
+                "persistence_intent": semantic.persistence_intent,
+                "execution_intent": semantic.execution_intent,
+                "context_relation": semantic.context_relation,
                 "model_effect": semantic.effect_intent,
                 "compiled_effect": compiled.effect_intent,
                 "effect_disagreement": semantic.effect_intent != compiled.effect_intent,
@@ -172,12 +225,21 @@ async def evaluate_semantic_v3(provider, model_name: str, message: str,
             "plan_step_source_unverified", "plan_steps_unverified",
             "plan_step_overlap", "plan_intent_source_unverified",
             "task_effect_conflict", "semantic_effect_conflict", "pending_effect_unverified",
-            "non_effect_route_conflict", "missing_clarification_question"
+            "non_effect_route_conflict", "missing_clarification_question",
+            "semantic_action_kind_conflict", "draft_must_not_mutate",
+            "persistence_intent_conflict", "pending_context_conflict",
+            "independent_pending_conflict", "first_step_scope_conflict",
+            "resume_scope_conflict", "negative_constraint_requires_scope_review",
+            "draft_action_conflict"
         } else "schema_or_contract_invalid"
         return {"state": "unavailable", "stage": stage, "reason": code,
                 **({"semantic_object": semantic.object_type,
                     "semantic_operation": semantic.operation,
-                    "semantic_effect": semantic.effect_intent}
+                    "semantic_effect": semantic.effect_intent,
+                    "action_kind": semantic.action_kind,
+                    "persistence_intent": semantic.persistence_intent,
+                    "execution_intent": semantic.execution_intent,
+                    "context_relation": semantic.context_relation}
                    if semantic is not None else {}),
                 "host_admission_complete": False}
     except Exception as exc:
