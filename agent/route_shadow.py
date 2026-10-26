@@ -321,42 +321,27 @@ Do not fabricate source spans or reference fields; use empty/default
  values if original text does not prove the field."""
 
 PROMPT += """
-Offset protocol:
-- start/end are zero-based Python Unicode code-point indexes; end is exclusive.
-- The user payload may include index_guide entries [index, character]. Use them
-  directly. Never count UTF-8 bytes and never guess an offset.
-- If an exact span cannot be proved from index_guide, emit an empty span list.
-  Empty source_evidence is valid for a non-effect cancel/respond proposal and
-  will be reviewed by Host; a wrong span makes the whole proposal unavailable.
-Task/plan counterexample:
-- "请正式创建任务：周五提交测试报告。" is ONE task-manager write, therefore
-  agent_loop/tool_action/single_tool/mutation_requested. A deadline or colon
-  does not turn one task into a plan.
-- plan_create requires an explicitly requested durable plan with at least two
-  separately stated ordered executable steps. Never use plan_create for a
-  single task item.
-Read-only effect counterexample:
-- "请使用计算工具计算 (19+23)*4。" and an independent calculation while a
-  plan exists both use effect_intent="read_only", never mutation_requested.
-Plan revision exact combination:
-- "将已保存计划第二步的 8*8 修改为 9*9，不执行。" uses
-  primary_route="plan_revise", route_target="saved_plan",
-  execution_scope="none", effect_intent="mutation_requested",
-  reference.kind="saved_step", reference.step_number=2. "不执行" forbids
-  running tools; it does not make the durable revision read_only.
-Pending-slot exact-binding example:
-- If has_pending_action=true, pending_action_tool="mcp_reference_lookup",
-  pending_action_field="term", and message="RAG", use agent_loop,
-  pending_clarification, reference.kind="pending_slot", and
-  reference.pending_field="term" exactly. Do not output "query", "keyword",
-  the supplied value, or a translated label as the pending field.
-  Because the value already answers the pending question, clarification must be
-  exactly {"required":false,"reason":"none","question":null}.
-Standalone lookup exact combination:
-- "请查询 MCP 中 RAG 的定义。" has a complete term and no pending context:
-  agent_loop, route_target="tool_action", execution_scope="single_tool",
-  effect_intent="read_only", reference.kind="none". It is not text-only and
-  route_target must not be "none".
+Semantic contract:
+- Identify the intended persistent object first: one task record, an ordered
+  execution plan, a saved step, a pending tool slot, or no persistent object.
+- Determine the operation on that object separately: create, revise, execute,
+  resume, cancel, retrieve, or answer.
+- A single task record is not an ordered plan, regardless of deadline or wording.
+- A plan revision with no identifiable step or change requires clarification;
+  do not invent a target from context.
+- A pending-slot reply is a continuation of the bound original tool request;
+  its effect is not none merely because the reply is short.
+- Independent tool requests do not implicitly resume any saved plan.
+- Read-only computation and retrieval have read_only effect; persistent writes
+  have mutation_requested effect. Model effect labels never grant permission.
+
+Evidence contract:
+- Prefer *_quote_evidence fields with exact current-message substrings.
+  The Host locates unique quotes deterministically.
+- Never guess character indices, referents, plan steps, or permission.
+- Explicit legacy source spans remain strict; invalid offsets are not repaired.
+- Durable plans need two separately grounded ordered step quotations.
+- If the step to revise is unclear, use clarify with a specific question.
 """
 
 
