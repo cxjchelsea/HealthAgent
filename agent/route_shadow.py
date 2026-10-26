@@ -100,17 +100,30 @@ class ShadowRoute(BaseModel):
         return self
 
 
+class SourceSpanError(ValueError):
+    """Bounded provenance error. Never contains message text or model output."""
+
+    def __init__(self, code: str, group: str, index: int) -> None:
+        super().__init__(code)
+        self.group = group
+        self.index = index
+
+
 def verify_source_spans(route: ShadowRoute, message: str) -> None:
     if route.source_quote and route.source_quote not in message:
         raise ValueError("shadow_untrusted_source_quote")
-    for span in [*route.source_evidence, *route.negative_constraints,
-                 *route.plan_step_evidence]:
-        if span.end > len(message) or span.end <= span.start:
-            raise ValueError("shadow_source_offset_out_of_bounds")
-        if message[span.start:span.end] != span.exact_text:
-            if span.exact_text in message:
-                raise ValueError("shadow_source_offset_mismatch")
-            raise ValueError("shadow_source_text_not_found")
+    for group, spans in (
+        ("source_evidence", route.source_evidence),
+        ("negative_constraints", route.negative_constraints),
+        ("plan_step_evidence", route.plan_step_evidence),
+    ):
+        for index, span in enumerate(spans):
+            if span.end > len(message) or span.end <= span.start:
+                raise SourceSpanError("shadow_source_offset_out_of_bounds", group, index)
+            if message[span.start:span.end] != span.exact_text:
+                code = ("shadow_source_offset_mismatch"
+                        if span.exact_text in message else "shadow_source_text_not_found")
+                raise SourceSpanError(code, group, index)
     # Source spans are exact character offsets; invalid evidence is never repaired.
     # A negative constraint is scoped to its object. "Revise plan, do not
     # execute" does not prohibit the revision itself. Host resolves scope.
@@ -282,6 +295,8 @@ async def evaluate_shadow(provider: HTTPUnderstandingModel, model_name: str,
         code = str(exc) if str(exc) in safe else "other_value_error"
         return {"state":"unavailable","error_class":"ValueError",
                 "failure_stage":stage,"validation_code":code,
+                **({"source_group":exc.group,"source_index":exc.index}
+                   if isinstance(exc, SourceSpanError) else {}),
                 "elapsed_ms":int((time.perf_counter()-began)*1000)}
     except Exception as exc:
         return {"state":"unavailable","error_class":type(exc).__name__,
