@@ -215,6 +215,16 @@ async def run(args):
             pending_field=case.facts.pending_field,
             timeout_s=args.timeout, host_facts=case.facts)
         semantic, host, comparison = score(case, outcome)
+        typed = (outcome if outcome.get("state") == "valid"
+                 else outcome.get("semantic_proposal") or {})
+        semantic_schema_valid = bool(
+            outcome.get("state") == "valid"
+            or outcome.get("semantic_schema_valid"))
+        semantic_route_correct = (typed.get("route") == case.expected_route
+                                  and (case.expected_target is None
+                                       or typed.get("route_target") == case.expected_target)
+                                  and (case.expected_effect is None
+                                       or typed.get("effect") == case.expected_effect))
         preview = outcome.get("host_preview") or {}
         row = {
             "case_id": case.case_id,
@@ -229,6 +239,10 @@ async def run(args):
             "proposed_effect": outcome.get("effect"),
             "state": outcome.get("state"),
             "semantic_result": semantic,
+            "semantic_schema_valid": semantic_schema_valid,
+            "semantic_route_correct": semantic_route_correct,
+            "provenance_status": ("PASS" if outcome.get("state") == "valid"
+                                  else outcome.get("provenance_status", "UNAVAILABLE")),
             "host_preview_result": host,
             "legacy_oracle_comparison": comparison,
             "host_disposition": preview.get("disposition"),
@@ -262,6 +276,15 @@ async def run(args):
             "max": max(elapsed) if elapsed else 0,
         },
         "model_calls_attempted": len(rows),
+        "diagnostic_dimensions": {
+            "schema_valid": sum(x["semantic_schema_valid"] for x in rows),
+            "semantic_correct_after_schema": sum(
+                x["semantic_route_correct"] for x in rows),
+            "provenance_pass": sum(
+                x["provenance_status"] == "PASS" for x in rows),
+            "host_preview_available": sum(
+                x["host_disposition"] is not None for x in rows),
+        },
         "route_confusion": confusion(rows, "expected_route", "proposed_route"),
         "effect_confusion": confusion(rows, "expected_effect", "proposed_effect"),
         "unsafe_hypothetical_admissions": sum(
