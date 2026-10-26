@@ -82,6 +82,9 @@ async def run(args):
         row["semantic_result"] = row["result"]
         row["host_admission_result"] = "NOT_VERIFIED"
         row["m2_gate_result"] = "HOLD"
+        if "source_group" in outcome:
+            row["source_group"] = outcome["source_group"]
+            row["source_index"] = outcome["source_index"]
         rows.append(row)
         print(cid,row["semantic_result"])
     elapsed = [x["elapsed_ms"] for x in rows]
