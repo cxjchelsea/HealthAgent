@@ -106,7 +106,17 @@ async def run(args):
                        "object_type":x.get("object_type"),
                        "operation":x.get("operation"),
                        "repeat":x["repeat"]} for x in wrong]
+    stability={}
+    for v in ("A","B","C"):
+        by_case={}
+        for item in rows:
+            if item["variant"]==v:
+                by_case.setdefault(item["case_id"],set()).add(
+                    (item.get("object_type"),item.get("operation")))
+        stability[v]={"stable_cases":sum(len(values)==1 for values in by_case.values()),
+                      "cases_observed":len(by_case)}
     report={"repeats":args.repeats,"core_confusion":confusion,
+            "core_stability":stability,
             "timestamp_utc":datetime.now(timezone.utc).isoformat(),
         "cohort":"KNOWN_DEVELOPMENT_NOT_BLIND","model":settings.understanding_strong_model,
         "m2_gate":"HOLD","host_authorization":False,
