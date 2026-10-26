@@ -121,14 +121,14 @@ def preview_admission(proposal: ShadowRoute, facts: ShadowHostFacts) -> ShadowAd
         return out("safe_non_effect", "no_effect_route",
                    "cancel_no_side_effect", True)
     if route == "plan_create":
+        if facts.has_plan:
+            return out("deny", "existing_saved_plan")
         # A model's plan label is not proof of a multi-step plan.
         spans = proposal.plan_step_evidence
         ordered = sorted(spans, key=lambda span: (span.start, span.end))
         if len(spans) < 2 or any(
                 a.end > z.start for a, z in zip(ordered, ordered[1:])):
             return out("needs_evidence", "plan_steps_source_unverified")
-        if facts.has_plan:
-            return out("deny", "existing_saved_plan")
         if not facts.current_write_authorized:
             return out("needs_evidence", "plan_creation_source_unverified")
         if not facts.source_provenance_valid:
@@ -143,11 +143,11 @@ def preview_admission(proposal: ShadowRoute, facts: ShadowHostFacts) -> ShadowAd
         if not facts.revision_valid:
             return out("needs_evidence", "checkpoint_revision_unverified")
         if route == "plan_revise":
+            if not facts.bound_step_valid:
+                return out("needs_evidence", "revision_binding_unverified")
             if (proposal.reference.kind != "saved_step"
                     or proposal.reference.step_number is None):
                 return out("needs_evidence", "revision_step_reference_unverified")
-            if not facts.bound_step_valid:
-                return out("needs_evidence", "revision_binding_unverified")
             if not facts.current_write_authorized:
                 return out("needs_evidence", "revision_user_source_unverified")
             if not facts.source_provenance_valid:
