@@ -108,7 +108,7 @@ def verify_source_spans(route: ShadowRoute, message: str) -> None:
         if (span.end > len(message) or span.end <= span.start
                 or message[span.start:span.end] != span.exact_text):
             raise ValueError("shadow_untrusted_source_span")
-    # An ungrounded negative constraint cannot silently be discarded by admission.
+    # Source spans are exact character offsets; invalid evidence is never repaired.
     # A negative constraint is scoped to its object. "Revise plan, do not
     # execute" does not prohibit the revision itself. Host resolves scope.
 
