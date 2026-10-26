@@ -43,6 +43,7 @@ async def run(args):
           for case in CASES:
               stage="classify"
               outcome={}
+              obj=op=None
               try:
                   if variant=="C":
                       outcome=await evaluate_semantic_v3(
@@ -92,7 +93,7 @@ async def run(args):
                     "core_correct":core_match(case,obj,op), "route_correct":False,
                       "host_correct":False,"state":"unavailable",
                       "stage":stage,"error_class":type(exc).__name__})
-      summary={}
+    summary={}
     for v in ("A","B","C"):
         part=[x for x in rows if x["variant"]==v]
         summary[v]={"total":len(part),"core_correct":sum(x["core_correct"] for x in part),
