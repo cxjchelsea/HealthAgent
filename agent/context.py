@@ -7,7 +7,8 @@ results or long-term memory.
 from typing import Iterable, Any
 
 def build_context(messages: Iterable[Any], current: str, *,
-                  max_messages: int, max_chars: int) -> list[dict[str, str]]:
+                  max_messages: int, max_chars: int,
+                  clarification_message_id: str | None = None) -> list[dict[str, str]]:
     if len(current) > max_chars:
         raise ValueError("Current user input exceeds context character budget")
     selected: list[dict[str, str]] = []
@@ -16,7 +17,9 @@ def build_context(messages: Iterable[Any], current: str, *,
         role = getattr(message, "role", None)
         content = getattr(message, "content", None)
         status = getattr(message, "status", None)
-        if status != "completed" or role not in ("user", "assistant") or not isinstance(content, str):
+        is_clarification = (role == "assistant" and status == "partial"
+                            and getattr(message, "id", None) == clarification_message_id)
+        if (status != "completed" and not is_clarification) or role not in ("user", "assistant") or not isinstance(content, str):
             continue
         if len(selected) >= max_messages:
             break
