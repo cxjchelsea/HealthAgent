@@ -105,9 +105,12 @@ def verify_source_spans(route: ShadowRoute, message: str) -> None:
         raise ValueError("shadow_untrusted_source_quote")
     for span in [*route.source_evidence, *route.negative_constraints,
                  *route.plan_step_evidence]:
-        if (span.end > len(message) or span.end <= span.start
-                or message[span.start:span.end] != span.exact_text):
-            raise ValueError("shadow_untrusted_source_span")
+        if span.end > len(message) or span.end <= span.start:
+            raise ValueError("shadow_source_offset_out_of_bounds")
+        if message[span.start:span.end] != span.exact_text:
+            if span.exact_text in message:
+                raise ValueError("shadow_source_offset_mismatch")
+            raise ValueError("shadow_source_text_not_found")
     # Source spans are exact character offsets; invalid evidence is never repaired.
     # A negative constraint is scoped to its object. "Revise plan, do not
     # execute" does not prohibit the revision itself. Host resolves scope.
@@ -272,6 +275,9 @@ async def evaluate_shadow(provider: HTTPUnderstandingModel, model_name: str,
         # Fixed allowlist; never reflect raw exception or model/user content.
         safe = {"shadow_untrusted_source_quote",
                 "shadow_untrusted_source_span",
+                "shadow_source_offset_out_of_bounds",
+                "shadow_source_offset_mismatch",
+                "shadow_source_text_not_found",
                 "shadow_mutation_conflicts_negative_constraint"}
         code = str(exc) if str(exc) in safe else "other_value_error"
         return {"state":"unavailable","error_class":"ValueError",
