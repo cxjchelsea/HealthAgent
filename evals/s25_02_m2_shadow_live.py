@@ -77,8 +77,13 @@ async def run(args):
             row["failure_stage"] = outcome["failure_stage"]
         if outcome.get("validation_code"):
             row["validation_code"] = outcome["validation_code"]
+        # Semantic PASS only. The shadow has no authoritative Host snapshot,
+        # so it cannot establish any execution permission or final admission.
+        row["semantic_result"] = row["result"]
+        row["host_admission_result"] = "NOT_VERIFIED"
+        row["m2_gate_result"] = "HOLD"
         rows.append(row)
-        print(cid,row["result"])
+        print(cid,row["semantic_result"])
     elapsed = [x["elapsed_ms"] for x in rows]
     report = {
         "run_id":str(uuid.uuid4()),"started_utc":datetime.now(timezone.utc).isoformat(),
@@ -89,7 +94,11 @@ async def run(args):
                    "total":len(rows)},
         "latency_ms":{"median":statistics.median(elapsed),
                       "max":max(elapsed)},
-        "model_calls_attempted":len(rows),"rows":rows,
+        "model_calls_attempted":len(rows),
+        "host_admission_summary":{"verified":0,"not_verified":len(rows)},
+        "m2_gate":"HOLD",
+        "result_semantics":"PASS means semantic route/target match ONLY; never execution or Host admission",
+        "rows":rows,
         "limitations":[
             "Semantic proposals are neither execution authority nor verified tool results.",
             "This suite has expected semantic routes; it does not compare full legacy execution.",
