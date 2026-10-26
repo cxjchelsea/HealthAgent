@@ -80,7 +80,7 @@ async def run(args):
                       and (case.expected_effect is None or
                            outcome.get("effect")==case.expected_effect))
                   preview=outcome.get("host_preview") or {}
-                  host_correct=route_correct and (
+                  host_correct=route_correct and bool(preview) and (case.expected_disposition is None or preview.get("disposition")==case.expected_disposition) and (
                       case.expected_admitted_route is None
                       or preview.get("admitted_route")==case.expected_admitted_route)
                   rows.append({"variant":variant,"case_id":case.case_id,
