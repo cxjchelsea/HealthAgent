@@ -211,8 +211,14 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
         result = None
         failure_code = None
         decision_steps = 0
+        m3_preturn_snapshot = None
         try:
             existing_checkpoint = plan_store.load()
+            m3_preturn_snapshot = capture_turn(
+                conversation_id=cid, request_id=body.client_request_id,
+                turn_id=turn_id, checkpoint=existing_checkpoint,
+                pending_action=pending_action, clarification_id=clarification_id,
+                pending_question=pending_question)
             interpretation = None
             if body.goal_confirmation is not None:
                 if (settings.understanding_strategy != "structured"
