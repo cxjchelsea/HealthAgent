@@ -27,7 +27,8 @@ def audit(report: dict) -> dict:
                      "preturn": pre.get("result", "missing"),
                      "legacy_comparison": comparison or "missing",
                      "host_admission_verified": False})
-    count = lambda verdict: sum(row["status"] == verdict for row in rows)
+    def count(verdict: str) -> int:
+        return sum(row["status"] == verdict for row in rows)
     return {"source": "m3_b_real_api_same_turn_report_audit",
             "summary": {"PASS": count("PASS"), "REVIEW": count("REVIEW"),
                         "FAIL": count("FAIL"), "total": len(rows)},
