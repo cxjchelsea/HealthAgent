@@ -33,7 +33,7 @@ A task creation is object_type task, operation create. A persistent ordered
 execution plan is object_type plan, operation create, with distinct verbatim
 step quotations in plan_steps. Never fabricate steps. To change a saved
 step return plan_step/revise with a quoted reference_text and optional
-step_number only when explicit. An answer to a pending argument is
+step_number only when explicit. Do not classify persistence as tool execution.\nAn answer to a pending argument is
 pending_slot/invoke; effect is the original tool's external effect,
 not whether the reply itself writes anything. For unclear targets or
 arguments use clarify and provide a question. Independent tools are
@@ -108,11 +108,13 @@ def compile_semantic(intent: SemanticIntent, message: str,
         ("plan", "cancel"): "none",
     }
     expected_effect = expected_effects.get((obj, op))
-    if expected_effect is not None and intent.effect_intent != expected_effect:
-        raise ValueError("semantic_effect_conflict")
+    # Internal object operations have deterministic effects. The model's
+    # contradictory label is observable telemetry, never execution authority.
+    # Tool effects still require subsequent Host/tool-contract verification.
+    effective_effect = expected_effect if expected_effect is not None else intent.effect_intent
     if obj == "pending_slot" and op == "invoke" and intent.effect_intent == "none":
         raise ValueError("pending_effect_unverified")
-    if route in {"respond", "clarify", "cancel"} and intent.effect_intent != "none":
+    if route in {"respond", "clarify", "cancel"} and effective_effect != "none":
         raise ValueError("non_effect_route_conflict")
     clarification = (
         {"required": True, "reason": "uncertain_intent",
@@ -123,7 +125,7 @@ def compile_semantic(intent: SemanticIntent, message: str,
     values = {
         "schema_version": "s25-route-v2", "primary_route": route,
         "route_target": target, "execution_scope": scope,
-        "effect_intent": intent.effect_intent, "ambiguity": "clear",
+        "effect_intent": effective_effect, "ambiguity": "clear",
         "reference": ref, "source_evidence": source,
         "plan_step_evidence": step_spans,
     }
@@ -156,7 +158,11 @@ async def evaluate_semantic_v3(provider, model_name: str, message: str,
         stage = "host_preview"
         preview = preview_admission(compiled, facts)
         return {"state": "valid", "semantic_object": semantic.object_type,
-                "semantic_operation": semantic.operation, "route": compiled.primary_route,
+                "semantic_operation": semantic.operation,
+                "model_effect": semantic.effect_intent,
+                "compiled_effect": compiled.effect_intent,
+                "effect_disagreement": semantic.effect_intent != compiled.effect_intent,
+                "route": compiled.primary_route,
                 "effect": compiled.effect_intent, "route_target": compiled.route_target,
                 "host_preview": asdict(preview), "host_admission_complete": False}
     except (ValidationError, ValueError) as exc:
