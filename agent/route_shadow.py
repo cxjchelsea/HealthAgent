@@ -172,6 +172,30 @@ def bind_unique_quotes(route: ShadowRoute, message: str) -> ShadowRoute:
     return route.model_copy(update=updates)
 
 
+def bind_diagnostic_pending_reference(route: ShadowRoute, *,
+                                      pending_action: str | None,
+                                      pending_field: str | None,
+                                      host_facts: Any | None) -> ShadowRoute:
+    """Use one proven Pending origin for a Shadow-only reference copy.
+
+    Never changes effect, scope, route, original model output, or real authority.
+    A missing or conflicting trusted origin never permits inference.
+    """
+    if not (route.primary_route == "agent_loop"
+            and route.route_target == "pending_clarification"
+            and route.reference.kind == "none"):
+        return route
+    if not (pending_action and pending_field and host_facts is not None
+            and getattr(host_facts, "pending_action", None) == pending_action
+            and getattr(host_facts, "pending_field", None) == pending_field
+            and getattr(host_facts, "pending_original_request_bound", False)
+            and route.effect_intent != "none"):
+        return route
+    # Explicit conflicting references cannot be rewritten; none is abstention.
+    reference = ShadowReference(kind="pending_slot", pending_field=pending_field)
+    return route.model_copy(update={"reference": reference})
+
+
 def verify_trusted_reference(route: ShadowRoute, *,
                              pending_field: str | None = None,
                              host_facts: Any | None = None) -> None:
@@ -407,6 +431,9 @@ async def evaluate_shadow(provider: HTTPUnderstandingModel, model_name: str,
         verify_source_spans(result, message)
         result = bind_unique_quotes(result, message)
         verify_source_spans(result, message)
+        result = bind_diagnostic_pending_reference(
+            result, pending_action=pending_action, pending_field=pending_field,
+            host_facts=host_facts)
         validate_semantic_grounding(result, message)
         verify_trusted_reference(result, pending_field=pending_field,
                                  host_facts=host_facts)
