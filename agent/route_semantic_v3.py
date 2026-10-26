@@ -94,9 +94,22 @@ def compile_semantic(intent: SemanticIntent, message: str,
         raise ValueError("plan_step_overlap")
     source = [_unique_span(message, intent.source_quote)] if intent.source_quote else []
     if route == "plan_create" and not source:
-        raise ValueError("plan_intent_source_unverified")
-    if obj == "task" and op == "create" and intent.effect_intent != "mutation_requested":
-        raise ValueError("task_effect_conflict")
+        # Distinct, verified plan steps already ground the plan intent.
+        # An extra model quote is optional, not a separate source of authority.
+        source = [EvidenceSpan(start=ordered[0].start, end=ordered[-1].end,
+                               exact_text=message[ordered[0].start:ordered[-1].end])]
+    expected_effects = {
+        ("task", "create"): "mutation_requested",
+        ("plan", "create"): "mutation_requested",
+        ("plan_step", "revise"): "mutation_requested",
+        ("none", "answer"): "none",
+        ("none", "clarify"): "none",
+        ("pending_slot", "cancel"): "none",
+        ("plan", "cancel"): "none",
+    }
+    expected_effect = expected_effects.get((obj, op))
+    if expected_effect is not None and intent.effect_intent != expected_effect:
+        raise ValueError("semantic_effect_conflict")
     if obj == "pending_slot" and op == "invoke" and intent.effect_intent == "none":
         raise ValueError("pending_effect_unverified")
     if route in {"respond", "clarify", "cancel"} and intent.effect_intent != "none":
@@ -125,6 +138,7 @@ async def evaluate_semantic_v3(provider, model_name: str, message: str,
                                facts: ShadowHostFacts, timeout_s: float = 45) -> dict:
     """Return bounded diagnostics, never executable approval."""
     stage = "model"
+    semantic = None
     try:
         raw = await asyncio.wait_for(provider.complete(
             model=model_name, response_schema=SemanticIntent.model_json_schema(),
@@ -151,10 +165,14 @@ async def evaluate_semantic_v3(provider, model_name: str, message: str,
             "pending_origin_unverified", "plan_step_binding_unverified",
             "plan_step_source_unverified", "plan_steps_unverified",
             "plan_step_overlap", "plan_intent_source_unverified",
-            "task_effect_conflict", "pending_effect_unverified",
+            "task_effect_conflict", "semantic_effect_conflict", "pending_effect_unverified",
             "non_effect_route_conflict", "missing_clarification_question"
         } else "schema_or_contract_invalid"
         return {"state": "unavailable", "stage": stage, "reason": code,
+                **({"semantic_object": semantic.object_type,
+                    "semantic_operation": semantic.operation,
+                    "semantic_effect": semantic.effect_intent}
+                   if semantic is not None else {}),
                 "host_admission_complete": False}
     except Exception as exc:
         return {"state": "unavailable", "stage": stage,
