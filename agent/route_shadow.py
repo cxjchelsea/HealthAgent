@@ -172,6 +172,29 @@ def bind_unique_quotes(route: ShadowRoute, message: str) -> ShadowRoute:
     return route.model_copy(update=updates)
 
 
+def verify_trusted_reference(route: ShadowRoute, *,
+                             pending_field: str | None = None,
+                             host_facts: Any | None = None) -> None:
+    """Fail closed on conflicting or unsupported state references.
+
+    Missing model-owned reference is a review condition, never permission to
+    fabricate a step or a pending tool. This function performs no mutation.
+    """
+    if route.route_target == "pending_clarification" and route.primary_route == "agent_loop":
+        if route.reference.kind != "pending_slot":
+            raise ValueError("shadow_pending_reference_unverified")
+        if (route.reference.pending_field is not None
+                and pending_field is not None
+                and route.reference.pending_field != pending_field):
+            raise ValueError("shadow_pending_field_conflict")
+    if route.primary_route == "plan_revise":
+        if route.reference.kind != "saved_step" or route.reference.step_number is None:
+            raise ValueError("shadow_revision_step_unverified")
+        states = getattr(host_facts, "plan_states", ()) if host_facts is not None else ()
+        if states and route.reference.step_number > len(states):
+            raise ValueError("shadow_revision_step_out_of_range")
+
+
 def validate_semantic_grounding(route: ShadowRoute, message: str) -> None:
     """Cross-field evidence guards, never reinterpret the model's route.
 
@@ -385,6 +408,8 @@ async def evaluate_shadow(provider: HTTPUnderstandingModel, model_name: str,
         result = bind_unique_quotes(result, message)
         verify_source_spans(result, message)
         validate_semantic_grounding(result, message)
+        verify_trusted_reference(result, pending_field=pending_field,
+                                 host_facts=host_facts)
         stage = "host_preview"
         would_deny = hypothetical_admission(
             result, has_plan=has_plan, pending_action=pending_action)
@@ -431,7 +456,8 @@ async def evaluate_shadow(provider: HTTPUnderstandingModel, model_name: str,
                 "shadow_tool_effect_unspecified",
                 "shadow_pending_reference_unverified",
                 "shadow_quote_not_found", "shadow_quote_ambiguous",
-                "shadow_quote_overlapping", "shadow_quote_limit_exceeded"}
+                "shadow_quote_overlapping", "shadow_quote_limit_exceeded",
+                "shadow_pending_field_conflict", "shadow_revision_step_out_of_range"}
         code = str(exc) if str(exc) in safe else "other_value_error"
         return {"state":"unavailable","error_class":"ValueError",
                 "semantic_proposal": semantic if stage == "source_provenance" else None,
