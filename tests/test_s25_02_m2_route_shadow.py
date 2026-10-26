@@ -92,6 +92,29 @@ def test_forged_span_not_accepted():
     assert result["state"] == "unavailable"
 
 
+def test_unique_optional_cancel_evidence_offset_is_safely_rebound():
+    text = "停止等待参数的请求"
+    data = route(
+        "cancel", source_quote="", route_target="pending_clarification",
+        execution_scope="none", effect_intent="none",
+        source_evidence=[{"start":1,"end":3,"exact_text":"停止"}])
+    result = asyncio.run(evaluate_shadow(
+        Stub(data), "fake", text, has_plan=False, pending_action="reference"))
+    assert result["state"] == "valid"
+    assert result["evidence_offsets_rebound"] == 1
+
+
+def test_repeated_optional_cancel_evidence_is_not_rebound():
+    text = "停止后再次停止"
+    data = route(
+        "cancel", source_quote="", route_target="pending_clarification",
+        execution_scope="none", effect_intent="none",
+        source_evidence=[{"start":1,"end":3,"exact_text":"停止"}])
+    result = asyncio.run(evaluate_shadow(
+        Stub(data), "fake", text, has_plan=False, pending_action="reference"))
+    assert result["state"] == "unavailable"
+
+
 def test_untrusted_mutation_negative_constraint_rejected():
     text = "不要保存任务"
     data = route(effect_intent="mutation_requested",
@@ -377,3 +400,52 @@ def test_confusion_matrix_handles_unasserted_optional_field():
         {"expected_effect":"read_only","proposed_effect":"read_only"},
     ], "expected_effect", "proposed_effect")
     assert {row["expected"] for row in result} == {"not_asserted", "read_only"}
+
+
+def test_prompt_does_not_embed_acceptance_case_literals():
+    from agent.route_shadow import PROMPT
+    leaked_literals = (
+        "请正式创建任务：周五提交测试报告。",
+        "请使用计算工具计算 (19+23)*4。",
+        "请查询 MCP 中 RAG 的定义。",
+        "将已保存计划第二步的 8*8 修改为 9*9，不执行。",
+        'pending_action_field="term", and message="RAG"',
+    )
+    assert not any(literal in PROMPT for literal in leaked_literals)
+
+
+def test_heldout_manifests_and_v2_prompt_are_frozen_and_literal_disjoint():
+    from evals.s25_02_m2_shadow_live import (
+        CASES,
+        FROZEN_HELDOUT_V1_SHA256,
+        FROZEN_HELDOUT_V2_SHA256,
+        FROZEN_HELDOUT_V3_SHA256,
+        FROZEN_PROMPT_V1_SHA256,
+        FROZEN_PROMPT_V2_SHA256,
+        FROZEN_PROMPT_V3_SHA256,
+        heldout_manifest_fingerprint,
+        prompt_fingerprint,
+        validate_frozen_acceptance,
+    )
+    validate_frozen_acceptance()
+    assert FROZEN_PROMPT_V1_SHA256 == (
+        "a87abb6e73079d265f3ab4bffdb4765a57d7a01608b1ee6fec2b7ec3aff24bb3")
+    assert FROZEN_PROMPT_V2_SHA256 == (
+        "d97e791c42b79668fed3082bfbab991f6f05e1ee583a2804feee9f4cb01e1b6b")
+    assert prompt_fingerprint() == FROZEN_PROMPT_V3_SHA256
+    assert heldout_manifest_fingerprint("heldout_v1") == FROZEN_HELDOUT_V1_SHA256
+    assert heldout_manifest_fingerprint("heldout_v2") == FROZEN_HELDOUT_V2_SHA256
+    assert heldout_manifest_fingerprint("heldout_v3") == FROZEN_HELDOUT_V3_SHA256
+    assert sum(case.cohort == "heldout_v1" for case in CASES) == 16
+    assert sum(case.cohort == "heldout_v2" for case in CASES) == 17
+    assert sum(case.cohort == "heldout_v3" for case in CASES) == 17
+
+
+def test_contaminated_cases_are_development_only():
+    from evals.s25_02_m2_shadow_live import CASES
+    cohorts = {case.case_id: case.cohort for case in CASES}
+    for case_id in {
+        "explicit_task", "standalone_math", "standalone_reference",
+        "plan_revision", "pending_reference_reply",
+    }:
+        assert cohorts[case_id] == "development_leaked"

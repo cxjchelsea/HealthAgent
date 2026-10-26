@@ -132,6 +132,32 @@ def verify_source_spans(route: ShadowRoute, message: str) -> None:
     # execute" does not prohibit the revision itself. Host resolves scope.
 
 
+def _rebind_safe_non_effect_source_offsets(route: ShadowRoute,
+                                            message: str) -> int:
+    """Rebind uniquely grounded optional evidence for safe non-effect routes.
+
+    Cancel/respond proposals cannot authorize an effect, and their generic
+    source_evidence is optional.  If a model copied exact current-turn text but
+    miscounted Unicode indexes, bind that text to its sole occurrence.  Missing
+    or repeated text remains untouched and therefore fails strict verification.
+    Effectful routes and authority-bearing evidence are never repaired.
+    """
+    if route.primary_route not in {"cancel", "respond"}:
+        return 0
+    rebound = 0
+    for span in route.source_evidence:
+        if (span.end <= len(message)
+                and message[span.start:span.end] == span.exact_text):
+            continue
+        start = message.find(span.exact_text)
+        if start < 0 or message.find(span.exact_text, start + 1) >= 0:
+            continue
+        span.start = start
+        span.end = start + len(span.exact_text)
+        rebound += 1
+    return rebound
+
+
 def hypothetical_admission(route: ShadowRoute, *, has_plan: bool,
                            pending_action: str | None) -> str | None:
     if route.ambiguity != "clear":
@@ -201,6 +227,11 @@ Routing distinctions (semantic proposals ONLY, never authorizations):
   OBJECT and its lifecycle. A single task has one title and is immediately
   created by the task tool. A formal executable plan has ordered steps and
   is stored for later stepwise execution. Both can contain the word "task".
+- Classify the object before considering adjectives such as formal, official,
+  scheduled, important, or saved. ONE requested to-do/reminder/task-manager
+  record is agent_loop/tool_action even when it has a date or the user asks to
+  create it formally. plan_create requires TWO OR MORE separately stated,
+  ordered executable actions plus an explicit saved-plan lifecycle.
 - Answering an existing missing tool argument completes a bound pending slot:
   route agent_loop, target pending_clarification, not clarify. Clarify asks
   for information that is STILL missing; don't ask again after the user
@@ -217,8 +248,12 @@ Routing distinctions (semantic proposals ONLY, never authorizations):
 - Creating ONE task via create_task is agent_loop with mutation_requested,
   NOT plan_create. plan_create applies ONLY to a durable multi-step
   executable PLAN explicitly requested for FUTURE work, not a normal write.
-- "Use calculate tool" and "query MCP definition of RAG" are agent_loop,
-  read_only and single_tool, not respond/clarify when parameters are present.
+- Explicit calculator and reference-catalog lookups are agent_loop, read_only
+  and single_tool, not respond/clarify when required parameters are present.
+- A named lookup tool does not make a request complete. If the current message
+  explicitly says the search term is absent, undecided, unknown, or will be
+  supplied later, choose clarify/missing_argument with effect none. Do not call
+  a lookup with an empty argument.
 - effect_intent describes the external effect of the requested operation, not
   the fact that a tool call occurs. calculate and MCP lookup are read_only.
   Creating a task or changing stored plan data is mutation_requested.
@@ -230,7 +265,9 @@ Routing distinctions (semantic proposals ONLY, never authorizations):
 - An independent calculator request while a plan exists is agent_loop,
   NOT respond and NOT plan_resume, especially with "do not execute plan".
 - The lack of a saved plan does not change the semantic request to resume it;
-  return plan_resume and let Host deny missing plan.
+  return plan_resume and let Host deny missing plan. Classify effect from the
+  requested operation, not from whether Host can perform it: a requested
+  read-only resume remains read_only, never none, when the checkpoint is absent.
 - An unknown tool explicitly requested is agent_loop as an intent proposal;
   only Host registry checks can reject the unsupported tool.
 - A request to continue saved remaining plan is plan_resume, saved_plan,
@@ -259,34 +296,31 @@ Offset protocol:
   Empty source_evidence is valid for a non-effect cancel/respond proposal and
   will be reviewed by Host; a wrong span makes the whole proposal unavailable.
 Task/plan counterexample:
-- "请正式创建任务：周五提交测试报告。" is ONE task-manager write, therefore
-  agent_loop/tool_action/single_tool/mutation_requested. A deadline or colon
-  does not turn one task into a plan.
+- "把预约体检加入待办清单" is ONE task-manager write. A title, deadline or
+  colon does not turn one task into a durable multi-step plan.
 - plan_create requires an explicitly requested durable plan with at least two
   separately stated ordered executable steps. Never use plan_create for a
   single task item.
 Read-only effect counterexample:
-- "请使用计算工具计算 (19+23)*4。" and an independent calculation while a
-  plan exists both use effect_intent="read_only", never mutation_requested.
+- A request such as "用计算器求 7+11" is read_only even though it calls a tool.
+  The same remains true when an unrelated saved plan exists.
 Plan revision exact combination:
-- "将已保存计划第二步的 8*8 修改为 9*9，不执行。" uses
-  primary_route="plan_revise", route_target="saved_plan",
-  execution_scope="none", effect_intent="mutation_requested",
-  reference.kind="saved_step", reference.step_number=2. "不执行" forbids
-  running tools; it does not make the durable revision read_only.
+- A request to change the third saved step's threshold from 20 to 25 while not
+  running it is plan_revise/saved_plan/none/mutation_requested with a saved_step
+  reference to step 3. A no-run constraint forbids tool execution; it does not
+  make the durable revision read_only.
 Pending-slot exact-binding example:
-- If has_pending_action=true, pending_action_tool="mcp_reference_lookup",
-  pending_action_field="term", and message="RAG", use agent_loop,
-  pending_clarification, reference.kind="pending_slot", and
-  reference.pending_field="term" exactly. Do not output "query", "keyword",
-  the supplied value, or a translated label as the pending field.
+- If has_pending_action=true, pending_action_tool="create_task",
+  pending_action_field="title", and the message supplies the missing title,
+  use agent_loop/pending_clarification with reference.kind="pending_slot" and
+  copy "title" exactly. Do not translate, rename, or replace the field with the
+  supplied value.
   Because the value already answers the pending question, clarification must be
   exactly {"required":false,"reason":"none","question":null}.
 Standalone lookup exact combination:
-- "请查询 MCP 中 RAG 的定义。" has a complete term and no pending context:
-  agent_loop, route_target="tool_action", execution_scope="single_tool",
-  effect_intent="read_only", reference.kind="none". It is not text-only and
-  route_target must not be "none".
+- A new reference-catalog lookup with a complete search term and no pending
+  context uses agent_loop/tool_action/single_tool/read_only with
+  reference.kind="none". It is not a text-only route.
 """
 
 
@@ -320,6 +354,8 @@ async def evaluate_shadow(provider: HTTPUnderstandingModel, model_name: str,
         stage = "schema"
         result = ShadowRoute.model_validate_json(raw)
         stage = "source_provenance"
+        evidence_offsets_rebound = _rebind_safe_non_effect_source_offsets(
+            result, message)
         verify_source_spans(result, message)
         stage = "host_preview"
         would_deny = hypothetical_admission(
@@ -341,6 +377,7 @@ async def evaluate_shadow(provider: HTTPUnderstandingModel, model_name: str,
                 "ambiguity":result.ambiguity,"host_would_deny":would_deny,
                 "host_admission_complete":False,
                 "evidence_spans":len(result.source_evidence),
+                "evidence_offsets_rebound":evidence_offsets_rebound,
                 **({"host_preview":host_preview} if host_preview is not None else {}),
                 **({"pending_field_state":pending_field_state}
                    if pending_field_state is not None else {}),
