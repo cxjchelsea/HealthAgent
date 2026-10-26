@@ -374,6 +374,11 @@ async def evaluate_shadow(provider: HTTPUnderstandingModel, model_name: str,
                        },ensure_ascii=False)}]), timeout=timeout_s)
         stage = "schema"
         result = ShadowRoute.model_validate_json(raw)
+        # Preserve bounded typed semantics even if provenance fails.
+        semantic = {"route": result.primary_route, "route_target": result.route_target,
+                    "scope": result.execution_scope, "effect": result.effect_intent,
+                    "reference_kind": result.reference.kind,
+                    "ambiguity": result.ambiguity}
         stage = "source_provenance"
         # Explicit offsets are immutable assertions; validate before binding quotes.
         verify_source_spans(result, message)
@@ -429,6 +434,10 @@ async def evaluate_shadow(provider: HTTPUnderstandingModel, model_name: str,
                 "shadow_quote_overlapping", "shadow_quote_limit_exceeded"}
         code = str(exc) if str(exc) in safe else "other_value_error"
         return {"state":"unavailable","error_class":"ValueError",
+                "semantic_proposal": semantic if stage == "source_provenance" else None,
+                "semantic_schema_valid": stage == "source_provenance",
+                "provenance_status": "HOLD",
+                "host_admission_complete": False,
                 "failure_stage":stage,"validation_code":code,
                 **({"source_group":exc.group,"source_index":exc.index}
                    if isinstance(exc, SourceSpanError) else {}),
