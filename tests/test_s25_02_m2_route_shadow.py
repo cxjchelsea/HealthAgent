@@ -313,3 +313,17 @@ def test_source_span_error_types_are_distinguished():
         proposal = ShadowRoute.model_validate({**base, "source_evidence":[span]})
         with pytest.raises(ValueError, match=expected):
             verify_source_spans(proposal, message)
+
+
+def test_source_span_error_includes_only_group_and_index():
+    text = "取消此前操作"
+    bad = route("cancel", source_quote="", route_target="pending_clarification",
+                execution_scope="none", effect_intent="none",
+                negative_constraints=[
+                    {"start":0,"end":100,"exact_text":"请不要执行"}])
+    outcome = asyncio.run(evaluate_shadow(
+        Stub(bad), "fake", text, has_plan=False, pending_action="reference"))
+    assert outcome["validation_code"] == "shadow_source_offset_out_of_bounds"
+    assert outcome["source_group"] == "negative_constraints"
+    assert outcome["source_index"] == 0
+    assert "请不要执行" not in json.dumps(outcome, ensure_ascii=False)
