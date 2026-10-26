@@ -15,7 +15,7 @@ def test_plan_two_exact_steps_do_not_require_redundant_source_quote():
     assert compiled.source_evidence[0].exact_text in message
 
 
-def test_effect_conflict_retains_typed_diagnostic_without_authority():
+def test_internal_effect_is_compiled_and_model_disagreement_is_visible():
     intent=SemanticIntent(object_type="task",operation="create",
                           effect_intent="read_only")
     class Stub:
@@ -23,12 +23,13 @@ def test_effect_conflict_retains_typed_diagnostic_without_authority():
             return intent.model_dump_json()
     out=asyncio.run(evaluate_semantic_v3(
         Stub(),"stub","请创建一个任务",ShadowHostFacts(has_plan=False)))
-    assert out["state"]=="unavailable"
-    assert out["reason"]=="semantic_effect_conflict"
+    assert out["state"]=="valid"
     assert out["semantic_object"]=="task"
-    assert out["semantic_operation"]=="create"
-    assert out["semantic_effect"]=="read_only"
+    assert out["model_effect"]=="read_only"
+    assert out["compiled_effect"]=="mutation_requested"
+    assert out["effect_disagreement"] is True
     assert out["host_admission_complete"] is False
+    assert out["host_preview"]["disposition"]=="needs_evidence"
 
 
 def test_plan_source_quote_without_steps_never_admits():
