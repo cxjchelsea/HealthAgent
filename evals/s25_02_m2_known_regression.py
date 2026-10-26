@@ -57,6 +57,8 @@ def main() -> None:
         parser.error("RUN_S25_02_SHADOW_LIVE=1 required")
     if args.timeout <= 0:
         parser.error("timeout must be > 0")
+    # Existing runner expects a case filter; None selects the full cohort.
+    args.case = None
     # Existing runner writes a JSON report even when individual cases fail.
     status = asyncio.run(run(args))
     original = json.loads(Path(args.output).read_text(encoding="utf-8"))
