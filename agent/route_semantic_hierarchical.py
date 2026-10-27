@@ -332,6 +332,16 @@ async def classify_hierarchical_diagnostic(
         return HierarchicalDiagnostic(*action_pair)
     resolved_object = await disambiguate_semantic_object(
         provider, model, context, obj.object_type, timeout)
+    if resolved_object == "plan":
+        try:
+            pair = await judge_plan_action(provider, model, context, timeout)
+        except Exception as exc:
+            return HierarchicalDiagnostic(
+                resolved_object, None, "plan_action", type(exc).__name__)
+        if pair is None:
+            return HierarchicalDiagnostic(
+                resolved_object, None, "plan_action", "UncertainPlanAction")
+        return HierarchicalDiagnostic(*pair)
     try:
         operation_schema = OPERATION_BY_OBJECT[resolved_object]
         raw_op = await asyncio.wait_for(provider.complete(
