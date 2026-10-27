@@ -204,7 +204,7 @@ def extract_unique_step_ordinal(message: str) -> tuple[str, int] | None:
     """
     numbers = {"一": 1, "二": 2, "三": 3, "四": 4,
                "五": 5, "六": 6, "七": 7, "八": 8}
-    pattern = r"第([一二三四五六七八1-8])步|\\bstep[ \\t]+([1-8])\\b"
+    pattern = r"第([一二三四五六七八1-8])步|\bstep[ \t]+([1-8])\b"
     matches = list(re.finditer(pattern, message, flags=re.IGNORECASE))
     if len(matches) != 1:
         return None
