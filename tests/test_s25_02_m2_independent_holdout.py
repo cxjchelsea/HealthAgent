@@ -81,3 +81,22 @@ def test_rejects_missing_required_host_state(tmp_path):
     save(p, cases)
     with pytest.raises(ValueError, match="invalid_host_facts"):
         read_sealed_cases(p)
+
+
+def test_rejects_absent_or_implicit_critical_labels(tmp_path):
+    p = tmp_path / "holdout.json"
+    cases = fixture()
+    del cases[0]["critical"]
+    save(p, cases)
+    with pytest.raises(ValueError, match="critical_annotation_required"):
+        read_sealed_cases(p)
+
+
+def test_rejects_zero_critical_coverage(tmp_path):
+    p = tmp_path / "holdout.json"
+    cases = fixture()
+    for case in cases:
+        case["critical"] = False
+    save(p, cases)
+    with pytest.raises(ValueError, match="no_critical_cases"):
+        read_sealed_cases(p)
