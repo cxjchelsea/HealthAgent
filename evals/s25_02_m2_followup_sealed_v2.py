@@ -42,7 +42,7 @@ def manifest_sha256():
     return hashlib.sha256(blob).hexdigest()
 
 # SEALED_MANIFEST_SHA256 is populated in the PRE-IMPLEMENTATION freeze commit.
-SEALED_MANIFEST_SHA256 = "PENDING_FREEZE"
+SEALED_MANIFEST_SHA256 = "dfd5985d97ff85f900bb36865da2109721bcb5538b86dfbe81cd3fb5e5602f61"
 def assert_frozen():
     if len(CASES)!=24 or len({c.case_id for c in CASES})!=24:
         raise RuntimeError("invalid_case_count")
