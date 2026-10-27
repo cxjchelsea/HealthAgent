@@ -134,7 +134,6 @@ def test_model_selected_operation_is_never_silently_overridden():
 
 
 def test_second_stage_schema_is_scoped_by_model_selected_object():
-    import json
     from agent.route_semantic_hierarchical import OPERATION_BY_OBJECT
     expected = {
         "none": {"answer", "clarify"},
@@ -146,7 +145,9 @@ def test_second_stage_schema_is_scoped_by_model_selected_object():
     }
     for object_type, allowed in expected.items():
         schema = OPERATION_BY_OBJECT[object_type].model_json_schema()
-        assert set(schema["properties"]["operation"]["enum"]) == allowed
+        operation_field = schema["properties"]["operation"]
+        values = operation_field.get("enum", [operation_field.get("const")])
+        assert set(values) == allowed
 
 
 def test_out_of_scope_model_operation_is_reported_not_rewritten():
