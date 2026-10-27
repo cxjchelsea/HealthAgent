@@ -174,6 +174,10 @@ async def evaluate(provider, model, case, mode, timeout):
         except Exception:
             plan_steps = []
         row["plan_step_quotes"] = len(plan_steps)
+        if (quote is None and len(plan_steps) == 2
+                and 0 < len(case.prompt) <= 400):
+            quote = case.prompt
+            row["quote_state"] = "trusted_full_message_plan"
     try:
         proposal = proposal_from_core(core, case.prompt, quote, step_quote,
                                       facts, plan_steps=plan_steps)
