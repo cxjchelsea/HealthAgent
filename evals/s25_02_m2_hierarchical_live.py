@@ -83,6 +83,12 @@ async def run(args):
     if settings.model_provider != "ollama_proxy":
         raise ValueError("ollama_proxy_required")
     cases = BOUNDARY_CASES if args.cohort == 'boundary' else DEVELOPMENT_CASES
+    if args.case:
+        available = {case.case_id for case in cases}
+        unknown = sorted(set(args.case) - available)
+        if unknown:
+            raise ValueError(f"unknown_case_ids: {unknown}")
+        cases = [case for case in cases if case.case_id in set(args.case)]
     provider = HTTPUnderstandingModel(
         settings.model_provider, settings.model_base_url,
         settings.model_api_key, settings.model_timeout_seconds,
@@ -98,6 +104,7 @@ async def run(args):
                        else "KNOWN_DEVELOPMENT_NOT_BLIND"),
             "m2_gate": "HOLD", "host_authorization": False,
             "variant": "D_hierarchical_core_only",
+            "selected_case_ids": case_ids,
             "complete": completed,
             "expected_rows": args.repeats * len(cases),
             "summary": summarize(rows, case_ids),
@@ -142,6 +149,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--cohort", choices=["development", "boundary"],
                         default="development")
+    parser.add_argument("--case", action="append", default=[],
+                        help="Run only this case ID; repeat to select multiple")
     parser.add_argument("--repeats", type=int, default=1)
     parser.add_argument("--timeout", type=float, default=60)
     parser.add_argument(
