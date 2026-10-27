@@ -132,7 +132,7 @@ async def disambiguate_semantic_object(provider, model, context, initial, timeou
             model=model, response_schema=schema.model_json_schema(),
             messages=[{"role": "system", "content": system},
                       {"role": "user", "content": json.dumps(
-                          context, ensure_ascii=False)}]), timeout=timeout)
+                          _intent_context(context), ensure_ascii=False)}]), timeout=timeout)
         decision = schema.model_validate_json(raw)
     except Exception:
         return initial
@@ -245,6 +245,19 @@ def _context(message, facts):
             "does not prevent an unrelated new request."
         ),
     }
+
+
+def _intent_context(context):
+    """Separate plan existence/progress (Host authority) from request intent.
+
+    Keep pending-request metadata: it is needed to resolve whether the user's
+    current message answers a bound pending slot. Plan availability, unlike
+    that conversational reference, does not define the requested object.
+    """
+    state = dict(context["trusted_host_state"])
+    state.pop("saved_plan_exists", None)
+    state.pop("saved_plan_step_count", None)
+    return {**context, "trusted_host_state": state}
 
 
 async def classify_hierarchical_diagnostic(
