@@ -28,8 +28,9 @@ def test_missing_plan_does_not_mask_requested_resume_target():
     assert (result.object_type, result.operation) == ("plan", "resume")
     assert "saved_plan_exists" not in provider.payloads[0]["trusted_host_state"]
     assert "saved_plan_step_count" not in provider.payloads[0]["trusted_host_state"]
-    # Later stages retain actual Host state, for downstream guards.
-    assert provider.payloads[1]["trusted_host_state"]["saved_plan_exists"] is False
+    # Both semantic stages exclude plan existence; the Host retains facts
+    # separately and remains responsible for denying missing-plan execution.
+    assert "saved_plan_exists" not in provider.payloads[1]["trusted_host_state"]
 
 
 def test_saved_plan_availability_does_not_change_object_stage_contract():
