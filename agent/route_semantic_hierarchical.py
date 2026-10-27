@@ -54,7 +54,15 @@ requests target task.
 This is an interpretation only, never authorization."""
 
 OP_PROMPT = """For the selected semantic object, identify the CURRENT requested operation.
-none: answer or clarify. task: create. tool: invoke.
+The operation describes the BUSINESS EFFECT on the selected object, not
+the everyday verb used to ask for words or content.
+none: answer means produce a conversational answer, a draft, a rewritten
+passage, a proposed outline, or any text delivered only in this conversation.
+none: clarify means request missing information from the user.
+create means establishing a durable task or saved plan object (task/plan).
+Generating new text is answer, not create, even when the user says to write,
+compose or draft it. No persistence effect exists for object none.
+task: create a persistent task. tool: invoke a tool.
 plan: create a new persistent plan; execute_first starts the first
 step (whether or not the plan actually exists); resume continues unfinished
 steps after earlier steps; cancel stops a plan. plan_step: revise step content.

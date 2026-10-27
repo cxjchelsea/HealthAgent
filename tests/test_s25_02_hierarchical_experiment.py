@@ -118,3 +118,16 @@ def test_stability_summary_handles_repeatable_core_pair_lists():
     assert summary["stable_cases"] == 1
     assert summary["object_stable_cases"] == 1
     assert summary["operation_stable_cases"] == 1
+
+
+def test_operation_contract_differentiates_chat_generation_and_persistence():
+    from agent.route_semantic_hierarchical import OP_PROMPT
+    assert "Generating new text is answer, not create" in OP_PROMPT
+    assert "create means establishing a durable task" in OP_PROMPT
+
+
+def test_model_selected_operation_is_never_silently_overridden():
+    provider = FakeProvider(['{"object_type":"none"}', '{"operation":"create"}'])
+    result = asyncio.run(classify_hierarchical(
+        provider, "qwen3:14b", "写一个不保存的邮件草稿", facts(), 5))
+    assert (result.object_type, result.operation) == ("none", "create")
