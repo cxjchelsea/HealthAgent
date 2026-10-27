@@ -79,6 +79,9 @@ task: persisted task-manager item, NOT a generic instruction.
 tool: calculator, retrieval, shell or another requested tool operation.
 plan: a persistent ordered plan as a whole. Requests to run its first step,
 continue its remaining steps, create it or cancel it ALL target plan.
+Choose the object from the intended action, not surface nouns.
+Changing the wording of saved steps is different from performing saved actions.
+Restricting which portion of a plan runs does not edit its stored content.
 The ordinal "first" denotes an execution SCOPE, not a separate object.
 plan_step: editing/replacing the CONTENT of a particular saved step;
 not running a step, or continuing a plan.
@@ -86,6 +89,9 @@ pending_slot: a CURRENT reply supplying a requested missing tool argument,
 or canceling the pending request. Use the trusted context only to understand
 what is being replied to, not to assume every message concerns the pending
 request. A new independent tool request still targets tool.
+An instruction to use an external capability is not a text-only answer even
+when its eventual result can be expressed as text. Do not let a pending
+interaction hide a separate request on the current turn.
 Do not mistake saved plan context for an instruction to modify that plan.
 A request to resume a plan targets plan even if Host reports no saved plan.
 A request for a tool targets tool even if Host reports no registered tool.
