@@ -62,3 +62,22 @@ def test_rejects_duplicate_cases(tmp_path):
     save(p, cases)
     with pytest.raises(ValueError, match="duplicate"):
         read_sealed_cases(p)
+
+
+def test_rejects_invalid_object_operation_pair(tmp_path):
+    p = tmp_path / "holdout.json"
+    cases = fixture()
+    cases[0]["expected_object"] = "task"
+    cases[0]["expected_operation"] = "resume"
+    save(p, cases)
+    with pytest.raises(ValueError, match="invalid_case_contract"):
+        read_sealed_cases(p)
+
+
+def test_rejects_missing_required_host_state(tmp_path):
+    p = tmp_path / "holdout.json"
+    cases = fixture()
+    cases[0]["facts"] = {}
+    save(p, cases)
+    with pytest.raises(ValueError, match="invalid_host_facts"):
+        read_sealed_cases(p)
