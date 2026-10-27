@@ -132,7 +132,7 @@ async def disambiguate_semantic_object(provider, model, context, initial, timeou
             model=model, response_schema=schema.model_json_schema(),
             messages=[{"role": "system", "content": system},
                       {"role": "user", "content": json.dumps(
-                          _intent_context(context), ensure_ascii=False)}]), timeout=timeout)
+                          context, ensure_ascii=False)}]), timeout=timeout)
         decision = schema.model_validate_json(raw)
     except Exception:
         return initial
