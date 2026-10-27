@@ -93,10 +93,6 @@ Restricting which portion of a plan runs does not edit its stored content.
 The ordinal "first" denotes an execution SCOPE, not a separate object.
 plan_step: editing/replacing the CONTENT of a particular saved step;
 not running a step, or continuing a plan.
-First determine whether this turn is answering the uniquely bound missing
-field of an existing Pending request, or requesting a different NEW tool
-operation. If the response supplies the bound field, target pending_slot;
-a separate tool call targets tool. Host context is evidence, not authority.
 pending_slot: a CURRENT reply supplying a requested missing tool argument,
 or canceling the pending request. Use the trusted context only to understand
 what is being replied to, not to assume every message concerns the pending
