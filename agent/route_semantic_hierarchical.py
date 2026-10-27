@@ -28,9 +28,50 @@ class ObjectChoice(BaseModel):
     object_type: Literal["none", "task", "plan", "plan_step", "pending_slot", "tool"]
 
 class OperationChoice(BaseModel):
+    """Shared interface only; the second-stage response is object-scoped."""
     model_config = ConfigDict(extra="forbid")
     operation: Literal["answer", "clarify", "create", "revise",
                        "execute_first", "resume", "cancel", "invoke"]
+
+
+class NoneOperation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    operation: Literal["answer", "clarify"]
+
+
+class TaskOperation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    operation: Literal["create"]
+
+
+class ToolOperation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    operation: Literal["invoke"]
+
+
+class PlanOperation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    operation: Literal["create", "execute_first", "resume", "cancel"]
+
+
+class PlanStepOperation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    operation: Literal["revise"]
+
+
+class PendingOperation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    operation: Literal["invoke", "cancel"]
+
+
+OPERATION_BY_OBJECT = {
+    "none": NoneOperation,
+    "task": TaskOperation,
+    "tool": ToolOperation,
+    "plan": PlanOperation,
+    "plan_step": PlanStepOperation,
+    "pending_slot": PendingOperation,
+}
 
 OBJECT_PROMPT = """Identify the semantic TARGET of the CURRENT user request; do not choose an operation.
 none: conversational answer, clarification or text-only unsaved draft.
@@ -113,13 +154,14 @@ async def classify_hierarchical_diagnostic(
     except Exception as exc:
         return HierarchicalDiagnostic(None, None, "object", type(exc).__name__)
     try:
+        operation_schema = OPERATION_BY_OBJECT[obj.object_type]
         raw_op = await asyncio.wait_for(provider.complete(
-            model=model, response_schema=OperationChoice.model_json_schema(),
+            model=model, response_schema=operation_schema.model_json_schema(),
             messages=[{"role": "system", "content": OP_PROMPT},
                       {"role": "user", "content": json.dumps({
                           **context, "selected_object": obj.object_type},
                           ensure_ascii=False)}]), timeout=timeout)
-        op = OperationChoice.model_validate_json(raw_op)
+        op = operation_schema.model_validate_json(raw_op)
     except Exception as exc:
         return HierarchicalDiagnostic(
             obj.object_type, None, "operation", type(exc).__name__)

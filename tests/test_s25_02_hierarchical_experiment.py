@@ -131,3 +131,36 @@ def test_model_selected_operation_is_never_silently_overridden():
     result = asyncio.run(classify_hierarchical(
         provider, "qwen3:14b", "写一个不保存的邮件草稿", facts(), 5))
     assert (result.object_type, result.operation) == ("none", "create")
+
+
+def test_second_stage_schema_is_scoped_by_model_selected_object():
+    import json
+    from agent.route_semantic_hierarchical import OPERATION_BY_OBJECT
+    expected = {
+        "none": {"answer", "clarify"},
+        "task": {"create"},
+        "tool": {"invoke"},
+        "plan": {"create", "execute_first", "resume", "cancel"},
+        "plan_step": {"revise"},
+        "pending_slot": {"invoke", "cancel"},
+    }
+    for object_type, allowed in expected.items():
+        schema = OPERATION_BY_OBJECT[object_type].model_json_schema()
+        assert set(schema["properties"]["operation"]["enum"]) == allowed
+
+
+def test_out_of_scope_model_operation_is_reported_not_rewritten():
+    provider = FakeProvider(['{"object_type":"tool"}', '{"operation":"answer"}'])
+    result = asyncio.run(classify_hierarchical_diagnostic(
+        provider, "qwen3:14b", "用计算器算出结果", facts(), 5))
+    assert result.object_type == "tool"
+    assert result.operation is None
+    assert result.failure_stage == "operation"
+    assert result.error_class == "ValidationError"
+
+
+def test_plan_scope_still_leaves_first_vs_resume_to_model():
+    provider = FakeProvider(['{"object_type":"plan"}', '{"operation":"resume"}'])
+    result = asyncio.run(classify_hierarchical_diagnostic(
+        provider, "qwen3:14b", "只执行第一步", facts(plan=True), 5))
+    assert (result.object_type, result.operation) == ("plan", "resume")
