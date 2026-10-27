@@ -10,7 +10,6 @@ import hashlib
 import json
 import subprocess
 from collections import Counter
-from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -29,6 +28,15 @@ VALID_OPERATIONS = {"answer", "clarify", "create", "revise", "execute_first",
 VALID_DISPOSITIONS = {"safe_non_effect", "needs_evidence", "deny",
                       "potentially_admissible"}
 HOST_FIELDS = set(ShadowHostFacts.__dataclass_fields__)
+VALID_PAIRS = {
+    ("none", "answer"), ("none", "clarify"),
+    ("task", "create"), ("tool", "invoke"),
+    ("plan", "create"), ("plan", "execute_first"),
+    ("plan", "resume"), ("plan", "cancel"),
+    ("plan_step", "revise"),
+    ("pending_slot", "invoke"), ("pending_slot", "cancel"),
+}
+
 
 
 def git(*args):
@@ -55,9 +63,9 @@ def read_sealed_cases(path, minimum=60):
         if (not isinstance(case["prompt"], str) or not case["prompt"].strip()
                 or case["expected_object"] not in VALID_OBJECTS
                 or case["expected_operation"] not in VALID_OPERATIONS
-                or case["expected_disposition"] not in VALID_DISPOSITIONS):
+                or case["expected_disposition"] not in VALID_DISPOSITIONS\n                or (case["expected_object"], case["expected_operation"]) not in VALID_PAIRS):
             raise ValueError("invalid_case_contract")
-        raw_facts = case["facts"]
+        raw_facts = case["facts"]\n        if not isinstance(raw_facts, dict) or "has_plan" not in raw_facts:\n            raise ValueError("invalid_host_facts")
         if not set(raw_facts).issubset(HOST_FIELDS):
             raise ValueError("unknown_host_field")
         facts = ShadowHostFacts(**{**raw_facts,
@@ -79,7 +87,7 @@ async def run(args):
         settings.model_timeout_seconds, settings.model_max_output_tokens)
     rows = []
     output = Path(args.output)
-    output.parent.mkdir(parents=True, exist_ok=True)
+    output.parent.mkdir(parents=True, exist_ok=True)\n    # The origin label is supplied by the submitter; independent authorship\n    # must be confirmed outside this process by an actual reviewer.
     for repetition in (1, 2):
         for case in cases:
             result = await evaluate(provider, settings.understanding_strong_model,
@@ -109,7 +117,7 @@ async def run(args):
     ) else "HOLD"
     result = {
         "evaluation_type": "INDEPENDENT_REVIEWER_SEALED_HOLDOUT",
-        "source_kind": "independent_reviewer_sealed",
+        "source_kind": "independent_reviewer_sealed",\n        "independence_verified": False,\n        "independence_note": "External reviewer identity and authorship require separate human verification.",
         "code_sha": sha, "branch": branch,
         "manifest_sha256": manifest,
         "model": settings.understanding_strong_model,
