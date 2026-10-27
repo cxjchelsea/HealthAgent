@@ -28,7 +28,7 @@ def test_no_authority_fields_in_classifier():
         assert "authorized" not in cls.model_fields
 
 
-import asyncio
+
 class FakeProvider:
     def __init__(self, responses):
         self.responses = iter(responses)

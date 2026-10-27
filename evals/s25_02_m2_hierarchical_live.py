@@ -9,7 +9,8 @@ from pathlib import Path
 from agent.config import Settings
 from agent.understanding import HTTPUnderstandingModel
 from agent.route_semantic_hierarchical import classify_hierarchical_diagnostic
-from evals.s25_02_m2_ab_comparison import CASES, core_match
+from evals.s25_02_m2_ab_comparison import CASES as DEVELOPMENT_CASES, core_match
+from evals.s25_02_m2_hierarchical_boundary_cases import CASES as BOUNDARY_CASES
 
 
 def expected_core(case):
@@ -81,6 +82,7 @@ async def run(args):
     settings = Settings()
     if settings.model_provider != "ollama_proxy":
         raise ValueError("ollama_proxy_required")
+    cases = BOUNDARY_CASES if args.cohort == 'boundary' else DEVELOPMENT_CASES
     provider = HTTPUnderstandingModel(
         settings.model_provider, settings.model_base_url,
         settings.model_api_key, settings.model_timeout_seconds,
@@ -88,15 +90,16 @@ async def run(args):
     rows = []
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    case_ids = [case.case_id for case in CASES]
+    case_ids = [case.case_id for case in cases]
     def save_report(completed):
         report = {
             "model": settings.understanding_strong_model,
-            "cohort": "KNOWN_DEVELOPMENT_NOT_BLIND",
+            "cohort": ("CURATED_BOUNDARY_NOT_SEALED_BLIND" if args.cohort == "boundary"
+                       else "KNOWN_DEVELOPMENT_NOT_BLIND"),
             "m2_gate": "HOLD", "host_authorization": False,
             "variant": "D_hierarchical_core_only",
             "complete": completed,
-            "expected_rows": args.repeats * len(CASES),
+            "expected_rows": args.repeats * len(cases),
             "summary": summarize(rows, case_ids),
             "rows": rows,
         }
@@ -105,8 +108,11 @@ async def run(args):
         temp_path.replace(output_path)
         return report
     for repeat in range(args.repeats):
-        for case in CASES:
-            wanted_object, wanted_operation = expected_core(case)
+        for case in cases:
+            wanted_object, wanted_operation = (
+                (case.expected_object, case.expected_operation)
+                if args.cohort == 'boundary' else expected_core(case)
+            )
             diagnostic = await classify_hierarchical_diagnostic(
                 provider, settings.understanding_strong_model,
                 case.prompt, case.facts, args.timeout)
@@ -122,7 +128,6 @@ async def run(args):
                 "object_correct": obj == wanted_object,
                 "operation_correct": op == wanted_operation,
                 "core_correct": diagnostic.failure_stage is None
-                and core_match(case, obj, op)
                 and obj == wanted_object and op == wanted_operation,
                 "core_pair": [obj, op],
                 "host_authorization": False,
@@ -135,6 +140,8 @@ async def run(args):
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--cohort", choices=["development", "boundary"],
+                        default="development")
     parser.add_argument("--repeats", type=int, default=1)
     parser.add_argument("--timeout", type=float, default=60)
     parser.add_argument(
