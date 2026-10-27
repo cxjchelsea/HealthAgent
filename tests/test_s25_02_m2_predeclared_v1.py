@@ -12,15 +12,31 @@ from evals.s25_02_m2_semantic_evidence_live import QUOTE_PROMPT
 
 
 class ExpectedCoreProvider:
+    """Return expected semantics for each requested model schema.
+
+    The predeclared fixture tests deterministic compilation, not the
+    semantic accuracy of a simulated model. Extra model-driven stages
+    must not shift operation and quote response positions.
+    """
     def __init__(self, case):
-        self.replies = iter([
-            json.dumps({"object_type": case.expected_object}),
-            json.dumps({"operation": case.expected_operation}),
-            json.dumps({"current_turn_quote": None, "revision_step_quote": None}),
-        ])
+        self.case = case
 
     async def complete(self, **kwargs):
-        return next(self.replies)
+        fields = kwargs["response_schema"]["properties"]
+        if "object_type" in fields:
+            return json.dumps({"object_type": self.case.expected_object})
+        if "target" in fields:
+            return json.dumps({"target": self.case.expected_object})
+        if "relation" in fields:
+            return json.dumps({"relation": (
+                "supply_bound_argument" if self.case.expected_object == "pending_slot"
+                else "new_independent_tool_request")})
+        if "operation" in fields:
+            return json.dumps({"operation": self.case.expected_operation})
+        if "current_turn_quote" in fields:
+            return json.dumps({
+                "current_turn_quote": None, "revision_step_quote": None})
+        raise AssertionError(f"unexpected semantic schema: {sorted(fields)}")
 
 
 def test_expected_labels_match_deterministic_pipeline_before_live_model():
