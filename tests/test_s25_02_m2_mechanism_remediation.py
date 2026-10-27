@@ -59,6 +59,7 @@ def test_pending_cancel_source_is_only_diagnostic():
 
 
 def test_prompt_changes_are_general_and_do_not_embed_failures():
-    assert "separately ordered actions" in OBJECT_PROMPT
+    assert "separately ordered actions" not in OBJECT_PROMPT
+    assert "Requests to run its first step" in OBJECT_PROMPT
     assert "uniquely bound missing" in OBJECT_PROMPT
     assert "plan_create_positive_01" not in OBJECT_PROMPT
