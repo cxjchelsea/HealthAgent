@@ -21,13 +21,16 @@ def main():
     parser.add_argument("--cases", default="s25_02_m2_ai_eval_84_sealed.json")
     parser.add_argument("--output", default="s25_02_m2_original_object_84_regression.json")
     parser.add_argument("--timeout", type=float, default=90)
+    parser.add_argument("--expected-branch", default="experiment/s25-02-m2-original-object-evidence-20261027",
+                        help="Explicit branch under evaluation; default preserves frozen original.")
+    parser.add_argument("--expected-sha", default=None,
+                        help="Optional exact candidate HEAD; abort on mismatch.")
     a = parser.parse_args()
     sha = git("rev-parse", "HEAD")
     branch = git("branch", "--show-current")
-    expected_branch = "experiment/s25-02-m2-original-object-evidence-20261027"
-    if branch != expected_branch:
+    if branch != a.expected_branch:
         parser.error(f"wrong branch: {branch}")
-    dirty = git("status", "--porcelain", "--untracked-files=no")
+    if a.expected_sha and sha != a.expected_sha:\n        parser.error(f"wrong HEAD: {sha}")\n    dirty = git("status", "--porcelain", "--untracked-files=no")
     if dirty:
         parser.error("tracked working tree has uncommitted modifications")
     runner = Path(a.runner)
@@ -41,7 +44,7 @@ def main():
     report = json.loads(dest.read_text(encoding="utf-8"))
     if not report.get("complete") or report.get("manifest_sha256") != EXPECTED_MANIFEST:
         raise ValueError("incomplete or mismatched known development report")
-    report["legacy_reported_candidate_sha"] = report.get("candidate_sha")
+    report["legacy_reported_candidate_sha"] = report.get("candidate_sha")\n    report["evaluated_expected_sha"] = a.expected_sha or sha
     report["candidate_sha"] = sha
     report["git_branch"] = branch
     report["provenance_method"] = "git_rev_parse_HEAD_verified_clean_tracked_tree"
