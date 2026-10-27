@@ -25,7 +25,7 @@ class Provider:
 
 def facts(**updates):
     from dataclasses import replace
-    return replace(ShadowHostFacts(), **updates)
+    return replace(ShadowHostFacts(has_plan=False), **updates)
 
 
 def run(provider, message, host):
