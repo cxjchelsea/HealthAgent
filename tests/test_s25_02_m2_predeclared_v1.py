@@ -31,6 +31,16 @@ class ExpectedCoreProvider:
             return json.dumps({"relation": (
                 "supply_bound_argument" if self.case.expected_object == "pending_slot"
                 else "new_independent_tool_request")})
+        if "action" in fields:
+            expected = {
+                ("plan", "create"): "create_plan",
+                ("plan", "execute_first"): "execute_first",
+                ("plan", "resume"): "resume_remaining",
+                ("plan", "cancel"): "cancel_plan",
+                ("plan_step", "revise"): "edit_step_definition",
+            }
+            return json.dumps({"action": expected[
+                (self.case.expected_object, self.case.expected_operation)]})
         if "operation" in fields:
             return json.dumps({"operation": self.case.expected_operation})
         if "current_turn_quote" in fields:
