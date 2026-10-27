@@ -64,6 +64,64 @@ class PendingOperation(BaseModel):
     operation: Literal["invoke", "cancel"]
 
 
+class DurableCreateTarget(BaseModel):
+    """Independent model judgement about the requested persisted object."""
+    model_config = ConfigDict(extra="forbid")
+    target: Literal["task", "plan"]
+
+
+class PendingRelation(BaseModel):
+    """Independent model judgement about the relationship to bound Pending."""
+    model_config = ConfigDict(extra="forbid")
+    relation: Literal["supply_bound_argument", "new_independent_tool_request"]
+
+
+DURABLE_TARGET_PROMPT = """Determine the requested kind of DURABLE object, if one is to be created.
+task: a standalone task-manager item such as a reminder or tracked to-do.
+plan: a saved ordered set of actions that retains a multi-step execution structure.
+Judge the user-requested persisted structure, not the document title,
+isolated nouns, or what the Host is presently able to execute.
+This judgment is semantic only and grants no authority."""
+
+PENDING_RELATION_PROMPT = """The Host has a trusted bound pending tool
+request with a specific missing field. Determine whether the CURRENT message
+is answering that missing field of the existing request, or initiates a
+separate new tool request. A newly worded instruction can still be a reply
+to Pending; an unrelated request does not become a Pending reply just
+because Pending exists. This judgment is semantic, not permission."""
+
+async def disambiguate_semantic_object(provider, model, context, initial, timeout):
+    """Independent model-only boundary check; never infer Host authorization.
+
+    Invoke only on genuinely overlapping object families. If the second
+    model cannot establish a choice, retain the first-stage result rather
+    than replacing it with a state-dependent or keyword-based guess.
+    """
+    if initial == "task":
+        schema = DurableCreateTarget
+        system = DURABLE_TARGET_PROMPT
+        result_key = "target"
+    elif initial == "tool" and context["trusted_host_state"]["pending_tool_request_bound"]:
+        schema = PendingRelation
+        system = PENDING_RELATION_PROMPT
+        result_key = "relation"
+    else:
+        return initial
+    try:
+        raw = await asyncio.wait_for(provider.complete(
+            model=model, response_schema=schema.model_json_schema(),
+            messages=[{"role": "system", "content": system},
+                      {"role": "user", "content": json.dumps(
+                          context, ensure_ascii=False)}]), timeout=timeout)
+        decision = schema.model_validate_json(raw)
+    except Exception:
+        return initial
+    selected = getattr(decision, result_key)
+    if initial == "task":
+        return selected
+    return ("pending_slot" if selected == "supply_bound_argument" else "tool")
+
+
 OPERATION_BY_OBJECT = {
     "none": NoneOperation,
     "task": TaskOperation,
@@ -179,21 +237,23 @@ async def classify_hierarchical_diagnostic(
         obj = ObjectChoice.model_validate_json(raw)
     except Exception as exc:
         return HierarchicalDiagnostic(None, None, "object", type(exc).__name__)
+    resolved_object = await disambiguate_semantic_object(
+        provider, model, context, obj.object_type, timeout)
     try:
-        operation_schema = OPERATION_BY_OBJECT[obj.object_type]
+        operation_schema = OPERATION_BY_OBJECT[resolved_object]
         raw_op = await asyncio.wait_for(provider.complete(
             model=model, response_schema=operation_schema.model_json_schema(),
             messages=[{"role": "system", "content": (
                           OP_PROMPT + PLAN_SCOPE_PROMPT
-                          if obj.object_type == "plan" else OP_PROMPT)},
+                          if resolved_object == "plan" else OP_PROMPT)},
                       {"role": "user", "content": json.dumps({
-                          **context, "selected_object": obj.object_type},
+                          **context, "selected_object": resolved_object},
                           ensure_ascii=False)}]), timeout=timeout)
         op = operation_schema.model_validate_json(raw_op)
     except Exception as exc:
         return HierarchicalDiagnostic(
-            obj.object_type, None, "operation", type(exc).__name__)
-    return HierarchicalDiagnostic(obj.object_type, op.operation)
+            resolved_object, None, "operation", type(exc).__name__)
+    return HierarchicalDiagnostic(resolved_object, op.operation)
 
 
 async def classify_hierarchical(provider, model, message, facts, timeout=60):
