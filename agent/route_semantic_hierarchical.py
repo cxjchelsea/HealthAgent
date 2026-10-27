@@ -1,0 +1,379 @@
+"""Diagnostic-only two-stage semantic classifier; never grants Host authority."""
+import asyncio
+import json
+from dataclasses import dataclass
+from typing import Literal
+from pydantic import BaseModel, ConfigDict
+from agent.route_semantic_ab import CoreIntent
+
+@dataclass(frozen=True)
+class HierarchicalDiagnostic:
+    """Retain stage-one evidence even if stage two fails."""
+    object_type: str | None
+    operation: str | None
+    failure_stage: str | None = None
+    error_class: str | None = None
+
+
+class HierarchicalStageError(Exception):
+    def __init__(self, stage: str, object_type: str | None, error_class: str):
+        self.stage = stage
+        self.object_type = object_type
+        self.error_class = error_class
+        super().__init__(f"{stage}: {error_class}")
+
+
+class ObjectChoice(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    object_type: Literal["none", "task", "plan", "plan_step", "pending_slot", "tool"]
+
+class OperationChoice(BaseModel):
+    """Shared interface only; the second-stage response is object-scoped."""
+    model_config = ConfigDict(extra="forbid")
+    operation: Literal["answer", "clarify", "create", "revise",
+                       "execute_first", "resume", "cancel", "invoke"]
+
+
+class NoneOperation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    operation: Literal["answer", "clarify"]
+
+
+class TaskOperation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    operation: Literal["create"]
+
+
+class ToolOperation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    operation: Literal["invoke"]
+
+
+class PlanOperation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    operation: Literal["create", "execute_first", "resume", "cancel"]
+
+
+class PlanStepOperation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    operation: Literal["revise"]
+
+
+class PendingOperation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    operation: Literal["invoke", "cancel"]
+
+
+class DurableCreateTarget(BaseModel):
+    """Independent model judgement about the requested persisted object."""
+    model_config = ConfigDict(extra="forbid")
+    target: Literal["task", "plan"]
+
+
+class SavedStepIntent(BaseModel):
+    """Disambiguate an action ON a step from an edit TO its stored definition."""
+    model_config = ConfigDict(extra="forbid")
+    intent: Literal["execute_existing_step", "edit_saved_step", "uncertain"]
+
+
+SAVED_STEP_INTENT_PROMPT = """Independently judge what the user is asking
+to do to a saved plan. execute_existing_step means carry out the saved
+action or initiate the first phase, without rewriting any stored steps.
+edit_saved_step means change the saved step's description, content,
+order, parameters or definition, without executing it. An action that
+mentions a numbered step is not thereby a content edit. Ignore whether
+the Host has permission or a valid checkpoint; this decision grants
+no authorization. Use uncertain when intent cannot be established."""
+
+
+class PlanActionDecision(BaseModel):
+    """Single semantic decision for plan actions, independent of Host validity."""
+    model_config = ConfigDict(extra="forbid")
+    action: Literal["create_plan", "execute_first", "resume_remaining",
+                    "edit_step_definition", "cancel_plan", "uncertain"]
+
+
+PLAN_ACTION_PROMPT = """Decide the CURRENT requested action over a saved plan
+or its step definition as ONE semantic decision. The following categories
+are mutually exclusive:
+create_plan: persist a new ordered plan.
+execute_first: START only the first step or initial phase, leaving other
+steps untouched.
+resume_remaining: CONTINUE outstanding work or the remainder of a previously
+started process; does not mean restart the beginning. An explicit assertion
+that no plan exists does not change the requested action.
+edit_step_definition: change the saved instructions, parameters, wording or
+order of a step; does NOT perform the step.
+cancel_plan: stop the existing plan.
+uncertain: the current request does not establish any of these.
+Classify what the user is asking the system to DO, not whether a plan
+exists, whether it has progressed, or what the Host is allowed to do.
+Do not infer actions from isolated step numbers or verb keywords.
+This is an interpretation only and grants no permission."""
+
+
+PLAN_ACTION_MAP = {
+    "create_plan": ("plan", "create"),
+    "execute_first": ("plan", "execute_first"),
+    "resume_remaining": ("plan", "resume"),
+    "edit_step_definition": ("plan_step", "revise"),
+    "cancel_plan": ("plan", "cancel"),
+}
+
+
+async def judge_plan_action(provider, model, context, timeout):
+    """One semantic source of truth for plan scope and editing intent."""
+    raw = await asyncio.wait_for(provider.complete(
+        model=model, response_schema=PlanActionDecision.model_json_schema(),
+        messages=[{"role": "system", "content": PLAN_ACTION_PROMPT},
+                  {"role": "user", "content": json.dumps(
+                      _intent_context(context), ensure_ascii=False)}]), timeout=timeout)
+    result = PlanActionDecision.model_validate_json(raw)
+    return PLAN_ACTION_MAP.get(result.action)
+
+
+class PendingRelation(BaseModel):
+    """Independent model judgement about the relationship to bound Pending."""
+    model_config = ConfigDict(extra="forbid")
+    relation: Literal["supply_bound_argument", "new_independent_tool_request"]
+
+
+DURABLE_TARGET_PROMPT = """Determine the requested kind of DURABLE object, if one is to be created.
+task: a standalone task-manager item such as a reminder or tracked to-do.
+plan: a saved ordered set of actions that retains a multi-step execution structure.
+Judge the user-requested persisted structure, not the document title,
+isolated nouns, or what the Host is presently able to execute.
+This judgment is semantic only and grants no authority."""
+
+PENDING_RELATION_PROMPT = """The Host has a trusted bound pending tool
+request with a specific missing field. Determine whether the CURRENT message
+is answering that missing field of the existing request, or initiates a
+separate new tool request. A newly worded instruction can still be a reply
+to Pending; an unrelated request does not become a Pending reply just
+because Pending exists. This judgment is semantic, not permission."""
+
+async def disambiguate_semantic_object(provider, model, context, initial, timeout):
+    """Independent model-only boundary check; never infer Host authorization.
+
+    Invoke only on genuinely overlapping object families. If the second
+    model cannot establish a choice, retain the first-stage result rather
+    than replacing it with a state-dependent or keyword-based guess.
+    """
+    if initial == "task":
+        schema = DurableCreateTarget
+        system = DURABLE_TARGET_PROMPT
+        result_key = "target"
+    elif initial == "plan_step":
+        schema = SavedStepIntent
+        system = SAVED_STEP_INTENT_PROMPT
+        result_key = "intent"
+    elif initial == "tool" and context["trusted_host_state"]["pending_tool_request_bound"]:
+        schema = PendingRelation
+        system = PENDING_RELATION_PROMPT
+        result_key = "relation"
+    else:
+        return initial
+    try:
+        raw = await asyncio.wait_for(provider.complete(
+            model=model, response_schema=schema.model_json_schema(),
+            messages=[{"role": "system", "content": system},
+                      {"role": "user", "content": json.dumps(
+                          context, ensure_ascii=False)}]), timeout=timeout)
+        decision = schema.model_validate_json(raw)
+    except Exception:
+        return initial
+    selected = getattr(decision, result_key)
+    if initial == "task":
+        return selected
+    if initial == "plan_step":
+        # No scope/permission guessed from checkpoint data. An ambiguous
+        # second opinion preserves the original classification.
+        return "plan" if selected == "execute_existing_step" else "plan_step"
+    return ("pending_slot" if selected == "supply_bound_argument" else "tool")
+
+
+OPERATION_BY_OBJECT = {
+    "none": NoneOperation,
+    "task": TaskOperation,
+    "tool": ToolOperation,
+    "plan": PlanOperation,
+    "plan_step": PlanStepOperation,
+    "pending_slot": PendingOperation,
+}
+
+OBJECT_PROMPT = """Identify the semantic TARGET of the CURRENT user request; do not choose an operation.
+none: conversational answer, clarification or text-only unsaved draft.
+Decide the user's requested NEXT INTERACTION, not merely the topic mentioned.
+When the requested next action is to ask the user a question, select none:
+the mentioned future object action is context, not the current action.
+Do not confuse a request TO CLARIFY with a request to carry out an
+already-chosen operation whose arguments are incomplete. The latter retains
+its business target so the Host can validate missing arguments.
+Conversely, a real content edit must remain plan_step even if Host cannot
+validate the saved-step reference; semantic labels never indicate permission.
+task: persisted task-manager item, NOT a generic instruction.
+tool: calculator, retrieval, shell or another requested tool operation.
+plan: a persistent ordered plan as a whole. Requests to run its first step,
+continue its remaining steps, create it or cancel it ALL target plan.
+Choose the object from the intended action, not surface nouns.
+Changing the wording of saved steps is different from performing saved actions.
+Restricting which portion of a plan runs does not edit its stored content.
+The ordinal "first" denotes an execution SCOPE, not a separate object.
+plan_step: editing/replacing the CONTENT of a particular saved step;
+not running a step, or continuing a plan.
+pending_slot: a CURRENT reply supplying a requested missing tool argument,
+or canceling the pending request. Use the trusted context only to understand
+what is being replied to, not to assume every message concerns the pending
+request. A new independent tool request still targets tool.
+An instruction to use an external capability is not a text-only answer even
+when its eventual result can be expressed as text. Do not let a pending
+interaction hide a separate request on the current turn.
+Do not mistake saved plan context for an instruction to modify that plan.
+A request to resume a plan targets plan even if Host reports no saved plan.
+A request for a tool targets tool even if Host reports no registered tool.
+Neither object existence nor execution feasibility is a semantic category.
+An unsaved textual draft is none; only explicit persistent task-management
+requests target task.
+This is an interpretation only, never authorization."""
+
+OP_PROMPT = """For the selected semantic object, identify the CURRENT requested operation.
+The operation describes the BUSINESS EFFECT on the selected object, not
+the everyday verb used to ask for words or content.
+none: answer means produce a conversational answer, a draft, a rewritten
+passage, a proposed outline, or any text delivered only in this conversation.
+none: clarify means request missing information from the user.
+create means establishing a durable task or saved plan object (task/plan).
+Generating new text is answer, not create, even when the user says to write,
+compose or draft it. No persistence effect exists for object none.
+task: create a persistent task. tool: invoke a tool.
+plan: create a new persistent plan; execute_first starts the first
+step (whether or not the plan actually exists); resume continues unfinished
+steps after earlier steps; cancel stops a plan. plan_step: revise step content.
+A request to run the first step is execute_first, not resume; a request to
+continue the remainder is resume, not execute_first.
+pending_slot: invoke the paused tool with a supplied argument, or cancel it.
+A pending_slot reply filling the missing argument is invoke; a request
+to abandon that pending interaction is cancel. An independent tool request
+is invoke even when its parameters are unavailable or the tool is absent:
+the Host, not the classifier, decides whether clarification is needed. First-step execution is not resuming remaining steps.
+Classify the action the user REQUESTED, not the action currently allowed.
+Do not infer permissions."""
+
+
+PLAN_SCOPE_PROMPT = """For a plan object, separate the REQUESTED EXECUTION SCOPE from
+the existence or previous status of a saved plan. This is a semantic judgement.
+execute_first: run ONLY the first step or initial phase, leaving other steps
+untouched. A saved plan does not turn a first-step request into resume.
+resume: continue the remaining unfinished steps after previous progress.
+The target is the rest of the plan, not its first item.
+If saved plan status conflicts with the request, retain the requested
+operation; the Host validates existence, progress and authorization.
+Select based on the requested scope rather than verb choice or state.
+"""
+
+def _context(message, facts):
+    pending_bound = bool(
+        facts.pending_action and facts.pending_field
+        and facts.pending_original_request_bound
+    )
+    return {
+        "message": message,
+        "trusted_host_state": {
+            "saved_plan_exists": bool(facts.has_plan),
+            "saved_plan_step_count": len(facts.plan_states),
+            "pending_tool_request_bound": pending_bound,
+            "pending_missing_field": facts.pending_field if pending_bound else None,
+            "pending_tool_action": facts.pending_action if pending_bound else None,
+        },
+        "context_rule": (
+            "Host state is evidence for reference resolution, not a restriction "
+            "on what semantic request the user can express. A pending request "
+            "does not prevent an unrelated new request."
+        ),
+    }
+
+
+def _intent_context(context):
+    """Separate plan existence/progress (Host authority) from request intent.
+
+    Keep pending-request metadata: it is needed to resolve whether the user's
+    current message answers a bound pending slot. Plan availability, unlike
+    that conversational reference, does not define the requested object.
+    """
+    state = dict(context["trusted_host_state"])
+    state.pop("saved_plan_exists", None)
+    state.pop("saved_plan_step_count", None)
+    return {**context, "trusted_host_state": state}
+
+
+async def classify_hierarchical_diagnostic(
+    provider, model, message, facts, timeout=60
+):
+    """Both stages are model-driven; preserve partial stage evidence."""
+    context = _context(message, facts)
+    try:
+        raw = await asyncio.wait_for(provider.complete(
+            model=model, response_schema=ObjectChoice.model_json_schema(),
+            messages=[{"role": "system", "content": OBJECT_PROMPT},
+                      {"role": "user", "content": json.dumps(
+                          _intent_context(context), ensure_ascii=False)}]), timeout=timeout)
+        obj = ObjectChoice.model_validate_json(raw)
+    except Exception as exc:
+        return HierarchicalDiagnostic(None, None, "object", type(exc).__name__)
+    if obj.object_type in ("plan", "plan_step"):
+        try:
+            action_pair = await judge_plan_action(provider, model, context, timeout)
+        except Exception as exc:
+            return HierarchicalDiagnostic(
+                obj.object_type, None, "plan_action", type(exc).__name__)
+        if action_pair is None:
+            return HierarchicalDiagnostic(
+                obj.object_type, None, "plan_action", "UncertainPlanAction")
+        return HierarchicalDiagnostic(*action_pair)
+    resolved_object = await disambiguate_semantic_object(
+        provider, model, context, obj.object_type, timeout)
+    if resolved_object == "plan":
+        try:
+            pair = await judge_plan_action(provider, model, context, timeout)
+        except Exception as exc:
+            return HierarchicalDiagnostic(
+                resolved_object, None, "plan_action", type(exc).__name__)
+        if pair is None:
+            return HierarchicalDiagnostic(
+                resolved_object, None, "plan_action", "UncertainPlanAction")
+        return HierarchicalDiagnostic(*pair)
+    try:
+        operation_schema = OPERATION_BY_OBJECT[resolved_object]
+        raw_op = await asyncio.wait_for(provider.complete(
+            model=model, response_schema=operation_schema.model_json_schema(),
+            messages=[{"role": "system", "content": (
+                          OP_PROMPT + PLAN_SCOPE_PROMPT
+                          if resolved_object == "plan" else OP_PROMPT)},
+                      {"role": "user", "content": json.dumps({
+                          **context, "selected_object": resolved_object},
+                          ensure_ascii=False)}]), timeout=timeout)
+        op = operation_schema.model_validate_json(raw_op)
+    except Exception as exc:
+        return HierarchicalDiagnostic(
+            resolved_object, None, "operation", type(exc).__name__)
+    return HierarchicalDiagnostic(resolved_object, op.operation)
+
+
+async def classify_hierarchical(provider, model, message, facts, timeout=60):
+    """Legacy core-result adapter. Never returns a partial result as valid."""
+    diagnostic = await classify_hierarchical_diagnostic(
+        provider, model, message, facts, timeout)
+    if diagnostic.failure_stage is not None:
+        raise HierarchicalStageError(
+            diagnostic.failure_stage, diagnostic.object_type,
+            diagnostic.error_class or "UnknownError")
+    assert diagnostic.object_type is not None
+    assert diagnostic.operation is not None
+    return CoreIntent(
+        object_type=diagnostic.object_type,
+        operation=diagnostic.operation)
+
+
+# Both classification calls are in classify_hierarchical_diagnostic.
+# The legacy adapter intentionally never changes the model's choices.
+
