@@ -12,7 +12,7 @@ EXPECTED_MANIFEST = "418408790481ff9c1e77542b9da7dd8cd740d2d7921a62016d7e5071b91
 
 
 def git(*args):
-    return subprocess.check_output(["git", *args], text=True).strip()
+    return subprocess.check_output(["git", *args]).decode("utf-8", errors="replace").strip()
 
 
 def main():
