@@ -86,6 +86,52 @@ the Host has permission or a valid checkpoint; this decision grants
 no authorization. Use uncertain when intent cannot be established."""
 
 
+class PlanActionDecision(BaseModel):
+    """Single semantic decision for plan actions, independent of Host validity."""
+    model_config = ConfigDict(extra="forbid")
+    action: Literal["create_plan", "execute_first", "resume_remaining",
+                    "edit_step_definition", "cancel_plan", "uncertain"]
+
+
+PLAN_ACTION_PROMPT = """Decide the CURRENT requested action over a saved plan
+or its step definition as ONE semantic decision. The following categories
+are mutually exclusive:
+create_plan: persist a new ordered plan.
+execute_first: START only the first step or initial phase, leaving other
+steps untouched.
+resume_remaining: CONTINUE outstanding work or the remainder of a previously
+started process; does not mean restart the beginning. An explicit assertion
+that no plan exists does not change the requested action.
+edit_step_definition: change the saved instructions, parameters, wording or
+order of a step; does NOT perform the step.
+cancel_plan: stop the existing plan.
+uncertain: the current request does not establish any of these.
+Classify what the user is asking the system to DO, not whether a plan
+exists, whether it has progressed, or what the Host is allowed to do.
+Do not infer actions from isolated step numbers or verb keywords.
+This is an interpretation only and grants no permission."""
+
+
+PLAN_ACTION_MAP = {
+    "create_plan": ("plan", "create"),
+    "execute_first": ("plan", "execute_first"),
+    "resume_remaining": ("plan", "resume"),
+    "edit_step_definition": ("plan_step", "revise"),
+    "cancel_plan": ("plan", "cancel"),
+}
+
+
+async def judge_plan_action(provider, model, context, timeout):
+    """One semantic source of truth for plan scope and editing intent."""
+    raw = await asyncio.wait_for(provider.complete(
+        model=model, response_schema=PlanActionDecision.model_json_schema(),
+        messages=[{"role": "system", "content": PLAN_ACTION_PROMPT},
+                  {"role": "user", "content": json.dumps(
+                      _intent_context(context), ensure_ascii=False)}]), timeout=timeout)
+    result = PlanActionDecision.model_validate_json(raw)
+    return PLAN_ACTION_MAP.get(result.action)
+
+
 class PendingRelation(BaseModel):
     """Independent model judgement about the relationship to bound Pending."""
     model_config = ConfigDict(extra="forbid")
@@ -274,6 +320,16 @@ async def classify_hierarchical_diagnostic(
         obj = ObjectChoice.model_validate_json(raw)
     except Exception as exc:
         return HierarchicalDiagnostic(None, None, "object", type(exc).__name__)
+    if obj.object_type in ("plan", "plan_step"):
+        try:
+            action_pair = await judge_plan_action(provider, model, context, timeout)
+        except Exception as exc:
+            return HierarchicalDiagnostic(
+                obj.object_type, None, "plan_action", type(exc).__name__)
+        if action_pair is None:
+            return HierarchicalDiagnostic(
+                obj.object_type, None, "plan_action", "UncertainPlanAction")
+        return HierarchicalDiagnostic(*action_pair)
     resolved_object = await disambiguate_semantic_object(
         provider, model, context, obj.object_type, timeout)
     try:
