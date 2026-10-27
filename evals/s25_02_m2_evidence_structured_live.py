@@ -126,8 +126,14 @@ async def evaluate(provider, model, case, mode, timeout):
             if candidate and case.prompt.count(candidate) == 1:
                 quote = candidate
                 row["quote_state"] = "unique_exact"
+            elif candidate is None:
+                row["quote_state"] = "model_abstained"
+            elif candidate == "":
+                row["quote_state"] = "empty_quote"
+            elif candidate not in case.prompt:
+                row["quote_state"] = "quote_not_found"
             else:
-                row["quote_state"] = "unavailable"
+                row["quote_state"] = "quote_ambiguous"
         except Exception as exc:
             row["quote_state"] = "model_" + type(exc).__name__
     # Step ordinal is verified deterministically from a UNIQUE literal occurrence.
@@ -135,6 +141,15 @@ async def evaluate(provider, model, case, mode, timeout):
     step_quote = (extract_unique_ordinal(case.prompt)
                   if core.object_type == "plan_step" else None)
     row["step_reference_quote_present"] = bool(step_quote)
+    # Provenance-only fallback: the entire trusted current-turn message is
+    # literal source evidence, NOT inferred permission or a fabricated snippet.
+    # Limited to an unambiguous numbered revision already selected by frozen M2.
+    # Checkpoint revision, step binding and write authority remain Host-owned.
+    if (quote is None and core.object_type == "plan_step"
+            and core.operation == "revise" and step_quote is not None
+            and 0 < len(case.prompt) <= 400):
+        quote = case.prompt
+        row["quote_state"] = "trusted_full_message_revision"
     try:
         proposal = proposal_from_core(core, case.prompt, quote, step_quote)
     except ValueError:
@@ -183,6 +198,7 @@ async def run(args, provider=None):
                 "total": len(rows),
                 "core_correct": sum(r["core_correct"] for r in rows),
                 "quote_exact": sum(r["quote_state"] == "unique_exact" for r in rows),
+                "revision_source_fallback": sum(r["quote_state"] == "trusted_full_message_revision" for r in rows),
                 "expected_disposition_correct": sum(
                     r["disposition"] == r["expected_disposition"] for r in rows),
                 "potentially_admissible": sum(
