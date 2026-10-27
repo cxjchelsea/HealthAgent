@@ -197,26 +197,36 @@ def bind_diagnostic_pending_reference(route: ShadowRoute, *,
     return route.model_copy(update={"reference": reference})
 
 
+def extract_unique_step_ordinal(message: str) -> tuple[str, int] | None:
+    """Literal Chinese/English step reference, unique or abstain.
+
+    This does NOT decide intent, checkpoint binding, or authority.
+    """
+    numbers = {"一": 1, "二": 2, "三": 3, "四": 4,
+               "五": 5, "六": 6, "七": 7, "八": 8}
+    pattern = r"第([一二三四五六七八1-8])步|\\bstep[ \\t]+([1-8])\\b"
+    matches = list(re.finditer(pattern, message, flags=re.IGNORECASE))
+    if len(matches) != 1:
+        return None
+    match = matches[0]
+    token = match.group(1) or match.group(2)
+    number = numbers[token] if token in numbers else int(token)
+    return match.group(0), number
+
+
 def bind_explicit_revision_step(route: ShadowRoute, message: str,
                                 host_facts: Any | None) -> ShadowRoute:
-    """Bind an explicitly numbered saved step, never infer the operation.
-
-    The LLM must already choose plan_revise. Unique exact user ordinal and
-    trusted checkpoint length are required. Missing/conflicting evidence stays
-    unbound; source strings are never copied into diagnostic reports.
-    """
+    """Bind one uniquely written ordinal against a trusted checkpoint."""
     if route.primary_route != "plan_revise" or route.reference.kind != "none":
         return route
     states = getattr(host_facts, "plan_states", ()) if host_facts is not None else ()
     if not (getattr(host_facts, "has_plan", False)
             and getattr(host_facts, "revision_valid", False) and states):
         return route
-    numbers = {"一": 1, "二": 2, "三": 3, "四": 4,
-               "五": 5, "六": 6, "七": 7, "八": 8}
-    matches = re.findall(r"第([一二三四五六七八1-8])步", message)
-    if len(matches) != 1:
+    found = extract_unique_step_ordinal(message)
+    if found is None:
         return route
-    number = numbers.get(matches[0], int(matches[0]) if matches[0].isascii() else 0)
+    _, number = found
     if number > len(states):
         return route
     return route.model_copy(update={
