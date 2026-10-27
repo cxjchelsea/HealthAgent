@@ -70,6 +70,22 @@ class DurableCreateTarget(BaseModel):
     target: Literal["task", "plan"]
 
 
+class SavedStepIntent(BaseModel):
+    """Disambiguate an action ON a step from an edit TO its stored definition."""
+    model_config = ConfigDict(extra="forbid")
+    intent: Literal["execute_existing_step", "edit_saved_step", "uncertain"]
+
+
+SAVED_STEP_INTENT_PROMPT = """Independently judge what the user is asking
+to do to a saved plan. execute_existing_step means carry out the saved
+action or initiate the first phase, without rewriting any stored steps.
+edit_saved_step means change the saved step's description, content,
+order, parameters or definition, without executing it. An action that
+mentions a numbered step is not thereby a content edit. Ignore whether
+the Host has permission or a valid checkpoint; this decision grants
+no authorization. Use uncertain when intent cannot be established."""
+
+
 class PendingRelation(BaseModel):
     """Independent model judgement about the relationship to bound Pending."""
     model_config = ConfigDict(extra="forbid")
@@ -101,6 +117,10 @@ async def disambiguate_semantic_object(provider, model, context, initial, timeou
         schema = DurableCreateTarget
         system = DURABLE_TARGET_PROMPT
         result_key = "target"
+    elif initial == "plan_step":
+        schema = SavedStepIntent
+        system = SAVED_STEP_INTENT_PROMPT
+        result_key = "intent"
     elif initial == "tool" and context["trusted_host_state"]["pending_tool_request_bound"]:
         schema = PendingRelation
         system = PENDING_RELATION_PROMPT
@@ -119,6 +139,10 @@ async def disambiguate_semantic_object(provider, model, context, initial, timeou
     selected = getattr(decision, result_key)
     if initial == "task":
         return selected
+    if initial == "plan_step":
+        # No scope/permission guessed from checkpoint data. An ambiguous
+        # second opinion preserves the original classification.
+        return "plan" if selected == "execute_existing_step" else "plan_step"
     return ("pending_slot" if selected == "supply_bound_argument" else "tool")
 
 
