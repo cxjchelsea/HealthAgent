@@ -10,7 +10,7 @@ class Observer:
     def __init__(self, object_type, operation):
         self.answers = iter([
             {"object_type": object_type},
-            {"operation": operation},
+            {"action": "resume_remaining" if operation == "resume" else "execute_first"},
         ])
         self.payloads = []
 
