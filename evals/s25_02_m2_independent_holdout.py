@@ -56,9 +56,15 @@ def read_sealed_cases(path, minimum=60):
     if payload.get("source_kind") not in {
             "independent_reviewer_sealed", "assistant_authored_new_validation"}:
         raise ValueError("independent_review_origin_required")
+    if not all(isinstance(c, dict) for c in cases):
+        raise ValueError("invalid_case_structure")
     ids = [c["case_id"] for c in cases]
     if len(set(ids)) != len(ids):
         raise ValueError("duplicate_case_ids")
+    if any(type(c.get("critical")) is not bool for c in cases):
+        raise ValueError("critical_annotation_required")
+    if not any(c["critical"] for c in cases):
+        raise ValueError("no_critical_cases")
     parsed = []
     for case in cases:
         if (not isinstance(case["prompt"], str) or not case["prompt"].strip()
@@ -128,8 +134,10 @@ async def run(args):
             else "ASSISTANT_AUTHORED_NEW_VALIDATION_NOT_INDEPENDENT"),
         "source_kind": source_kind,
         "independence_verified": False,
+        "reviewer_attestation_required": True,
         "independence_note": "External reviewer identity and authorship require separate human verification.",
         "code_sha": sha, "branch": branch,
+        "model_provider": settings.model_provider,
         "manifest_sha256": manifest,
         "model": settings.understanding_strong_model,
         "complete": complete, "critical_ok": critical_ok,
