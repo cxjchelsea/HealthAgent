@@ -62,7 +62,7 @@ def read_sealed_cases(path, minimum=60):
             raise ValueError("unknown_host_field")
         facts = ShadowHostFacts(**{**raw_facts,
              "plan_states": tuple(raw_facts.get("plan_states", ()))})
-        parsed.append(SimpleNamespace(**case, facts=facts))
+        parsed.append(SimpleNamespace(**{**case, "facts": facts}))
     return parsed, digest
 
 
