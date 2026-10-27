@@ -64,11 +64,14 @@ def test_both_stages_use_model_without_rewriting_semantics():
 
 def test_pending_is_bound_context_not_forced_route():
     provider = FakeProvider(['{"object_type":"tool"}',
+                             '{"relation":"new_independent_tool_request"}',
                              '{"operation":"invoke"}'])
     result = asyncio.run(classify_hierarchical(
         provider, "qwen3:14b", "另外计算另一道题", facts(pending=True), 5))
     assert (result.object_type, result.operation) == ("tool", "invoke")
+    assert len(provider.calls) == 3
     assert "pending_tool_request_bound" in provider.calls[0]["messages"][1]["content"]
+    assert "new_independent_tool_request" in str(provider.calls[1]["response_schema"])
 
 
 def test_stage_one_survives_stage_two_failure():
