@@ -160,6 +160,16 @@ def assert_manifest_frozen() -> None:
 def score_gate(rows: list[dict]) -> dict:
     """两轮分别达到阈值，且关键句两轮都通过。不降低门槛。"""
     repetitions = sorted({row["repetition"] for row in rows})
+    required = {c.case_id for c in CASES}
+    complete = (
+        len(rows) == 2 * len(CASES)
+        and repetitions == [1, 2]
+        and all(
+            len([r for r in rows if r["repetition"] == n]) == len(CASES)
+            and {r["case_id"] for r in rows if r["repetition"] == n} == required
+            for n in (1, 2)
+        )
+    )
     per_repetition = []
     failed = []
     for repetition in repetitions:
@@ -181,7 +191,7 @@ def score_gate(rows: list[dict]) -> dict:
         len(per_repetition) >= REQUIRED_REPETITIONS
         and all(item["pass_rate"] >= MIN_PASS_RATE for item in per_repetition)
     )
-    passed_gate = bool(rate_ok and critical_ok and no_unwanted_admission and no_authority)
+    passed_gate = bool(complete and rate_ok and critical_ok and no_unwanted_admission and no_authority)
     return {
         "predeclared_gate": "PASS" if passed_gate else "HOLD",
         "m2_gate": "HOLD",
@@ -189,6 +199,7 @@ def score_gate(rows: list[dict]) -> dict:
         "cohort": "predeclared_v1_not_third_party",
         "per_repetition": per_repetition,
         "critical_ok": critical_ok,
+        "complete_manifest": complete,
         "failed_case_ids": sorted(set(failed)),
         "limitations": [
             "同一作者在看到分类提示词之后封存的句子，不是第三方盲测。",
