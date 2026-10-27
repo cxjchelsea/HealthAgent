@@ -90,7 +90,7 @@ def test_disambiguator_failure_retains_first_stage_without_authority():
 
 def test_no_change_to_original_object_prompt_or_plan_execution():
     assert "The ordinal \"first\" denotes an execution SCOPE" in OBJECT_PROMPT
-    p = Provider([{"object_type": "plan"}, {"operation": "execute_first"}])
+    p = Provider([{"object_type": "plan"}, {"action": "execute_first"}])
     out = run(p, "先只执行保存计划的第一步", facts(has_plan=True))
     assert (out.object_type, out.operation) == ("plan", "execute_first")
     assert len(p.calls) == 2
