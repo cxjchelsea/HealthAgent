@@ -59,8 +59,7 @@ def test_edit_saved_step_remains_revision():
                {"action": "edit_step_definition"}])
     result = asyncio.run(classify_hierarchical_diagnostic(
         p, "fixture", "把流程第一步的说明换成夜间版本", facts, 2))
-    assert result.failure_stage == "plan_action"
-    assert result.operation is None
+    assert (result.object_type, result.operation) == ("plan_step", "revise")
 
 
 def test_uncertain_step_action_does_not_gain_execute_route():
