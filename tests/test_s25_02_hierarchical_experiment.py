@@ -128,9 +128,21 @@ def test_operation_contract_differentiates_chat_generation_and_persistence():
 
 def test_model_selected_operation_is_never_silently_overridden():
     provider = FakeProvider(['{"object_type":"none"}', '{"operation":"create"}'])
-    result = asyncio.run(classify_hierarchical(
+    result = asyncio.run(classify_hierarchical_diagnostic(
         provider, "qwen3:14b", "写一个不保存的邮件草稿", facts(), 5))
-    assert (result.object_type, result.operation) == ("none", "create")
+    assert result.object_type == "none"
+    assert result.operation is None
+    assert result.failure_stage == "operation"
+    assert result.error_class == "ValidationError"
+
+
+def test_legacy_adapter_fails_closed_for_out_of_scope_operation():
+    provider = FakeProvider(['{"object_type":"none"}', '{"operation":"create"}'])
+    with pytest.raises(HierarchicalStageError) as error:
+        asyncio.run(classify_hierarchical(
+            provider, "qwen3:14b", "写一个不保存的邮件草稿", facts(), 5))
+    assert error.value.stage == "operation"
+    assert error.value.object_type == "none"
 
 
 def test_second_stage_schema_is_scoped_by_model_selected_object():
