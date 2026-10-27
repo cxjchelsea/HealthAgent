@@ -84,6 +84,10 @@ its business target so the Host can validate missing arguments.
 Conversely, a real content edit must remain plan_step even if Host cannot
 validate the saved-step reference; semantic labels never indicate permission.
 task: persisted task-manager item, NOT a generic instruction.
+A single tracked to-do or reminder is a task. A durable sequence of
+separately ordered actions is a plan, even if the user calls it a job,
+task, or checklist. Decide by the requested stored structure and action,
+not by the everyday noun. A text-only sequence without saving remains none.
 tool: calculator, retrieval, shell or another requested tool operation.
 plan: a persistent ordered plan as a whole. Requests to run its first step,
 continue its remaining steps, create it or cancel it ALL target plan.
@@ -93,6 +97,10 @@ Restricting which portion of a plan runs does not edit its stored content.
 The ordinal "first" denotes an execution SCOPE, not a separate object.
 plan_step: editing/replacing the CONTENT of a particular saved step;
 not running a step, or continuing a plan.
+First determine whether this turn is answering the uniquely bound missing
+field of an existing Pending request, or requesting a different NEW tool
+operation. If the response supplies the bound field, target pending_slot;
+a separate tool call targets tool. Host context is evidence, not authority.
 pending_slot: a CURRENT reply supplying a requested missing tool argument,
 or canceling the pending request. Use the trusted context only to understand
 what is being replied to, not to assume every message concerns the pending
