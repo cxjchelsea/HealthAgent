@@ -177,3 +177,26 @@ def test_plan_scope_still_leaves_first_vs_resume_to_model():
     result = asyncio.run(classify_hierarchical_diagnostic(
         provider, "qwen3:14b", "只执行第一步", facts(plan=True), 5))
     assert (result.object_type, result.operation) == ("plan", "resume")
+
+
+def test_plan_scope_guidance_is_sent_only_for_plan_object():
+    from agent.route_semantic_hierarchical import PLAN_SCOPE_PROMPT
+
+    for object_type, operation in (("plan", "execute_first"), ("tool", "invoke")):
+        provider = FakeProvider([
+            '{"object_type":"' + object_type + '"}',
+            '{"operation":"' + operation + '"}',
+        ])
+        result = asyncio.run(classify_hierarchical_diagnostic(
+            provider, "qwen3:14b", "只执行第一阶段", facts(plan=True), 5))
+        assert result.failure_stage is None
+        system_prompt = provider.calls[1]["messages"][0]["content"]
+        assert (PLAN_SCOPE_PROMPT in system_prompt) is (object_type == "plan")
+
+
+def test_first_step_scope_is_not_overridden_by_host_plan_state():
+    provider = FakeProvider(['{"object_type":"plan"}', '{"operation":"execute_first"}'])
+    result = asyncio.run(classify_hierarchical_diagnostic(
+        provider, "qwen3:14b", "先做计划的第一步", facts(plan=True), 5))
+    assert (result.object_type, result.operation) == ("plan", "execute_first")
+    assert len(provider.calls) == 2
