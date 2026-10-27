@@ -84,10 +84,6 @@ its business target so the Host can validate missing arguments.
 Conversely, a real content edit must remain plan_step even if Host cannot
 validate the saved-step reference; semantic labels never indicate permission.
 task: persisted task-manager item, NOT a generic instruction.
-A single tracked to-do or reminder is a task. A durable sequence of
-separately ordered actions is a plan, even if the user calls it a job,
-task, or checklist. Decide by the requested stored structure and action,
-not by the everyday noun. A text-only sequence without saving remains none.
 tool: calculator, retrieval, shell or another requested tool operation.
 plan: a persistent ordered plan as a whole. Requests to run its first step,
 continue its remaining steps, create it or cancel it ALL target plan.
