@@ -75,6 +75,14 @@ OPERATION_BY_OBJECT = {
 
 OBJECT_PROMPT = """Identify the semantic TARGET of the CURRENT user request; do not choose an operation.
 none: conversational answer, clarification or text-only unsaved draft.
+Decide the user's requested NEXT INTERACTION, not merely the topic mentioned.
+When the requested next action is to ask the user a question, select none:
+the mentioned future object action is context, not the current action.
+Do not confuse a request TO CLARIFY with a request to carry out an
+already-chosen operation whose arguments are incomplete. The latter retains
+its business target so the Host can validate missing arguments.
+Conversely, a real content edit must remain plan_step even if Host cannot
+validate the saved-step reference; semantic labels never indicate permission.
 task: persisted task-manager item, NOT a generic instruction.
 tool: calculator, retrieval, shell or another requested tool operation.
 plan: a persistent ordered plan as a whole. Requests to run its first step,
