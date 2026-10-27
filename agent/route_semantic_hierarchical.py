@@ -117,6 +117,19 @@ the Host, not the classifier, decides whether clarification is needed. First-ste
 Classify the action the user REQUESTED, not the action currently allowed.
 Do not infer permissions."""
 
+
+PLAN_SCOPE_PROMPT = """For a plan object, separate the REQUESTED EXECUTION SCOPE from
+the existence or previous status of a saved plan. This is a semantic judgement.
+execute_first: run ONLY the first step / initial phase, leaving other steps
+untouched. 中文：只执行第一步、从第一阶段开始、先运行第一项，即使计划已保存，
+也属于首次步骤的限定执行范围，不能因为“已保存”而判定为 resume。
+resume: continue remaining / unfinished steps after previous progress.
+中文：接着执行剩余步骤、继续未完成的后续部分，目标是余下步骤而非首项。
+If saved plan status conflicts with the request, retain the requested
+operation; the Host validates existence, progress and authorization.
+Select based on the requested scope rather than verb choice or state.
+"""
+
 def _context(message, facts):
     pending_bound = bool(
         facts.pending_action and facts.pending_field
@@ -157,7 +170,9 @@ async def classify_hierarchical_diagnostic(
         operation_schema = OPERATION_BY_OBJECT[obj.object_type]
         raw_op = await asyncio.wait_for(provider.complete(
             model=model, response_schema=operation_schema.model_json_schema(),
-            messages=[{"role": "system", "content": OP_PROMPT},
+            messages=[{"role": "system", "content": (
+                          OP_PROMPT + PLAN_SCOPE_PROMPT
+                          if obj.object_type == "plan" else OP_PROMPT)},
                       {"role": "user", "content": json.dumps({
                           **context, "selected_object": obj.object_type},
                           ensure_ascii=False)}]), timeout=timeout)
