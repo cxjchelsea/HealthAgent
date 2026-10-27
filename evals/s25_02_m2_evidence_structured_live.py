@@ -16,6 +16,7 @@ from agent.route_semantic_hierarchical import classify_hierarchical_diagnostic
 from agent.route_semantic_preview import ROUTE_BY_CORE
 from agent.route_semantic_evidence import verify_core_evidence
 from agent.route_shadow import ShadowRoute, QuoteEvidence
+from evals.s25_02_m2_plan_step_quotes import collect_ordered_step_quotes
 from agent.route_shadow_host import ShadowHostFacts, trusted_tool_effect
 from evals.s25_02_m2_hierarchical_boundary_cases import CASES
 from evals.s25_02_m2_semantic_evidence_live import (
@@ -62,7 +63,7 @@ def compiled_effect(core, route, facts):
     return "none"
 
 
-def proposal_from_core(core, message, quote, step_quote, facts=None):
+def proposal_from_core(core, message, quote, step_quote, facts=None, plan_steps=None):
     """Construct one consistent route mechanically; neither quote changes it."""
     pair = (core.object_type, core.operation)
     route = ROUTE_BY_CORE.get(pair)
@@ -98,7 +99,7 @@ def proposal_from_core(core, message, quote, step_quote, facts=None):
         route_target=target, execution_scope=scope, effect_intent=effect,
         ambiguity="clear", clarification=clarification,
         source_quote_evidence=quote_items,
-        plan_step_quote_evidence=step_items,
+        plan_step_quote_evidence=plan_steps if plan_steps is not None else step_items,
     )
 
 
@@ -165,8 +166,17 @@ async def evaluate(provider, model, case, mode, timeout):
             and 0 < len(case.prompt) <= 400):
         quote = case.prompt
         row["quote_state"] = "trusted_full_message_revision"
+    plan_steps = None
+    if (core.object_type, core.operation) == ("plan", "create"):
+        try:
+            plan_steps = await collect_ordered_step_quotes(
+                provider, model, case.prompt, timeout)
+        except Exception:
+            plan_steps = []
+        row["plan_step_quotes"] = len(plan_steps)
     try:
-        proposal = proposal_from_core(core, case.prompt, quote, step_quote, facts)
+        proposal = proposal_from_core(core, case.prompt, quote, step_quote,
+                                      facts, plan_steps=plan_steps)
     except ValueError:
         row["reason"] = "invalid_core_pair"
         return row
