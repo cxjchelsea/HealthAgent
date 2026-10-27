@@ -54,12 +54,12 @@ def facts(*, pending=False, plan=False):
 
 def test_both_stages_use_model_without_rewriting_semantics():
     provider = FakeProvider(['{"object_type":"plan"}',
-                             '{"operation":"resume"}'])
+                             '{"action":"resume_remaining"}'])
     result = asyncio.run(classify_hierarchical(
         provider, "qwen3:14b", "继续剩余步骤", facts(), 5))
     assert (result.object_type, result.operation) == ("plan", "resume")
     assert len(provider.calls) == 2
-    assert "saved_plan_exists" in provider.calls[0]["messages"][1]["content"]
+    assert "saved_plan_exists" not in provider.calls[0]["messages"][1]["content"]
 
 
 def test_pending_is_bound_context_not_forced_route():
@@ -80,7 +80,7 @@ def test_stage_one_survives_stage_two_failure():
         provider, "qwen3:14b", "恢复计划", facts(plan=True), 5))
     assert result.object_type == "plan"
     assert result.operation is None
-    assert result.failure_stage == "operation"
+    assert result.failure_stage == "plan_action"
     assert result.error_class == "TimeoutError"
 
 
@@ -88,7 +88,7 @@ def test_adapter_rejects_partial_stage_result():
     provider = FakeProvider(['{"object_type":"plan"}', "{}"])
     with pytest.raises(HierarchicalStageError) as error:
         asyncio.run(classify_hierarchical(provider, "qwen3:14b", "恢复计划", facts(), 5))
-    assert error.value.stage == "operation"
+    assert error.value.stage == "plan_action"
     assert error.value.object_type == "plan"
 
 
@@ -176,7 +176,7 @@ def test_out_of_scope_model_operation_is_reported_not_rewritten():
 
 
 def test_plan_scope_still_leaves_first_vs_resume_to_model():
-    provider = FakeProvider(['{"object_type":"plan"}', '{"operation":"resume"}'])
+    provider = FakeProvider(['{"object_type":"plan"}', '{"action":"resume_remaining"}'])
     result = asyncio.run(classify_hierarchical_diagnostic(
         provider, "qwen3:14b", "只执行第一步", facts(plan=True), 5))
     assert (result.object_type, result.operation) == ("plan", "resume")
@@ -194,22 +194,23 @@ def test_curated_boundary_sentences_are_absent_from_classifier_prompts():
 
 
 def test_plan_scope_guidance_is_sent_only_for_plan_object():
-    from agent.route_semantic_hierarchical import PLAN_SCOPE_PROMPT
+    from agent.route_semantic_hierarchical import PLAN_ACTION_PROMPT
 
     for object_type, operation in (("plan", "execute_first"), ("tool", "invoke")):
         provider = FakeProvider([
             '{"object_type":"' + object_type + '"}',
-            '{"operation":"' + operation + '"}',
+            ('{"action":"' + operation + '"}' if object_type == "plan"
+             else '{"operation":"' + operation + '"}'),
         ])
         result = asyncio.run(classify_hierarchical_diagnostic(
             provider, "qwen3:14b", "只执行第一阶段", facts(plan=True), 5))
         assert result.failure_stage is None
         system_prompt = provider.calls[1]["messages"][0]["content"]
-        assert (PLAN_SCOPE_PROMPT in system_prompt) is (object_type == "plan")
+        assert (PLAN_ACTION_PROMPT == system_prompt) is (object_type == "plan")
 
 
 def test_first_step_scope_is_not_overridden_by_host_plan_state():
-    provider = FakeProvider(['{"object_type":"plan"}', '{"operation":"execute_first"}'])
+    provider = FakeProvider(['{"object_type":"plan"}', '{"action":"execute_first"}'])
     result = asyncio.run(classify_hierarchical_diagnostic(
         provider, "qwen3:14b", "先做计划的第一步", facts(plan=True), 5))
     assert (result.object_type, result.operation) == ("plan", "execute_first")
