@@ -37,13 +37,14 @@ def test_task_vs_plan_second_model_then_operation():
     p = Provider([
         {"object_type": "task"},
         {"target": "plan"},
-        {"operation": "create"},
+        {"action": "create_plan"},
     ])
     out = run(p, "存档一个分阶段巡检流程，今后按顺序执行", facts())
     assert (out.object_type, out.operation) == ("plan", "create")
     assert len(p.calls) == 3
-    assert p.calls[2]["response_schema"]["properties"]["operation"]["enum"] == [
-        "create", "execute_first", "resume", "cancel"]
+    assert set(p.calls[2]["response_schema"]["properties"]["action"]["enum"]) == {
+        "create_plan", "execute_first", "resume_remaining",
+        "edit_step_definition", "cancel_plan", "uncertain"}
 
 
 def test_true_task_remains_task():
