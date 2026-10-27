@@ -30,7 +30,9 @@ def main():
     branch = git("branch", "--show-current")
     if branch != a.expected_branch:
         parser.error(f"wrong branch: {branch}")
-    if a.expected_sha and sha != a.expected_sha:\n        parser.error(f"wrong HEAD: {sha}")\n    dirty = git("status", "--porcelain", "--untracked-files=no")
+    if a.expected_sha and sha != a.expected_sha:
+        parser.error(f"wrong HEAD: {sha}")
+    dirty = git("status", "--porcelain", "--untracked-files=no")
     if dirty:
         parser.error("tracked working tree has uncommitted modifications")
     runner = Path(a.runner)
@@ -44,7 +46,8 @@ def main():
     report = json.loads(dest.read_text(encoding="utf-8"))
     if not report.get("complete") or report.get("manifest_sha256") != EXPECTED_MANIFEST:
         raise ValueError("incomplete or mismatched known development report")
-    report["legacy_reported_candidate_sha"] = report.get("candidate_sha")\n    report["evaluated_expected_sha"] = a.expected_sha or sha
+    report["legacy_reported_candidate_sha"] = report.get("candidate_sha")
+    report["evaluated_expected_sha"] = a.expected_sha or sha
     report["candidate_sha"] = sha
     report["git_branch"] = branch
     report["provenance_method"] = "git_rev_parse_HEAD_verified_clean_tracked_tree"
