@@ -270,7 +270,7 @@ async def classify_hierarchical_diagnostic(
             model=model, response_schema=ObjectChoice.model_json_schema(),
             messages=[{"role": "system", "content": OBJECT_PROMPT},
                       {"role": "user", "content": json.dumps(
-                          context, ensure_ascii=False)}]), timeout=timeout)
+                          _intent_context(context), ensure_ascii=False)}]), timeout=timeout)
         obj = ObjectChoice.model_validate_json(raw)
     except Exception as exc:
         return HierarchicalDiagnostic(None, None, "object", type(exc).__name__)
