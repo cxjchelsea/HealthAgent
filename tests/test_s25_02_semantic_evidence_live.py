@@ -44,7 +44,7 @@ def shadow(message):
 def test_full_chain_preserves_preview_only():
     c = case()
     p = Provider(['{"object_type":"plan"}',
-                  '{"operation":"execute_first"}', shadow(c.prompt)])
+                  '{"action":"execute_first"}', shadow(c.prompt)])
     result = asyncio.run(evaluate_case(p, "qwen3:14b", c, 5))
     assert len(p.calls) == 3
     assert result["core_correct"]
@@ -59,7 +59,7 @@ def test_model_route_conflict_never_rewrites_core():
         primary_route="respond", route_target="none",
         execution_scope="none", effect_intent="none", ambiguity="clear").model_dump_json()
     p = Provider(['{"object_type":"plan"}',
-                  '{"operation":"execute_first"}', wrong])
+                  '{"action":"execute_first"}', wrong])
     result = asyncio.run(evaluate_case(p, "qwen3:14b", c, 5))
     assert result["reason"] == "core_route_conflict"
     assert result["host_authorization"] is False
@@ -68,11 +68,11 @@ def test_model_route_conflict_never_rewrites_core():
 def test_invalid_evidence_schema_and_partial_core_fail_closed():
     c = case()
     p = Provider(['{"object_type":"plan"}',
-                  '{"operation":"execute_first"}', '{"malformed":true}'])
+                  '{"action":"execute_first"}', '{"malformed":true}'])
     result = asyncio.run(evaluate_case(p, "qwen3:14b", c, 5))
     assert result["evidence_state"] == "unavailable"
     assert result["disposition"] == "deny"
-    p2 = Provider(['{"object_type":"plan"}', '{"operation":"invoke"}'])
+    p2 = Provider(['{"object_type":"plan"}', '{"action":"uncertain"}'])
     result2 = asyncio.run(evaluate_case(p2, "qwen3:14b", c, 5))
     assert len(p2.calls) == 2
     assert result2["evidence_state"] == "not_attempted"
@@ -81,7 +81,7 @@ def test_invalid_evidence_schema_and_partial_core_fail_closed():
 
 def test_quote_observability_without_host_authority():
     c = case()
-    p = Provider(['{"object_type":"plan"}', '{"operation":"execute_first"}',
+    p = Provider(['{"object_type":"plan"}', '{"action":"execute_first"}',
                   shadow(c.prompt)])
     result = asyncio.run(evaluate_case(p, "qwen3:14b", c, 5))
     assert result["quote_evidence_count"] == 1
