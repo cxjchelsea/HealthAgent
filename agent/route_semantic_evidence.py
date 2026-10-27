@@ -57,6 +57,8 @@ def verify_core_evidence(
     if expected_route in {"plan_execute_first", "plan_resume", "plan_revise"}:
         if not facts.has_plan:
             return VerifiedCorePreview(expected_route, "deny", "missing_saved_plan")
+    if expected_route == "plan_revise" and not facts.revision_valid:
+        return VerifiedCorePreview(expected_route, "needs_evidence", "checkpoint_revision_unverified")
     if proposal.ambiguity != "clear":
         return VerifiedCorePreview(expected_route, "deny", "ambiguous_route")
 
@@ -72,8 +74,13 @@ def verify_core_evidence(
         verify_trusted_reference(
             bound, pending_field=facts.pending_field, host_facts=facts)
         validate_semantic_grounding(bound, message)
-    except ValueError:
-        return VerifiedCorePreview(expected_route, "deny", "reference_or_source_invalid")
+    except ValueError as exc:
+        safe = {"shadow_quote_not_found": "source_quote_not_found",
+                "shadow_quote_ambiguous": "source_quote_ambiguous",
+                "shadow_revision_step_out_of_range": "revision_step_out_of_range",
+                "shadow_revision_step_unverified": "revision_step_unverified",
+                "shadow_pending_field_conflict": "pending_field_conflict"}
+        return VerifiedCorePreview(expected_route, "deny", safe.get(str(exc), "reference_or_source_invalid"))
 
     # No effectful preview may proceed from fabricated or absent user quotes.
     if expected_route not in {"respond", "clarify"} and not bound.source_evidence:
