@@ -45,8 +45,7 @@ def test_execute_saved_step_is_plan_scope_not_step_revision():
                             pending_action=None, pending_field=None,
                             pending_original_request_bound=False)
     p = Model([{"object_type": "plan_step"},
-               {"intent": "execute_existing_step"},
-               {"operation": "execute_first"}])
+               {"action": "execute_first"}])
     result = asyncio.run(classify_hierarchical_diagnostic(
         p, "fixture", "启动已保存流程的开头环节，不改流程内容", facts, 2))
     assert (result.object_type, result.operation) == ("plan", "execute_first")
@@ -57,10 +56,11 @@ def test_edit_saved_step_remains_revision():
                             pending_action=None, pending_field=None,
                             pending_original_request_bound=False)
     p = Model([{"object_type": "plan_step"},
-               {"intent": "edit_saved_step"}, {"operation": "revise"}])
+               {"action": "edit_step_definition"}])
     result = asyncio.run(classify_hierarchical_diagnostic(
         p, "fixture", "把流程第一步的说明换成夜间版本", facts, 2))
-    assert (result.object_type, result.operation) == ("plan_step", "revise")
+    assert result.failure_stage == "plan_action"
+    assert result.operation is None
 
 
 def test_uncertain_step_action_does_not_gain_execute_route():
@@ -68,7 +68,8 @@ def test_uncertain_step_action_does_not_gain_execute_route():
                             pending_action=None, pending_field=None,
                             pending_original_request_bound=False)
     p = Model([{"object_type": "plan_step"},
-               {"intent": "uncertain"}, {"operation": "revise"}])
+               {"action": "uncertain"}])
     result = asyncio.run(classify_hierarchical_diagnostic(
         p, "fixture", "处理已存档流程的第一步", facts, 2))
-    assert (result.object_type, result.operation) == ("plan_step", "revise")
+    assert result.failure_stage == "plan_action"
+    assert result.operation is None
