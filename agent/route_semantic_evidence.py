@@ -13,7 +13,9 @@ from agent.route_shadow import (
     bind_diagnostic_pending_reference, verify_source_spans,
     verify_trusted_reference, validate_semantic_grounding,
 )
-from agent.route_shadow_host import ShadowHostFacts, preview_admission
+from agent.route_shadow_host import (
+    ShadowHostFacts, preview_admission, trusted_tool_effect,
+)
 
 
 @dataclass(frozen=True)
@@ -59,6 +61,10 @@ def verify_core_evidence(
             return VerifiedCorePreview(expected_route, "deny", "missing_saved_plan")
     if expected_route == "plan_revise" and not facts.revision_valid:
         return VerifiedCorePreview(expected_route, "needs_evidence", "checkpoint_revision_unverified")
+    if core.object_type == "pending_slot" and core.operation == "invoke":
+        if trusted_tool_effect(facts.pending_action) is None:
+            return VerifiedCorePreview(
+                expected_route, "needs_evidence", "pending_tool_effect_unknown")
     if proposal.ambiguity != "clear":
         return VerifiedCorePreview(expected_route, "deny", "ambiguous_route")
 
@@ -80,6 +86,10 @@ def verify_core_evidence(
                 "shadow_revision_step_out_of_range": "revision_step_out_of_range",
                 "shadow_revision_step_unverified": "revision_step_unverified",
                 "shadow_pending_field_conflict": "pending_field_conflict"}
+        # 工具效果未声明是缺证据，不是另选一条路由。
+        if str(exc) == "shadow_tool_effect_unspecified":
+            return VerifiedCorePreview(
+                expected_route, "needs_evidence", "tool_effect_unspecified")
         return VerifiedCorePreview(expected_route, "deny", safe.get(str(exc), "reference_or_source_invalid"))
 
     # No effectful preview may proceed from fabricated or absent user quotes.

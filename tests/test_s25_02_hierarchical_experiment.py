@@ -179,6 +179,17 @@ def test_plan_scope_still_leaves_first_vs_resume_to_model():
     assert (result.object_type, result.operation) == ("plan", "resume")
 
 
+def test_curated_boundary_sentences_are_absent_from_classifier_prompts():
+    from agent.route_semantic_hierarchical import OBJECT_PROMPT, OP_PROMPT, PLAN_SCOPE_PROMPT
+    from evals.s25_02_m2_hierarchical_boundary_cases import CASES
+    from evals.s25_02_m2_semantic_evidence_live import QUOTE_PROMPT
+    combined = "\n".join((OBJECT_PROMPT, OP_PROMPT, PLAN_SCOPE_PROMPT, QUOTE_PROMPT))
+    for case in CASES:
+        assert case.prompt not in combined
+    for fragment in ("从第一阶段开始", "只执行第一步", "先运行第一项", "接着执行剩余步骤"):
+        assert fragment not in combined
+
+
 def test_plan_scope_guidance_is_sent_only_for_plan_object():
     from agent.route_semantic_hierarchical import PLAN_SCOPE_PROMPT
 

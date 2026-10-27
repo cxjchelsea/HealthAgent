@@ -61,8 +61,8 @@ def test_pending_binding_requires_trusted_original_and_rejects_conflict():
     p = proposal("agent_loop", "pending_clarification", "single_tool",
                  "read_only", msg)
     f = ShadowHostFacts(
-        has_plan=False, pending_action="lookup_weather",
-        pending_field="city", pending_original_request_bound=True,
+        has_plan=False, pending_action="mcp_reference_lookup",
+        pending_field="term", pending_original_request_bound=True,
         source_provenance_valid=True, tool_registered=True, tool_schema_valid=True)
     r = verify_core_evidence(core("pending_slot", "invoke"), p, msg, f)
     assert r.disposition == "potentially_admissible"
@@ -74,9 +74,17 @@ def test_pending_binding_requires_trusted_original_and_rejects_conflict():
     assert denied.disposition == "deny"
     untrusted = verify_core_evidence(
         core("pending_slot", "invoke"), p, msg,
-        ShadowHostFacts(has_plan=False, pending_action="lookup_weather",
-                        pending_field="city"))
+        ShadowHostFacts(has_plan=False, pending_action="mcp_reference_lookup",
+                        pending_field="term"))
     assert untrusted.disposition != "potentially_admissible"
+    unknown_tool = verify_core_evidence(
+        core("pending_slot", "invoke"), p, msg,
+        ShadowHostFacts(has_plan=False, pending_action="lookup_weather",
+                        pending_field="city", pending_original_request_bound=True,
+                        source_provenance_valid=True, tool_registered=True,
+                        tool_schema_valid=True))
+    assert unknown_tool.disposition == "needs_evidence"
+    assert unknown_tool.reason == "pending_tool_effect_unknown"
 
 
 def test_model_cannot_rewrite_core_route_or_tool_target():

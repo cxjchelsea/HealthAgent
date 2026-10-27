@@ -8,6 +8,21 @@ from typing import Literal
 
 from agent.route_shadow import ShadowRoute
 
+# 与 agent/tools.py 已注册业务工具一致。只在宿主已经给出工具名时使用。
+_READ_ONLY_TOOLS = frozenset({
+    "calculate", "mcp_reference_lookup", "utc_time", "list_tasks", "recall_memory",
+})
+_MUTATING_TOOLS = frozenset({"create_task", "save_memory"})
+
+
+def trusted_tool_effect(tool_name: str | None) -> str | None:
+    """返回已绑定工具的效果类别。未知工具名不猜测为只读或写入。"""
+    if tool_name in _READ_ONLY_TOOLS:
+        return "read_only"
+    if tool_name in _MUTATING_TOOLS:
+        return "mutation_requested"
+    return None
+
 @dataclass(frozen=True)
 class ShadowHostFacts:
     has_plan: bool
@@ -197,8 +212,17 @@ def preview_admission(proposal: ShadowRoute, facts: ShadowHostFacts) -> ShadowAd
                 return out("needs_evidence", "tool_registration_unverified")
             if not facts.tool_schema_valid:
                 return out("needs_evidence", "tool_schema_unverified")
+            # 效果必须与已绑定工具的类别一致，不能把未声明或相反类别补成可准入。
+            trusted_effect = trusted_tool_effect(facts.pending_action)
+            if trusted_effect is None:
+                return out("needs_evidence", "pending_tool_effect_unknown")
             if proposal.effect_intent == "none":
                 return out("needs_evidence", "pending_effect_unspecified")
+            if proposal.effect_intent != trusted_effect:
+                return out("needs_evidence", "pending_effect_mismatch")
+            if (trusted_effect == "mutation_requested"
+                    and not facts.current_write_authorized):
+                return out("needs_evidence", "write_source_unverified")
             if proposal.reference.kind != "pending_slot":
                 return out("needs_evidence", "pending_reference_unverified")
             return out("potentially_admissible", "shadow_evidence_complete",

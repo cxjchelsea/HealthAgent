@@ -16,7 +16,7 @@ from agent.route_semantic_hierarchical import classify_hierarchical_diagnostic
 from agent.route_semantic_preview import ROUTE_BY_CORE
 from agent.route_semantic_evidence import verify_core_evidence
 from agent.route_shadow import ShadowRoute, QuoteEvidence
-from agent.route_shadow_host import ShadowHostFacts
+from agent.route_shadow_host import ShadowHostFacts, trusted_tool_effect
 from evals.s25_02_m2_hierarchical_boundary_cases import CASES
 from evals.s25_02_m2_semantic_evidence_live import (
     SourceQuotes, QUOTE_PROMPT,
@@ -50,7 +50,19 @@ def facts_for(case, mode):
     return base
 
 
-def proposal_from_core(core, message, quote, step_quote):
+def compiled_effect(core, route, facts):
+    """计划对象的持久效果可确定。工具效果只跟随宿主已绑定的工具名。"""
+    if route in {"plan_create", "plan_revise"} or core.object_type == "task":
+        return "mutation_requested"
+    if route in {"plan_execute_first", "plan_resume"}:
+        return "read_only"
+    if core.object_type == "pending_slot" and core.operation == "invoke":
+        tool_name = None if facts is None else facts.pending_action
+        return trusted_tool_effect(tool_name) or "none"
+    return "none"
+
+
+def proposal_from_core(core, message, quote, step_quote, facts=None):
     """Construct one consistent route mechanically; neither quote changes it."""
     pair = (core.object_type, core.operation)
     route = ROUTE_BY_CORE.get(pair)
@@ -71,17 +83,20 @@ def proposal_from_core(core, message, quote, step_quote):
         "plan_execute_first": "first_step", "plan_resume": "remaining_steps",
         "agent_loop": "single_tool",
     }.get(route, "none")
-    effect = "none"
-    if route in {"plan_create", "plan_revise"} or core.object_type == "task":
-        effect = "mutation_requested"
-    elif route in {"plan_execute_first", "plan_resume", "agent_loop"}:
-        effect = "read_only"
+    effect = compiled_effect(core, route, facts)
     quote_items = [QuoteEvidence(exact_text=quote)] if quote else []
     step_items = [QuoteEvidence(exact_text=step_quote)] if step_quote else []
+    clarification = {
+        "required": True,
+        "reason": "missing_referent",
+        "question": "请说明要处理的具体对象。",
+    } if route == "clarify" else {
+        "required": False, "reason": "none", "question": None,
+    }
     return ShadowRoute(
         schema_version="s25-route-v2", primary_route=route,
         route_target=target, execution_scope=scope, effect_intent=effect,
-        ambiguity="clear",
+        ambiguity="clear", clarification=clarification,
         source_quote_evidence=quote_items,
         plan_step_quote_evidence=step_items,
     )
@@ -151,7 +166,7 @@ async def evaluate(provider, model, case, mode, timeout):
         quote = case.prompt
         row["quote_state"] = "trusted_full_message_revision"
     try:
-        proposal = proposal_from_core(core, case.prompt, quote, step_quote)
+        proposal = proposal_from_core(core, case.prompt, quote, step_quote, facts)
     except ValueError:
         row["reason"] = "invalid_core_pair"
         return row
@@ -162,10 +177,13 @@ async def evaluate(provider, model, case, mode, timeout):
 
 
 def expected_disposition(case_id, mode):
-    if mode == "positive" and case_id in POSITIVE:
-        return "potentially_admissible"
+    """正向夹具仅在效果已由计划对象或已绑定工具确定时才期望准入。"""
     if case_id == "resume_missing":
         return "deny"
+    # 独立新工具没有可信工具名，不能因为合成 facts 打开了只读开关就期望准入。
+    if (mode == "positive" and case_id in POSITIVE
+            and case_id != "pending_independent"):
+        return "potentially_admissible"
     return "needs_evidence"
 
 

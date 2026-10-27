@@ -52,12 +52,41 @@ def test_quote_absence_and_duplicate_ordinal_are_not_repaired():
 def test_pending_positive_and_tool_negative():
     pcase = find("pending_supply")
     pcore = HierarchicalDiagnostic("pending_slot", "invoke")
-    p = proposal_from_core(pcore, pcase.prompt, pcase.prompt, None)
-    r = verify_core_evidence(pcore, p, pcase.prompt, facts_for(pcase, "positive"))
+    pending_facts = facts_for(pcase, "positive")
+    p = proposal_from_core(pcore, pcase.prompt, pcase.prompt, None, pending_facts)
+    assert p.effect_intent == "read_only"
+    r = verify_core_evidence(pcore, p, pcase.prompt, pending_facts)
     assert r.disposition == "potentially_admissible"
     assert r.host_authorization is False
     u = find("tool_unavailable")
     ucore = HierarchicalDiagnostic("tool", "invoke")
-    p2 = proposal_from_core(ucore, u.prompt, u.prompt, None)
+    p2 = proposal_from_core(ucore, u.prompt, u.prompt, None, facts_for(u, "positive"))
+    assert p2.effect_intent == "none"
     r2 = verify_core_evidence(ucore, p2, u.prompt, facts_for(u, "positive"))
-    assert r2.disposition == expected_disposition("tool_unavailable", "positive")
+    assert r2.disposition == "needs_evidence"
+    assert r2.reason == "tool_effect_unspecified"
+    assert r2.host_authorization is False
+
+
+def test_pending_task_title_keeps_mutation_and_unknown_tool_does_not():
+    from agent.route_shadow_host import ShadowHostFacts
+    core = HierarchicalDiagnostic("pending_slot", "invoke")
+    message = "审计共享账户"
+    write_facts = ShadowHostFacts(
+        has_plan=False, pending_action="create_task", pending_field="title",
+        pending_original_request_bound=True, current_write_authorized=True,
+        source_provenance_valid=True, tool_registered=True, tool_schema_valid=True)
+    created = proposal_from_core(core, message, message, None, write_facts)
+    assert created.effect_intent == "mutation_requested"
+    admitted = verify_core_evidence(core, created, message, write_facts)
+    assert admitted.disposition == "potentially_admissible"
+    assert admitted.host_authorization is False
+    unknown_facts = ShadowHostFacts(
+        has_plan=False, pending_action="shell", pending_field="command",
+        pending_original_request_bound=True, source_provenance_valid=True,
+        tool_registered=True, tool_schema_valid=True)
+    unknown = proposal_from_core(core, message, message, None, unknown_facts)
+    assert unknown.effect_intent == "none"
+    blocked = verify_core_evidence(core, unknown, message, unknown_facts)
+    assert blocked.disposition == "needs_evidence"
+    assert blocked.reason == "pending_tool_effect_unknown"

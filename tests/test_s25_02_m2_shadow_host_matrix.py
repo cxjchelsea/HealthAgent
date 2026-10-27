@@ -122,6 +122,44 @@ def test_pending_reply_with_complete_readonly_binding_is_previewable():
     assert result.evidence_complete is True
 
 
+def test_pending_create_task_requires_mutation_and_write_proof():
+    request = proposal(
+        "agent_loop", target="pending_clarification", scope="single_tool",
+        effect="mutation_requested",
+        reference={"kind": "pending_slot", "pending_field": "title"})
+    missing_write = preview_admission(request, ShadowHostFacts(
+        has_plan=False, pending_action="create_task", pending_field="title",
+        pending_original_request_bound=True, source_provenance_valid=True,
+        tool_registered=True, tool_schema_valid=True))
+    assert missing_write.disposition == "needs_evidence"
+    assert missing_write.reason == "write_source_unverified"
+    assert missing_write.evidence_complete is False
+    readonly_claim = proposal(
+        "agent_loop", target="pending_clarification", scope="single_tool",
+        effect="read_only",
+        reference={"kind": "pending_slot", "pending_field": "title"})
+    mismatched = preview_admission(readonly_claim, ShadowHostFacts(
+        has_plan=False, pending_action="create_task", pending_field="title",
+        pending_original_request_bound=True, current_write_authorized=True,
+        source_provenance_valid=True, tool_registered=True, tool_schema_valid=True))
+    assert mismatched.disposition == "needs_evidence"
+    assert mismatched.reason == "pending_effect_mismatch"
+
+
+def test_unknown_pending_tool_effect_is_not_assumed():
+    request = proposal(
+        "agent_loop", target="pending_clarification", scope="single_tool",
+        effect="read_only",
+        reference={"kind": "pending_slot", "pending_field": "command"})
+    result = preview_admission(request, ShadowHostFacts(
+        has_plan=False, pending_action="shell", pending_field="command",
+        pending_original_request_bound=True, current_read_bound=True,
+        source_provenance_valid=True, tool_registered=True, tool_schema_valid=True))
+    assert result.disposition == "needs_evidence"
+    assert result.reason == "pending_tool_effect_unknown"
+    assert result.admitted_route is None
+
+
 def test_pending_reply_may_abstain_from_host_owned_field_name():
     request = proposal(
         "agent_loop",target="pending_clarification",scope="single_tool",

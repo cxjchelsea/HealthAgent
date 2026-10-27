@@ -34,7 +34,8 @@ def test_revision_abstained_quote_uses_literal_trusted_message_with_checkpoint()
 def test_revision_missing_revision_still_blocks_even_with_source_fallback():
     c = find("modify_step")
     r = asyncio.run(evaluate(Provider(), "qwen3:14b", c, "boundary", 5))
-    assert r["disposition"] != "potentially_admissible"
+    assert r["disposition"] == "needs_evidence"
+    assert r["reason"] == "checkpoint_revision_unverified"
     assert r["host_authorization"] is False
 
 
