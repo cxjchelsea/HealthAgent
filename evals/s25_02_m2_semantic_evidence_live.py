@@ -8,6 +8,8 @@ import asyncio
 import json
 import os
 from pathlib import Path
+from pydantic import BaseModel, ConfigDict, Field
+from agent.route_shadow import QuoteEvidence
 
 from agent.config import Settings
 from agent.understanding import HTTPUnderstandingModel
@@ -22,6 +24,45 @@ from the current user message in source_quote_evidence; do not paraphrase.
 For revisions, quote the explicit numbered step in plan_step_quote_evidence.
 If evidence is unavailable, abstain instead of inventing Host state or authority.
 """
+
+class SourceQuotes(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    current_turn_quote: str | None = Field(default=None, max_length=400)
+    revision_step_quote: str | None = Field(default=None, max_length=80)
+
+
+QUOTE_PROMPT = """Extract exact, contiguous, unique text spans from CURRENT user message.
+Return JSON matching schema. A quote must occur EXACTLY ONCE in the message.
+current_turn_quote supports the current user's request. For a plan-step revision,
+revision_step_quote is the exact ordinal step expression in the message.
+If uncertain, output null. Never invent text, references, checkpoint data or
+Host permissions. Never decide or change the route or operation."""
+
+
+async def probe_missing_quotes(provider, model, case, proposal, timeout):
+    """Diagnostic-only quote probe; never repairs route conflicts or explicit evidence."""
+    if proposal.source_evidence or proposal.source_quote_evidence:
+        return proposal, "not_needed"
+    raw = await asyncio.wait_for(provider.complete(
+        model=model, response_schema=SourceQuotes.model_json_schema(),
+        messages=[{"role": "system", "content": QUOTE_PROMPT},
+                  {"role": "user", "content": json.dumps({
+                      "message": case.prompt,
+                      "is_plan_step_revision": proposal.primary_route == "plan_revise",
+                  }, ensure_ascii=False)}]), timeout=timeout)
+    extracted = SourceQuotes.model_validate_json(raw)
+    quote = extracted.current_turn_quote
+    if quote is None or case.prompt.count(quote) != 1:
+        return proposal, "unavailable"
+    updates = {"source_quote_evidence": [QuoteEvidence(exact_text=quote)]}
+    if proposal.primary_route == "plan_revise" and not (
+        proposal.plan_step_evidence or proposal.plan_step_quote_evidence
+    ):
+        step = extracted.revision_step_quote
+        if step is not None and case.prompt.count(step) == 1:
+            updates["plan_step_quote_evidence"] = [QuoteEvidence(exact_text=step)]
+    return proposal.model_copy(update=updates), "quoted_exactly"
+
 
 DEFAULT_CASE_IDS = (
     "start_first", "modify_step", "pending_supply",
@@ -78,6 +119,20 @@ async def evaluate_case(provider, model, case, timeout):
         row["evidence_state"] = "unavailable"
         row["reason"] = "evidence_model_" + type(exc).__name__
         return row
+    # A route conflict cannot be repaired with quote extraction.
+    from agent.route_semantic_preview import ROUTE_BY_CORE
+    expected_route = ROUTE_BY_CORE.get((core.object_type, core.operation))
+    row["quote_probe_state"] = "not_attempted"
+    if (proposal.primary_route == expected_route and
+            not proposal.source_evidence and not proposal.source_quote_evidence):
+        try:
+            proposal, row["quote_probe_state"] = await probe_missing_quotes(
+                provider, model, case, proposal, timeout)
+        except Exception as exc:
+            row["quote_probe_state"] = "unavailable_" + type(exc).__name__
+        row["quote_evidence_count_after_probe"] = len(proposal.source_quote_evidence)
+        row["step_quote_evidence_count_after_probe"] = len(
+            proposal.plan_step_quote_evidence)
     result = verify_core_evidence(core, proposal, case.prompt, case.facts)
     row.update(
         candidate_route=result.candidate_route,
@@ -118,6 +173,7 @@ async def run(args, provider=None):
                 "core_correct": sum(r["core_correct"] for r in rows),
                 "evidence_schema_valid": sum(r["evidence_state"] == "reviewed" for r in rows),
                 "quote_supplied": sum(r.get("quote_evidence_count", 0) > 0 for r in rows),
+                "quote_probe_exact": sum(r.get("quote_probe_state") == "quoted_exactly" for r in rows),
                 "potentially_admissible": sum(
                     r["disposition"] == "potentially_admissible" for r in rows),
                 "denied": sum(r["disposition"] == "deny" for r in rows),
