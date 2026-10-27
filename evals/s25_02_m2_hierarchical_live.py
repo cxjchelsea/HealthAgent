@@ -48,7 +48,8 @@ def summarize(rows, case_ids):
                for case_id in case_ids}
     def stable(field):
         return sum(
-            len({r.get(field) for r in items}) == 1
+            len({tuple(r.get(field)) if isinstance(r.get(field), list)
+                 else r.get(field) for r in items}) == 1
             for items in by_case.values()
         )
     return {
@@ -85,6 +86,24 @@ async def run(args):
         settings.model_api_key, settings.model_timeout_seconds,
         settings.model_max_output_tokens)
     rows = []
+    output_path = Path(args.output)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    case_ids = [case.case_id for case in CASES]
+    def save_report(completed):
+        report = {
+            "model": settings.understanding_strong_model,
+            "cohort": "KNOWN_DEVELOPMENT_NOT_BLIND",
+            "m2_gate": "HOLD", "host_authorization": False,
+            "variant": "D_hierarchical_core_only",
+            "complete": completed,
+            "expected_rows": args.repeats * len(CASES),
+            "summary": summarize(rows, case_ids),
+            "rows": rows,
+        }
+        temp_path = output_path.with_suffix(output_path.suffix + ".tmp")
+        temp_path.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+        temp_path.replace(output_path)
+        return report
     for repeat in range(args.repeats):
         for case in CASES:
             wanted_object, wanted_operation = expected_core(case)
@@ -108,19 +127,9 @@ async def run(args):
                 "core_pair": [obj, op],
                 "host_authorization": False,
             })
-    summary = summarize(rows, [case.case_id for case in CASES])
-    report = {
-        "model": settings.understanding_strong_model,
-        "cohort": "KNOWN_DEVELOPMENT_NOT_BLIND",
-        "m2_gate": "HOLD",
-        "host_authorization": False,
-        "variant": "D_hierarchical_core_only",
-        "summary": summary,
-        "rows": rows,
-    }
-    path = Path(args.output)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+            save_report(False)
+    report = save_report(True)
+    summary = report["summary"]
     print(json.dumps(summary, ensure_ascii=False))
 
 
