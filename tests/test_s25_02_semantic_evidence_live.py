@@ -50,7 +50,7 @@ def test_full_chain_preserves_preview_only():
     assert result["core_correct"]
     assert result["disposition"] == "potentially_admissible"
     assert result["host_authorization"] is False
-    assert result["evidence_state"] == "verified"
+    assert result["evidence_state"] == "reviewed"
 
 
 def test_model_route_conflict_never_rewrites_core():
@@ -77,3 +77,15 @@ def test_invalid_evidence_schema_and_partial_core_fail_closed():
     assert len(p2.calls) == 2
     assert result2["evidence_state"] == "not_attempted"
     assert result2["host_authorization"] is False
+
+
+def test_quote_observability_without_host_authority():
+    c = case()
+    p = Provider(['{"object_type":"plan"}', '{"operation":"execute_first"}',
+                  shadow(c.prompt)])
+    result = asyncio.run(evaluate_case(p, "qwen3:14b", c, 5))
+    assert result["quote_evidence_count"] == 1
+    assert result["model_route"] == "plan_execute_first"
+    assert result["evidence_state"] == "reviewed"
+    assert result["host_authorization"] is False
+    assert "SECOND-STAGE EVIDENCE" in p.calls[2]["messages"][0]["content"]

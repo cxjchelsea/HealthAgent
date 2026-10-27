@@ -16,6 +16,13 @@ from agent.route_semantic_evidence import verify_core_evidence
 from agent.route_shadow import ShadowRoute, PROMPT as SHADOW_PROMPT
 from evals.s25_02_m2_hierarchical_boundary_cases import CASES
 
+EVIDENCE_GUIDANCE = """SECOND-STAGE EVIDENCE proposal, not a new semantic decision.
+Preserve frozen_core object_type and operation. Quote a unique exact substring
+from the current user message in source_quote_evidence; do not paraphrase.
+For revisions, quote the explicit numbered step in plan_step_quote_evidence.
+If evidence is unavailable, abstain instead of inventing Host state or authority.
+"""
+
 DEFAULT_CASE_IDS = (
     "start_first", "modify_step", "pending_supply",
     "pending_independent", "resume_missing", "tool_unavailable",
@@ -43,7 +50,7 @@ async def evaluate_case(provider, model, case, timeout):
         raw = await asyncio.wait_for(provider.complete(
             model=model, response_schema=ShadowRoute.model_json_schema(),
             messages=[
-                {"role": "system", "content": SHADOW_PROMPT},
+                {"role": "system", "content": SHADOW_PROMPT + EVIDENCE_GUIDANCE},
                 {"role": "user", "content": json.dumps({
                     "message": case.prompt,
                     "has_saved_plan": case.facts.has_plan,
@@ -62,6 +69,11 @@ async def evaluate_case(provider, model, case, timeout):
             ]), timeout=timeout)
         proposal = ShadowRoute.model_validate_json(raw)
         row["evidence_state"] = "schema_valid"
+        row["model_route"] = proposal.primary_route
+        row["model_target"] = proposal.route_target
+        row["quote_evidence_count"] = len(proposal.source_quote_evidence)
+        row["step_quote_evidence_count"] = len(proposal.plan_step_quote_evidence)
+        row["trusted_revision_valid"] = bool(case.facts.revision_valid)
     except Exception as exc:
         row["evidence_state"] = "unavailable"
         row["reason"] = "evidence_model_" + type(exc).__name__
@@ -70,7 +82,7 @@ async def evaluate_case(provider, model, case, timeout):
     row.update(
         candidate_route=result.candidate_route,
         disposition=result.disposition, reason=result.reason,
-        evidence_state="verified",
+        evidence_state="reviewed",
         host_authorization=False,
     )
     return row
@@ -104,7 +116,8 @@ async def run(args, provider=None):
             "summary": {
                 "total": len(rows),
                 "core_correct": sum(r["core_correct"] for r in rows),
-                "evidence_schema_valid": sum(r["evidence_state"] == "verified" for r in rows),
+                "evidence_schema_valid": sum(r["evidence_state"] == "reviewed" for r in rows),
+                "quote_supplied": sum(r.get("quote_evidence_count", 0) > 0 for r in rows),
                 "potentially_admissible": sum(
                     r["disposition"] == "potentially_admissible" for r in rows),
                 "denied": sum(r["disposition"] == "deny" for r in rows),
