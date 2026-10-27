@@ -1,7 +1,15 @@
 """Hierarchical classifier respects diagnostic-only separation."""
-from agent.route_semantic_hierarchical import ObjectChoice, OperationChoice
-from evals.s25_02_m2_ab_comparison import CASES, core_match
+import asyncio
+from types import SimpleNamespace
 
+import pytest
+
+from agent.route_semantic_hierarchical import (
+    ObjectChoice, OperationChoice,
+    classify_hierarchical, classify_hierarchical_diagnostic, HierarchicalStageError,
+)
+from evals.s25_02_m2_ab_comparison import CASES, core_match
+from evals.s25_02_m2_hierarchical_live import summarize
 
 def test_object_and_operation_schemas_separate():
     assert "operation" not in ObjectChoice.model_fields
@@ -21,15 +29,6 @@ def test_no_authority_fields_in_classifier():
 
 
 import asyncio
-from types import SimpleNamespace
-import pytest
-
-from agent.route_semantic_hierarchical import (
-    classify_hierarchical, classify_hierarchical_diagnostic, HierarchicalStageError,
-)
-from evals.s25_02_m2_hierarchical_live import summarize
-
-
 class FakeProvider:
     def __init__(self, responses):
         self.responses = iter(responses)
