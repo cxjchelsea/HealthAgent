@@ -6,7 +6,6 @@ import argparse
 import asyncio
 import json
 import os
-import re
 from dataclasses import asdict, replace
 from pathlib import Path
 
@@ -15,7 +14,7 @@ from agent.understanding import HTTPUnderstandingModel
 from agent.route_semantic_hierarchical import classify_hierarchical_diagnostic
 from agent.route_semantic_preview import ROUTE_BY_CORE
 from agent.route_semantic_evidence import verify_core_evidence
-from agent.route_shadow import ShadowRoute, QuoteEvidence
+from agent.route_shadow import ShadowRoute, QuoteEvidence, extract_unique_step_ordinal
 from evals.s25_02_m2_plan_step_quotes import collect_ordered_step_quotes
 from agent.route_shadow_host import ShadowHostFacts, trusted_tool_effect
 from evals.s25_02_m2_hierarchical_boundary_cases import CASES
@@ -104,11 +103,9 @@ def proposal_from_core(core, message, quote, step_quote, facts=None, plan_steps=
 
 
 def extract_unique_ordinal(message):
-    """Literal source-binding only; no route inference or permission inference."""
-    occurrences = re.findall(r"第[一二三四五六七八1-8]步", message)
-    if len(occurrences) != 1 or message.count(occurrences[0]) != 1:
-        return None
-    return occurrences[0]
+    """Quote only; checkpoint and authority are validated downstream."""
+    found = extract_unique_step_ordinal(message)
+    return found[0] if found else None
 
 
 async def evaluate(provider, model, case, mode, timeout):
@@ -161,6 +158,16 @@ async def evaluate(provider, model, case, mode, timeout):
     # literal source evidence, NOT inferred permission or a fabricated snippet.
     # Limited to an unambiguous numbered revision already selected by frozen M2.
     # Checkpoint revision, step binding and write authority remain Host-owned.
+    # Trusted full-message source is a literal current-turn quote, not an
+    # inferred tool argument or permission. For cancellation require a proven
+    # Pending origin; Host still controls actual state changes.
+    if (quote is None and core.object_type == "pending_slot"
+            and core.operation == "cancel"
+            and facts.pending_original_request_bound
+            and facts.pending_action and facts.pending_field
+            and 0 < len(case.prompt) <= 400):
+        quote = case.prompt
+        row["quote_state"] = "trusted_full_message_pending_cancel"
     if (quote is None and core.object_type == "plan_step"
             and core.operation == "revise" and step_quote is not None
             and 0 < len(case.prompt) <= 400):
