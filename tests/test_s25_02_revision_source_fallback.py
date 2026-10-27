@@ -13,8 +13,7 @@ from evals.s25_02_m2_hierarchical_boundary_cases import CASES
 class Provider:
     def __init__(self, quote_response='{"current_turn_quote":null,"revision_step_quote":null}'):
         self.replies = iter(['{"object_type":"plan_step"}',
-                             '{"intent":"edit_saved_step"}',
-                             '{"operation":"revise"}', quote_response])
+                             '{"action":"edit_step_definition"}', quote_response])
     async def complete(self, **kwargs):
         return next(self.replies)
 
