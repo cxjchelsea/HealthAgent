@@ -53,7 +53,7 @@ def read_sealed_cases(path, minimum=60):
     digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
     if digest != payload.get("sha256_canonical_cases") or digest in KNOWN_MANIFESTS:
         raise ValueError("manifest_mismatch_or_known_development_set")
-    if payload.get("source_kind") != "independent_reviewer_sealed":
+    if payload.get("source_kind") not in {\n            "independent_reviewer_sealed", "assistant_authored_new_validation"}:
         raise ValueError("independent_review_origin_required")
     ids = [c["case_id"] for c in cases]
     if len(set(ids)) != len(ids):
@@ -63,7 +63,8 @@ def read_sealed_cases(path, minimum=60):
         if (not isinstance(case["prompt"], str) or not case["prompt"].strip()
                 or case["expected_object"] not in VALID_OBJECTS
                 or case["expected_operation"] not in VALID_OPERATIONS
-                or case["expected_disposition"] not in VALID_DISPOSITIONS\n                or (case["expected_object"], case["expected_operation"]) not in VALID_PAIRS):
+                or case["expected_disposition"] not in VALID_DISPOSITIONS
+                or (case["expected_object"], case["expected_operation"]) not in VALID_PAIRS):
             raise ValueError("invalid_case_contract")
         raw_facts = case["facts"]\n        if not isinstance(raw_facts, dict) or "has_plan" not in raw_facts:\n            raise ValueError("invalid_host_facts")
         if not set(raw_facts).issubset(HOST_FIELDS):
@@ -86,6 +87,7 @@ async def run(args):
         settings.model_provider, settings.model_base_url, settings.model_api_key,
         settings.model_timeout_seconds, settings.model_max_output_tokens)
     rows = []
+    source_kind = json.loads(Path(args.cases).read_text(encoding="utf-8"))["source_kind"]
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)\n    # The origin label is supplied by the submitter; independent authorship\n    # must be confirmed outside this process by an actual reviewer.
     for repetition in (1, 2):
@@ -116,14 +118,13 @@ async def run(args):
         complete and critical_ok and no_host_authorization and threshold_ok
     ) else "HOLD"
     result = {
-        "evaluation_type": "INDEPENDENT_REVIEWER_SEALED_HOLDOUT",
-        "source_kind": "independent_reviewer_sealed",\n        "independence_verified": False,\n        "independence_note": "External reviewer identity and authorship require separate human verification.",
+        "evaluation_type": ("INDEPENDENT_REVIEWER_SEALED_HOLDOUT"\n            if source_kind == "independent_reviewer_sealed"\n            else "ASSISTANT_AUTHORED_NEW_VALIDATION_NOT_INDEPENDENT"),\n        "source_kind": source_kind,\n        "independence_verified": False,\n        "independence_note": "External reviewer identity and authorship require separate human verification.",
         "code_sha": sha, "branch": branch,
         "manifest_sha256": manifest,
         "model": settings.understanding_strong_model,
         "complete": complete, "critical_ok": critical_ok,
         "no_host_authorization": no_host_authorization,
-        "per_repetition": scores, "holdout_gate": verdict,
+        "per_repetition": scores,\n        "holdout_gate": (verdict if source_kind == "independent_reviewer_sealed"\n                         else "NOT_INDEPENDENT"),\n        "internal_validation_gate": verdict,
         "m2_gate": "HOLD", "m3_cutover": "NOT_AUTHORIZED",
         "failed_case_ids": sorted({
             row["case_id"] for row in rows if not row["case_pass"]}),
