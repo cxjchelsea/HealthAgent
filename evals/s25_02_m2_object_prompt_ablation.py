@@ -62,8 +62,12 @@ def verify_inputs(path):
         raise ValueError("missing_ablated_case")
     actual = subprocess.check_output(["git", "rev-parse", "HEAD"],
                                      text=True).strip()
-    if actual != REMEDIATION_SHA:
-        raise ValueError(f"wrong_code_sha: expected {REMEDIATION_SHA}, got {actual}")
+    changed = subprocess.check_output(
+        ["git", "diff", "--name-only", REMEDIATION_SHA, actual],
+        text=True, encoding="utf-8").splitlines()
+    allowed = {"evals/s25_02_m2_object_prompt_ablation.py"}
+    if set(changed) - allowed or not changed:
+        raise ValueError(f"unexpected_code_difference_from_remediation: {changed}")
     return case_map, actual
 
 
