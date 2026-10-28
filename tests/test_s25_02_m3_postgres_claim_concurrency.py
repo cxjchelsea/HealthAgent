@@ -8,8 +8,9 @@ import os
 import threading
 
 import pytest
+from sqlalchemy import delete
 
-from services.db import (Base, Conversation, ConversationPlan, Turn, database)
+from services.db import (Base, Conversation, ConversationPlan, PlanExecutionClaim, Turn, database)
 from services.plan_store import ConversationPlanStore, PlanSnapshotConflict
 
 
@@ -33,7 +34,7 @@ def test_competing_plan_writer_waits_for_claim_then_fails_closed():
         writer = Turn(conversation_id=cid, request_id="claim-writer")
         db.add_all([owner, writer])
         db.flush()
-        owner_id, writer_id = owner.id, writer.id
+        owner_id = owner.id
     store = ConversationPlanStore(Session, cid)
 
     def reserve_claim():
@@ -81,10 +82,10 @@ def test_competing_plan_writer_waits_for_claim_then_fails_closed():
         assert store.load() == {"revision": 1, "steps": []}
     finally:
         with Session.begin() as db:
-            db.execute(__import__("sqlalchemy").delete(ConversationPlan).where(
+            db.execute(delete(ConversationPlan).where(
                 ConversationPlan.conversation_id == cid))
-            db.execute(__import__("sqlalchemy").delete(__import__("services.db", fromlist=["PlanExecutionClaim"]).PlanExecutionClaim).where(
-                __import__("services.db", fromlist=["PlanExecutionClaim"]).PlanExecutionClaim.conversation_id == cid))
+            db.execute(delete(PlanExecutionClaim).where(
+                PlanExecutionClaim.conversation_id == cid))
             db.execute(__import__("sqlalchemy").delete(Turn).where(Turn.conversation_id == cid))
             db.delete(db.get(Conversation, cid))
         engine.dispose()
