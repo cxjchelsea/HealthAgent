@@ -91,3 +91,25 @@ def test_m4_guarded_cancel_live_api_contract_without_tools(tmp_path, monkeypatch
         assert cancelled.json()["termination_reason"] == "plan_cancelled"
         assert cancelled.json()["trace"] == [{"step": 0, "type": "plan_cancelled"}]
         assert cancelled.json()["plan"] == []
+
+
+def test_m4_guarded_plan_create_requires_unique_current_turn_bindings():
+    from agent.m4_guarded_plan import admit_guarded_plan_create
+    checkpoint = {"revision": 1, "steps": [
+        {"id": 1, "status": "pending", "goal": "计算 3*4",
+         "expected_tool": "calculate", "expected_arguments": {"expression": "3*4"}},
+        {"id": 2, "status": "pending", "goal": "计算 5*6",
+         "expected_tool": "calculate", "expected_arguments": {"expression": "5*6"}}]}
+    args = dict(message="请创建两步计划：第一步计算 3*4，第二步计算 5*6。只保存，不执行。",
+                conversation_id="cid", request_id="req-00001",
+                checkpoint=checkpoint, turn_created=True, semantic_confirmed=True)
+    assert admit_guarded_plan_create(**args)
+    assert not admit_guarded_plan_create(**(args | {"turn_created": False}))
+    assert not admit_guarded_plan_create(**(args | {"semantic_confirmed": False}))
+    assert not admit_guarded_plan_create(**(args | {"message": "创建计划 3*4"}))
+    assert not admit_guarded_plan_create(**(args | {
+        "message": "创建计划：第一步算 3*4；第二步也算 3*4；第三步算 5*6"}))
+    forged = {"revision": 1, "steps": [
+        checkpoint["steps"][0],
+        {**checkpoint["steps"][1], "expected_arguments": {"expression": "9*9"}}]}
+    assert not admit_guarded_plan_create(**(args | {"checkpoint": forged}))
