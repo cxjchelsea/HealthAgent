@@ -24,3 +24,14 @@
 - 真实模型回归一次性执行，不再按 D03-A/B/C 建立独立工作阶段；记录原始 JSON 和统一问题清单。
 - 所有阻断缺陷集中修复后再跑一次完整回归，形成 PASS / PASS WITH LIMITATIONS / BLOCK 结论。
 - 未经显式授权不合并分支、不打开 Shadow 生产决策权。
+
+
+## 最终集中验收补录（2026-10-28）
+- 前述审查基线与 CI 为当时历史快照；最终合并前以本节更新后的分支 HEAD、main、GitHub Actions 为准。
+- 真实 Qwen3 计划生命周期：创建 `12*13` 与 `7*9`（两步 pending，工具 0）；第二步由 `7*9` 修订为 `8*9`（revision 2，工具 0）；仅执行第一步得到 156、第二步仍 pending；执行剩余第二步得到 72，第一步不重复执行。测试证据为用户本机 `m3-plan-lifecycle-final.json`。
+- 保存计划禁止提前执行：UTF-8 原始请求“请创建两步计划：第一步计算 3*4，第二步计算 5*6。只保存，不执行。”返回 `plan_created_pending_execution`，两步 pending、工具 0；Shadow `plan_create/match`。
+- 取消已保存计划：独立会话建立两步 pending 后，请求“取消刚才保存的计划，不要执行其中的步骤。”返回 HTTP 200、`plan_cancelled`、`plan=[]`、工具 0；Shadow `plan_cancel/match`；Host preview `needs_evidence`，Shadow 不授予删除权限。对应用户本机 `m3-blocker-regression-utf8(2).json`。
+- 前期失败请求曾因 PowerShell 向 `python -` 传输中文变成问号造成无效验收；有效结论只采用 UTF-8 修正版。此前取消 503 的 `step_limit` 已通过独立 Host 取消路径纠正。
+- 自动化：GitHub Actions run `40654192818` 对提交 `6255f0a1b4d9e9d24a37103fbf2450b0b5cee517` 报告 SUCCESS；包含取消持久化检查及 Shadow 取消匹配测试。历史 run `40653551827` 亦 SUCCESS。
+- 结论：M3 Shadow-only 集中验收 **PASS WITH LIMITATIONS**。限制包括：Shadow `m3c_admission` 始终拒绝真实授权、执行范围存在 `compatible_plan_execution`（不等于严格 match）、修订 Shadow 观察曾出现 `unavailable`。此结论不构成生产切换授权。
+- 合并边界：仅允许通过受保护 PR 按仓库要求的标准合并提交并验证 main；不得启用 Shadow 生产执行。
