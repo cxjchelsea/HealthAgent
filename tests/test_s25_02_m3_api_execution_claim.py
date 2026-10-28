@@ -54,7 +54,7 @@ def test_http_saved_plan_claim_blocks_competing_writer_and_releases_on_finalize(
         understanding_strategy="structured",
     )
     plan = _checkpoint()
-    run_state = {"guard_calls": 0, "competing_write_blocked": False, "cid": None}
+    run_state = {"guard_calls": 0, "competing_write_blocked": False, "cid": None, "claim_error": None}
 
     async def fake_understand(self, context):
         return {"result": _understood(), "attempts": []}
@@ -118,6 +118,15 @@ def test_http_saved_plan_claim_blocks_competing_writer_and_releases_on_finalize(
             "plan_checkpoint": ledger.checkpoint(),
         }
 
+    original_acquire = ConversationPlanStore.acquire_execution_claim_in_session
+    def observe_acquire(self, db, *, turn_id, expected_raw):
+        try:
+            return original_acquire(self, db, turn_id=turn_id, expected_raw=expected_raw)
+        except Exception as exc:
+            run_state["claim_error"] = f"{type(exc).__name__}:{exc}"
+            raise
+
+    monkeypatch.setattr(ConversationPlanStore, "acquire_execution_claim_in_session", observe_acquire)
     monkeypatch.setattr(api, "review_plan_intent", fake_plan_intent)
     monkeypatch.setattr(api, "review_plan_creation_reference", fake_create_review)
     monkeypatch.setattr(api, "review_plan_execution_authorization", fake_execution_review)
@@ -144,7 +153,7 @@ def test_http_saved_plan_claim_blocks_competing_writer_and_releases_on_finalize(
         assert executed.status_code == 200, executed.text
         assert executed.json()["status"] == "partial"
         assert run_state["guard_calls"] == 1
-        assert run_state["guard_result"] is True
+        assert run_state["guard_result"] is True, run_state["claim_error"]
         assert run_state["competing_write_blocked"] is True
 
     engine, Session = database(settings.database_url)
