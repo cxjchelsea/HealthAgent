@@ -37,7 +37,7 @@ from agent.mcp_stdio_client import StdioMCPClient
 from agent.context import build_context
 from services.task_store import ConversationTaskStore
 from services.memory_store import MemoryStore
-from services.plan_store import ConversationPlanStore
+from services.plan_store import ConversationPlanStore, PlanSnapshotConflict
 from services.goal_store import ConversationGoalStore
 from services.db import Conversation, ConversationPlan, Message, Turn, database
 
@@ -198,14 +198,15 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                 # M3-B: capture Turn identity and plan metadata inside the same
                 # DB transaction that creates the Turn. This is read-only and
                 # grants no Host execution authority.
+                plan_record = db.get(ConversationPlan, cid)
+                preturn_plan_raw = plan_record.snapshot if plan_record else None
+                try:
+                    preturn_checkpoint = (json.loads(preturn_plan_raw)
+                                          if preturn_plan_raw is not None else None)
+                except (TypeError, ValueError):
+                    preturn_checkpoint = None
                 preturn_capture = None
                 if settings.route_shadow_enabled:
-                    plan_record = db.get(ConversationPlan, cid)
-                    try:
-                        preturn_checkpoint = (json.loads(plan_record.snapshot)
-                                              if plan_record else None)
-                    except (TypeError, ValueError):
-                        preturn_checkpoint = None
                     preturn_capture = capture_turn(
                         conversation_id=cid, request_id=body.client_request_id,
                         turn_id=turn_id, checkpoint=preturn_checkpoint,
@@ -231,7 +232,10 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
         failure_code = None
         decision_steps = 0
         try:
-            existing_checkpoint = plan_store.load()
+            # Use the exact snapshot observed in the Turn-creation transaction.
+            # Do not perform a second, unbound plan read after creating the Turn.
+            existing_checkpoint = (json.loads(preturn_plan_raw)
+                                   if preturn_plan_raw is not None else None)
             interpretation = None
             if body.goal_confirmation is not None:
                 if (settings.understanding_strategy != "structured"
@@ -771,7 +775,26 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                 if response is None or turn is None or turn.state != "running":
                     raise RuntimeError("turn_finalization_conflict")
                 if status in {"completed", "partial"} and result.get("plan_checkpoint"):
-                    plan_store.save_in_session(db, result["plan_checkpoint"])
+                    termination_reason = result.get("termination_reason")
+                    # Plan authoring / no-tool terminal observations have no external
+                    # side effects. CAS them against the snapshot bound to this Turn.
+                    # Tool-execution checkpoints intentionally remain on the legacy
+                    # write path until an execution reservation is wired before dispatch.
+                    cas_safe_plan_outcomes = {
+                        "plan_created_pending_execution",
+                        "plan_revised_pending_execution",
+                        "plan_already_completed",
+                        "plan_first_step_already_completed",
+                    }
+                    if termination_reason in cas_safe_plan_outcomes:
+                        try:
+                            plan_store.compare_and_swap_in_session(
+                                db, expected_raw=preturn_plan_raw,
+                                snapshot=result["plan_checkpoint"])
+                        except PlanSnapshotConflict as exc:
+                            raise RuntimeError("plan_snapshot_conflict") from exc
+                    else:
+                        plan_store.save_in_session(db, result["plan_checkpoint"])
                 if (status in {"completed", "partial"} and parsed_result is not None
                         and not suppress_persistent_routing and execution_mode not in {"respond_only", "read_only"}
                         and execution_target == "goal_state"
