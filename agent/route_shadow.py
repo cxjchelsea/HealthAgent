@@ -398,8 +398,13 @@ Reference fields: kind none requires null step_number and null pending_field.
 Cancel pending argument is not saved_step; step_number must remain null.
 One-off task-manager item creation is agent_loop/tool_action, not a durable
 ordered multi-step plan. Host independently checks write authorization.
-For plan_create, plan_step_evidence must contain TWO distinct exact spans
-for separately requested ordered steps; never invent missing plan steps.
+For plan_create, provide TWO distinct, non-overlapping exact quotations
+from the CURRENT message in plan_step_quote_evidence (one per ordered step),
+and at least one exact creation-intent quotation in source_quote_evidence.
+Prefer these quote fields over numeric offsets. Never invent steps or quote
+text absent from the message. If two literal ordered steps cannot be quoted,
+leave evidence empty and allow Host to reject the proposal. Do NOT use
+plan_step_evidence numeric offsets unless explicitly verifiable.
 Negative constraints are operation-scoped, not global write prohibitions.
 Do not fabricate source spans or reference fields; use empty/default
  values if original text does not prove the field."""
@@ -422,6 +427,9 @@ Semantic contract:
 Evidence contract:
 - Prefer *_quote_evidence fields with exact current-message substrings.
   The Host locates unique quotes deterministically.
+- For plan_create, populate plan_step_quote_evidence with exactly quoted
+  separately ordered steps; source_quote_evidence must quote the creation intent.
+  These quote fields are not the legacy offset-based plan_step_evidence.
 - Never guess character indices, referents, plan steps, or permission.
 - Explicit legacy source spans remain strict; invalid offsets are not repaired.
 - Durable plans need two separately grounded ordered step quotations.
