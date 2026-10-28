@@ -68,9 +68,13 @@ def main() -> None:
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
     report = json.loads(Path(args.input).read_text(encoding="utf-8"))
-    if not isinstance(report.get("rows"), list):
-        parser.error("input must contain rows array")
-    output = compare_rows(report["rows"])
+    if isinstance(report, dict) and isinstance(report.get("rows"), list):
+        rows = report["rows"]
+    elif isinstance(report, dict) and isinstance(report.get("route_shadow"), dict):
+        rows = [report]
+    else:
+        parser.error("input must be a response with route_shadow or report with rows array")
+    output = compare_rows(rows)
     Path(args.output).write_text(
         json.dumps(output, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(output["summary"], ensure_ascii=False))
