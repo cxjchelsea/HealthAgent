@@ -440,7 +440,9 @@ async def evaluate_shadow(provider: HTTPUnderstandingModel, model_name: str,
                            message: str, *, has_plan: bool,
                            pending_action: str | None, timeout_s: float = 12,
                            host_facts: Any | None = None,
-                           pending_field: str | None = None) -> dict:
+                           pending_field: str | None = None,
+                           m3c_capture: Any | None = None,
+                           m3c_checkpoint: dict | None = None) -> dict:
     """Isolated evaluation: never invokes AgentLoop, tools, stores or permissions."""
     import asyncio
     began = time.perf_counter()
@@ -488,6 +490,11 @@ async def evaluate_shadow(provider: HTTPUnderstandingModel, model_name: str,
                 "missing" if result.reference.pending_field is None else
                 "match" if result.reference.pending_field == host_facts.pending_field
                 else "conflict")
+        m3c_preview = None
+        if m3c_capture is not None:
+            from agent.m3c_shadow_admission import preview_m3c_admission
+            m3c_preview = preview_m3c_admission(
+                result, m3c_capture, checkpoint=m3c_checkpoint)
         return {"state":"valid","route":result.primary_route,
                 "route_target":result.route_target,
                 "reference_kind":result.reference.kind,
@@ -495,6 +502,7 @@ async def evaluate_shadow(provider: HTTPUnderstandingModel, model_name: str,
                 "ambiguity":result.ambiguity,"host_would_deny":would_deny,
                 "host_admission_complete":False,
                 "evidence_spans":len(result.source_evidence),
+                **({"m3c_admission":m3c_preview} if m3c_preview is not None else {}),
                 **({"host_preview":host_preview} if host_preview is not None else {}),
                 **({"pending_field_state":pending_field_state}
                    if pending_field_state is not None else {}),
