@@ -432,7 +432,8 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                         reply=body.content, tool=pending_action)
                 if (parsed["result"].clarification.required
                         and pending_reply_kind != "answer"
-                        and pending_plan_execution_intent is None):
+                        and (settings.route_admission_mode != "guarded"
+                             or pending_plan_execution_intent is None)):
                     # A pre-reviewed saved-plan execution request is not an
                     # incomplete generic goal. Keep its independent plan
                     # authorization/scope checks and final Host guards intact.
