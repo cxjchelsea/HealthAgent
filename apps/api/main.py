@@ -14,6 +14,7 @@ from agent.understanding import UnderstandingContext, UnderstandingService, HTTP
 from agent.execution_policy import decide_execution_policy_detail, reconcile_execution_policy
 from agent.route_shadow import evaluate_shadow, compare_to_legacy
 from agent.route_shadow_host import facts_from_legacy_observation
+from agent.m4_guarded_cancel import admit_guarded_plan_cancel
 from agent.m3_turn_capture import (
     capture_turn, compare_captured_identity, compare_checkpoint_snapshot,
 )
@@ -281,7 +282,19 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                             settings.model_api_key, settings.model_timeout_seconds,
                             settings.model_max_output_tokens),
                         settings.understanding_strong_model, body.content)):
-                result = {"run_id": turn_id, "status": "completed",
+                if settings.route_admission_mode == "guarded" and not admit_guarded_plan_cancel(
+                        message=body.content, conversation_id=cid,
+                        request_id=body.client_request_id,
+                        checkpoint=existing_checkpoint, turn_created=True,
+                        semantic_confirmed=True):
+                    result = {"run_id": turn_id, "status": "partial",
+                              "termination_reason": "plan_cancellation_requires_clarification",
+                              "answer": "无法验证当前计划取消权限；未取消，也未执行工具。",
+                              "trace": [{"step": 0, "type": "plan_cancellation_fenced"}],
+                              "steps": 0, "plan": existing_checkpoint["steps"],
+                              "plan_revision": existing_checkpoint["revision"]}
+                else:
+                    result = {"run_id": turn_id, "status": "completed",
                           "termination_reason": "plan_cancelled",
                           "answer": "已取消当前保存的计划，未执行任何步骤。",
                           "trace": [{"step": 0, "type": "plan_cancelled"}],
