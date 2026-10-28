@@ -1,4 +1,5 @@
 from agent.planning import PlanLedger
+import json
 import logging
 import time
 from contextlib import asynccontextmanager
@@ -36,7 +37,7 @@ from services.task_store import ConversationTaskStore
 from services.memory_store import MemoryStore
 from services.plan_store import ConversationPlanStore
 from services.goal_store import ConversationGoalStore
-from services.db import Conversation, Message, Turn, database
+from services.db import Conversation, ConversationPlan, Message, Turn, database
 
 log=logging.getLogger("healthagent")
 logging.basicConfig(level=logging.INFO,format='%(levelname)s %(message)s')
@@ -192,6 +193,22 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                 db.add(turn)
                 db.flush()
                 assistant_id, turn_id = response_message.id, turn.id
+                # M3-B: capture Turn identity and plan metadata inside the same
+                # DB transaction that creates the Turn. This is read-only and
+                # grants no Host execution authority.
+                preturn_capture = None
+                if settings.route_shadow_enabled:
+                    plan_record = db.get(ConversationPlan, cid)
+                    try:
+                        preturn_checkpoint = (json.loads(plan_record.snapshot)
+                                              if plan_record else None)
+                    except (TypeError, ValueError):
+                        preturn_checkpoint = None
+                    preturn_capture = capture_turn(
+                        conversation_id=cid, request_id=body.client_request_id,
+                        turn_id=turn_id, checkpoint=preturn_checkpoint,
+                        pending_action=pending_action, clarification_id=clarification_id,
+                        pending_question=pending_question)
         except IntegrityError as exc:
             # A concurrent running turn violates uq_running_turn_per_conversation.
             # Both SQLite and PostgreSQL enforce this atomically at the database.
@@ -211,18 +228,9 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
         result = None
         failure_code = None
         decision_steps = 0
-        preturn_capture = None
+        preturn_capture = locals().get("preturn_capture")
         try:
             existing_checkpoint = plan_store.load()
-            # M3-B read-only capture before the legacy decision and any tool run.
-            # This is metadata only; checkpoint provenance and lock-bound
-            # authorization are NOT established by this capture.
-            if settings.route_shadow_enabled:
-                preturn_capture = capture_turn(
-                    conversation_id=cid, request_id=body.client_request_id,
-                    turn_id=turn_id, checkpoint=existing_checkpoint,
-                    pending_action=pending_action, clarification_id=clarification_id,
-                    pending_question=pending_question)
             interpretation = None
             if body.goal_confirmation is not None:
                 if (settings.understanding_strategy != "structured"
