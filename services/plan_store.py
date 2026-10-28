@@ -2,6 +2,7 @@
 import json
 
 from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
 from services.db import ConversationPlan
 
 
@@ -47,7 +48,10 @@ class ConversationPlanStore:
                 raise PlanSnapshotConflict("plan_snapshot_conflict")
             db.add(ConversationPlan(conversation_id=self.conversation_id,
                                     snapshot=replacement))
-            db.flush()
+            try:
+                db.flush()
+            except IntegrityError as exc:
+                raise PlanSnapshotConflict("plan_snapshot_conflict") from exc
             return
         result = db.execute(
             update(ConversationPlan)
