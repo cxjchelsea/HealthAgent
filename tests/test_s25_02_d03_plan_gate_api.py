@@ -213,7 +213,8 @@ def test_explicit_save_only_plan_never_falls_back_to_tools(tmp_path, monkeypatch
         data = res.json()
         assert data["termination_reason"] == "plan_creation_requires_clarification"
         assert data["trace"] == [{"step": 0, "type": "plan_execution_fenced"}]
-        assert data["plan"] == []
+        assert not data.get("plan")
+        assert data.get("plan_checkpoint") is None
         assert not any(t["type"] == "tool" for t in data["trace"])
 
 
