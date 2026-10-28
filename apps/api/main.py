@@ -1,4 +1,5 @@
 from agent.planning import PlanLedger
+import json
 import logging
 import time
 from contextlib import asynccontextmanager
@@ -13,6 +14,9 @@ from agent.understanding import UnderstandingContext, UnderstandingService, HTTP
 from agent.execution_policy import decide_execution_policy_detail, reconcile_execution_policy
 from agent.route_shadow import evaluate_shadow, compare_to_legacy
 from agent.route_shadow_host import facts_from_legacy_observation
+from agent.m3_turn_capture import (
+    capture_turn, compare_captured_identity, compare_checkpoint_snapshot,
+)
 from agent.decision import NativeToolDecision
 from agent.loop import AgentLoop
 from agent.tools import execute_tool, SCHEMAS
@@ -24,7 +28,8 @@ from agent.clarification_review import review_read_only_clarification
 from agent.control_admission import admit_clarification
 from agent.plan_intent import review_plan_intent, build_plan_checkpoint
 from agent.plan_control import (resolve_plan_admission, review_missing_plan_reference,
-                                review_plan_creation_reference)
+                                review_plan_creation_reference, explicit_deferred_plan_request,
+                                review_plan_cancellation, explicit_saved_plan_cancellation)
 from agent.plan_execution_review import review_plan_execution_authorization
 from agent.plan_execution_scope import review_plan_execution_scope
 from agent.plan_revision_review import review_plan_revision, apply_plan_revision, check_plan_edit_intent, explicit_step_binding_conflict
@@ -33,9 +38,9 @@ from agent.mcp_stdio_client import StdioMCPClient
 from agent.context import build_context
 from services.task_store import ConversationTaskStore
 from services.memory_store import MemoryStore
-from services.plan_store import ConversationPlanStore
+from services.plan_store import ConversationPlanStore, PlanSnapshotConflict
 from services.goal_store import ConversationGoalStore
-from services.db import Conversation, Message, Turn, database
+from services.db import Conversation, ConversationPlan, Message, Turn, database
 
 log=logging.getLogger("healthagent")
 logging.basicConfig(level=logging.INFO,format='%(levelname)s %(message)s')
@@ -191,6 +196,23 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                 db.add(turn)
                 db.flush()
                 assistant_id, turn_id = response_message.id, turn.id
+                # M3-B: capture Turn identity and plan metadata inside the same
+                # DB transaction that creates the Turn. This is read-only and
+                # grants no Host execution authority.
+                plan_record = db.get(ConversationPlan, cid)
+                preturn_plan_raw = plan_record.snapshot if plan_record else None
+                try:
+                    preturn_checkpoint = (json.loads(preturn_plan_raw)
+                                          if preturn_plan_raw is not None else None)
+                except (TypeError, ValueError):
+                    preturn_checkpoint = None
+                preturn_capture = None
+                if settings.route_shadow_enabled:
+                    preturn_capture = capture_turn(
+                        conversation_id=cid, request_id=body.client_request_id,
+                        turn_id=turn_id, checkpoint=preturn_checkpoint,
+                        pending_action=pending_action, clarification_id=clarification_id,
+                        pending_question=pending_question)
         except IntegrityError as exc:
             # A concurrent running turn violates uq_running_turn_per_conversation.
             # Both SQLite and PostgreSQL enforce this atomically at the database.
@@ -202,6 +224,20 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
             raise
         plan_store = ConversationPlanStore(Session, cid)
         goal_store = ConversationGoalStore(Session, cid)
+
+        def saved_plan_execution_guard():
+            # Claim the exact Turn-bound snapshot in a DB transaction before
+            # dispatch. Every supported plan writer checks this same claim.
+            if preturn_plan_raw is None:
+                return False
+            try:
+                with Session.begin() as guard_db:
+                    plan_store.acquire_execution_claim_in_session(
+                        guard_db, turn_id=turn_id, expected_raw=preturn_plan_raw)
+                return True
+            except (PlanSnapshotConflict, IntegrityError):
+                return False
+
         previous_goal = None
         parsed_result = None
         began = time.monotonic()
@@ -211,7 +247,10 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
         failure_code = None
         decision_steps = 0
         try:
-            existing_checkpoint = plan_store.load()
+            # Use the exact snapshot observed in the Turn-creation transaction.
+            # Do not perform a second, unbound plan read after creating the Turn.
+            existing_checkpoint = (json.loads(preturn_plan_raw)
+                                   if preturn_plan_raw is not None else None)
             interpretation = None
             if body.goal_confirmation is not None:
                 if (settings.understanding_strategy != "structured"
@@ -230,6 +269,27 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                           "trace": [{"step": 0, "type": "goal_confirmation"}], "steps": 0}
             if settings.understanding_strategy not in {"direct", "structured"}:
                 raise UnderstandingError("invalid_understanding_strategy")
+            # A confirmed cancellation is a Host-owned plan mutation, not an
+            # AgentLoop tool. The exact pre-turn snapshot is CAS-deleted during
+            # terminal Turn commit. No tools or step execution occur here.
+            if (result is None and existing_checkpoint is not None
+                    and settings.understanding_strategy == "structured"
+                    and agent_decider is None and body.goal_confirmation is None
+                    and await review_plan_cancellation(
+                        HTTPUnderstandingModel(
+                            settings.model_provider, settings.model_base_url,
+                            settings.model_api_key, settings.model_timeout_seconds,
+                            settings.model_max_output_tokens),
+                        settings.understanding_strong_model, body.content)):
+                result = {"run_id": turn_id, "status": "completed",
+                          "termination_reason": "plan_cancelled",
+                          "answer": "已取消当前保存的计划，未执行任何步骤。",
+                          "trace": [{"step": 0, "type": "plan_cancelled"}],
+                          "steps": 0, "plan": [], "plan_events": [
+                              {"event": "plan_cancelled",
+                               "revision": existing_checkpoint["revision"]}],
+                          "plan_revision": existing_checkpoint["revision"],
+                          "plan_cancellation_requested": True}
             # A strict, user-grounded contradiction can be rejected before
             # invoking any classifier or generic Understanding model.
             if (result is None and existing_checkpoint
@@ -677,12 +737,39 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                       "steps": 0}
                         elif result is None and existing_checkpoint:
                             plan_control = plan_control or plan_decision.intent
+            # Never hand explicit saved-plan cancellation to the generic loop
+            # when the independent semantic verifier did not confirm deletion.
+            if (result is None and existing_checkpoint is not None
+                    and settings.understanding_strategy == "structured"
+                    and agent_decider is None
+                    and explicit_saved_plan_cancellation(body.content)):
+                result = {"run_id": turn_id, "status": "partial",
+                          "termination_reason": "plan_cancellation_requires_clarification",
+                          "answer": "无法确认取消当前计划的授权；未取消，也未执行步骤。",
+                          "trace": [{"step": 0, "type": "plan_cancellation_fenced"}],
+                          "steps": 0, "plan": existing_checkpoint["steps"],
+                          "plan_revision": existing_checkpoint["revision"]}
+            # A model's failure to recognize an explicitly saved, non-running
+            # plan is not permission to invoke ordinary tools. The narrow
+            # current-turn constraint fence only blocks execution; it never
+            # fabricates a plan or writes a checkpoint.
+            if (result is None and agent_decider is None
+                    and settings.understanding_strategy == "structured"
+                    and explicit_deferred_plan_request(body.content)):
+                result = {"run_id": turn_id, "status": "partial",
+                          "termination_reason": "plan_creation_requires_clarification",
+                          "answer": "已识别到只保存、不执行的计划约束，但当前无法可靠保存步骤；请确认计划内容。",
+                          "trace": [{"step": 0, "type": "plan_execution_fenced"}],
+                          "steps": 0}
             if result is None:
                 decider = agent_decider if agent_decider is not None else NativeToolDecision(settings)
                 result = await AgentLoop(decider, task_store=ConversationTaskStore(Session, cid),
                     memory_store=MemoryStore(Session, uid, write_allowed=body.memory_write_consent),
                     mcp_client=StdioMCPClient(), skill_strategy=settings.skill_strategy,
-                    skill_budget_chars=settings.skill_budget_chars).run(body.content, history=context,
+                    skill_budget_chars=settings.skill_budget_chars,
+                    execution_guard=(saved_plan_execution_guard
+                        if plan_control in {"execute_first", "resume"} else None)).run(
+                                          body.content, history=context,
                                           plan_checkpoint=existing_checkpoint,
                                           understanding_result=interpretation,
                                           execution_mode=execution_mode,
@@ -750,8 +837,44 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                 turn = db.get(Turn, turn_id)
                 if response is None or turn is None or turn.state != "running":
                     raise RuntimeError("turn_finalization_conflict")
+                if (status == "completed" and result
+                        and result.get("plan_cancellation_requested")):
+                    try:
+                        plan_store.cancel_in_session(
+                            db, expected_raw=preturn_plan_raw)
+                    except PlanSnapshotConflict:
+                        status = "partial"
+                        failure_code = "plan_snapshot_conflict"
+                        answer = "计划已发生变化，未取消新的计划。"
+                        result = {"run_id": turn_id, "status": status,
+                                  "termination_reason": "plan_snapshot_conflict",
+                                  "answer": answer,
+                                  "trace": [{"step": 0, "type": "plan_snapshot_conflict"}],
+                                  "steps": 0}
                 if status in {"completed", "partial"} and result.get("plan_checkpoint"):
-                    plan_store.save_in_session(db, result["plan_checkpoint"])
+                    try:
+                        # Every plan checkpoint, including tool-execution evidence,
+                        # must match the exact snapshot bound to this Turn.
+                        plan_store.compare_and_swap_in_session(
+                            db, expected_raw=preturn_plan_raw,
+                            snapshot=result["plan_checkpoint"],
+                            owner_turn_id=turn_id if plan_control in {"execute_first", "resume"} else None)
+                    except PlanSnapshotConflict:
+                        # Never overwrite a newer durable plan. If a tool was
+                        # already dispatched, tell the user to verify its effect
+                        # before retrying; the database cannot roll that effect back.
+                        status = "partial"
+                        failure_code = "plan_snapshot_conflict"
+                        answer = ("当前计划已发生变化，本次没有覆盖新计划。若本轮已调用工具，"
+                                  "请先核对工具执行结果，再决定是否重试，避免重复执行。")
+                        result = {
+                            "run_id": turn_id,
+                            "status": status,
+                            "termination_reason": "plan_snapshot_conflict",
+                            "answer": answer,
+                            "trace": [{"step": 0, "type": "plan_snapshot_conflict"}],
+                            "steps": 0,
+                        }
                 if (status in {"completed", "partial"} and parsed_result is not None
                         and not suppress_persistent_routing and execution_mode not in {"respond_only", "read_only"}
                         and execution_target == "goal_state"
@@ -765,6 +888,9 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                     goal_store.resolve_confirmation_in_session(
                         db, previous_goal, body.expected_goal_version,
                         body.goal_confirmation == "accept")
+                # Release any saved-plan claim in the same transaction that
+                # persists the terminal Turn state, including partial/error paths.
+                plan_store.release_execution_claim_in_session(db, turn_id=turn_id)
                 response.content = answer
                 response.status = status
                 turn.state = status
@@ -815,19 +941,42 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                 result=result,
                 registered_tools=set(SCHEMAS),
             )
-            shadow = await evaluate_shadow(
-                HTTPUnderstandingModel(
-                    settings.model_provider, settings.model_base_url,
-                    settings.model_api_key, settings.model_timeout_seconds,
-                    settings.model_max_output_tokens),
-                settings.understanding_strong_model, body.content,
-                has_plan=existing_checkpoint is not None,
-                pending_action=pending_action, pending_field=pending_field,
-                host_facts=host_facts)
+            # Diagnostics run after the durable Turn commit. Provider/schema/
+            # preview failures must never turn an already committed success
+            # into an HTTP error or re-dispatch a tool.
+            shadow_started = time.monotonic()
+            try:
+                shadow = await evaluate_shadow(
+                    HTTPUnderstandingModel(
+                        settings.model_provider, settings.model_base_url,
+                        settings.model_api_key, settings.model_timeout_seconds,
+                        settings.model_max_output_tokens),
+                    settings.understanding_strong_model, body.content,
+                    has_plan=existing_checkpoint is not None,
+                    pending_action=pending_action, pending_field=pending_field,
+                    host_facts=host_facts,
+                    m3c_capture=preturn_capture,
+                    m3c_checkpoint=preturn_checkpoint)
+            except Exception as exc:
+                log.warning("shadow diagnostic unavailable turn=%s class=%s",
+                            turn_id, type(exc).__name__)
+                shadow = {"state": "unavailable", "error_class": "ShadowEvaluationError",
+                          "host_admission_complete": False}
+            shadow["diagnostic_elapsed_ms"] = int(
+                (time.monotonic() - shadow_started) * 1000)
+            shadow["diagnostic_model_calls"] = 1 + shadow.get("recovery_model_calls", 0)
+            shadow["execution_authorized"] = False
         response_data = {**result, "conversation_id": cid,
                          "message_id": assistant_id, "turn_id": turn_id}
         if shadow is not None:
             response_data["route_shadow"] = {**shadow, **compare_to_legacy(shadow, result)}
+            if preturn_capture is not None:
+                response_data["route_shadow"]["m3_preturn_identity"] = (
+                    compare_captured_identity(
+                        preturn_capture, conversation_id=cid,
+                        request_id=body.client_request_id, turn_id=turn_id))
+                response_data["route_shadow"]["m3_checkpoint_snapshot"] = (
+                    compare_checkpoint_snapshot(preturn_capture, existing_checkpoint))
         return response_data
 
     @app.get("/conversations/{cid}/turns/{turn_id}/diagnostics")

@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 from agent.config import Settings
-from services.db import Message, Turn, database
+from services.db import Message, PlanExecutionClaim, Turn, database
 
 
 def recover_abandoned(database_url: str, *, minimum_age_minutes: int = 10,
@@ -40,6 +40,9 @@ def recover_abandoned(database_url: str, *, minimum_age_minutes: int = 10,
                     turn.state = "interrupted"
                     message.status = "interrupted"
                     message.content = ""
+                    claim = db.get(PlanExecutionClaim, turn.conversation_id)
+                    if claim is not None and claim.turn_id == turn.id:
+                        db.delete(claim)
             # Even a dry run never writes database state.
         return recovered
     finally:

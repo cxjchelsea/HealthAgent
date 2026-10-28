@@ -133,3 +133,50 @@ def resolve_plan_admission(
         proposal, existing_checkpoint=existing_checkpoint,
         missing_reference=missing_reference)
     return PlanAdmission(admitted if admitted is not None else "ordinary")
+
+
+def explicit_deferred_plan_request(message: str) -> bool:
+    """Recognize explicit non-execution constraint, never authorize a tool."""
+    has_plan = any(word in message for word in ("计划", "流程"))
+    has_creation = any(word in message for word in ("创建", "建立", "制定", "保存"))
+    has_defer = any(word in message for word in (
+        "只保存", "暂不执行", "先不执行", "不要执行", "不执行"))
+    has_steps = any(word in message for word in ("第一步", "第1步"))
+    return has_plan and has_creation and has_defer and has_steps
+
+
+class PlanCancellationReview(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    cancel_saved_plan: bool
+
+
+async def review_plan_cancellation(provider: HTTPUnderstandingModel, model: str,
+                                   message: str) -> bool:
+    """Independent current-turn cancellation intent; never grants execution."""
+    prompt = (
+        "Return JSON cancel_saved_plan boolean. True ONLY when the current "
+        "user explicitly commands cancelling/discarding an already saved "
+        "execution plan itself, with no execution requested. False for "
+        "canceling a task, an individual plan step, a hypothetical question, "
+        "or a request to execute/revise steps. Never authorize any tool."
+    )
+    try:
+        raw = await provider.complete(
+            model=model,
+            messages=[{"role": "system", "content": prompt},
+                      {"role": "user", "content": json.dumps(
+                          {"current_request": message}, ensure_ascii=False)}],
+            response_schema=PlanCancellationReview.model_json_schema())
+        return PlanCancellationReview.model_validate_json(raw).cancel_saved_plan
+    except (UnderstandingError, ValueError, TypeError):
+        return False
+
+
+def explicit_saved_plan_cancellation(message: str) -> bool:
+    """Narrow no-execution fence; does not authorize deleting any plan."""
+    return (
+        "计划" in message
+        and any(token in message for token in ("取消", "撤销", "废弃"))
+        and any(token in message for token in ("保存", "已有", "当前", "刚才"))
+        and not any(token in message for token in ("如果", "假如", "如何", "怎么"))
+    )

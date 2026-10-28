@@ -7,7 +7,7 @@ from sqlalchemy import select
 from agent.config import Settings
 from agent.decision import Decision
 from apps.api.main import create_app
-from services.db import Conversation, Message, Turn, database
+from services.db import Conversation, Message, PlanExecutionClaim, Turn, database
 from services.plan_store import ConversationPlanStore
 from services.recover_turns import recover_abandoned
 
@@ -58,9 +58,10 @@ def test_h06_checkpoint_commit_failure_never_leaks_success(tmp_path, monkeypatch
     with TestClient(create_app(Settings(database_url=url, model_provider="fake"),
                                agent_decider=OneStep())) as client:
         cid = client.post("/conversations").json()["id"]
-        def reject_snapshot(self, db, snapshot):
+        def reject_snapshot(self, db, *, expected_raw, snapshot):
             raise RuntimeError("test_injected_checkpoint_commit_failure")
-        monkeypatch.setattr(ConversationPlanStore, "save_in_session", reject_snapshot)
+        monkeypatch.setattr(
+            ConversationPlanStore, "compare_and_swap_in_session", reject_snapshot)
         response = client.post(f"/conversations/{cid}/agent/messages",
             json={"content": "Create and execute a plan",
                   "client_request_id": "h06-request-0001"})
@@ -93,6 +94,7 @@ def test_h07_dry_run_then_manual_recovery_is_non_replaying(tmp_path):
                     assistant_message_id=msg.id, state="running")
         db.add(turn)
         db.flush()
+        db.add(PlanExecutionClaim(conversation_id=cid, turn_id=turn.id, snapshot="{}"))
         turn_id, msg_id = turn.id, msg.id
     engine.dispose()
     assert turn_id in recover_abandoned(url, minimum_age_minutes=10, apply=False)
@@ -100,6 +102,7 @@ def test_h07_dry_run_then_manual_recovery_is_non_replaying(tmp_path):
     with Session() as db:
         assert db.get(Turn, turn_id).state == "running"
         assert db.get(Message, msg_id).status == "pending"
+        assert db.get(PlanExecutionClaim, cid).turn_id == turn_id
     engine.dispose()
     assert turn_id in recover_abandoned(url, minimum_age_minutes=10, apply=True)
     engine, Session = database(url)
@@ -107,5 +110,6 @@ def test_h07_dry_run_then_manual_recovery_is_non_replaying(tmp_path):
         assert db.get(Turn, turn_id).state == "interrupted"
         assert db.get(Message, msg_id).status == "interrupted"
         assert db.get(Message, msg_id).content == ""
+        assert db.get(PlanExecutionClaim, cid) is None
     engine.dispose()
     assert recover_abandoned(url, minimum_age_minutes=10, apply=True) == []

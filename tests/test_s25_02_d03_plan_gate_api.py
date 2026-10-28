@@ -177,3 +177,111 @@ def admit_fixture_saved_plan(monkeypatch):
     async def admitted(*args, **kwargs):
         return True
     monkeypatch.setattr("apps.api.main.review_plan_creation_reference", admitted)
+
+
+def test_explicit_save_only_plan_never_falls_back_to_tools(tmp_path, monkeypatch):
+    from agent.loop import AgentLoop
+    from agent.plan_control import explicit_deferred_plan_request
+
+    message = "请创建两步计划：第一步计算 3*4，第二步计算 5*6。只保存，不执行。"
+    assert explicit_deferred_plan_request(message)
+
+    async def fake_complete(self, *, messages, model, response_schema=None):
+        return understood()
+
+    async def missing_plan_proposal(*args, **kwargs):
+        return PlanRequest(intent="other", steps=[])
+
+    async def should_never_run(self, *args, **kwargs):
+        raise AssertionError("unsafe_agent_loop_fallback")
+
+    async def policy(message, interpretation):
+        return "read_only"
+
+    monkeypatch.setattr(HTTPUnderstandingModel, "complete", fake_complete)
+    monkeypatch.setattr("apps.api.main.review_plan_intent", missing_plan_proposal)
+    monkeypatch.setattr(AgentLoop, "run", should_never_run)
+
+    settings = Settings(
+        database_url=f"sqlite:///{tmp_path / 'no_fallback.db'}",
+        model_provider="ollama_proxy", understanding_strategy="structured")
+    with TestClient(create_app(settings, execution_policy=policy)) as client:
+        cid = client.post("/conversations").json()["id"]
+        res = client.post(f"/conversations/{cid}/agent/messages", json={
+            "content": message, "client_request_id": "save-only-no-run-001"})
+        assert res.status_code == 200, res.text
+        data = res.json()
+        assert data["termination_reason"] == "plan_creation_requires_clarification"
+        assert data["trace"] == [{"step": 0, "type": "plan_execution_fenced"}]
+        assert not data.get("plan")
+        assert data.get("plan_checkpoint") is None
+        assert not any(t["type"] == "tool" for t in data["trace"])
+
+
+def test_deferred_plan_fence_does_not_block_independent_calculation():
+    from agent.plan_control import explicit_deferred_plan_request
+    assert not explicit_deferred_plan_request("请使用计算工具计算 3*4")
+    assert not explicit_deferred_plan_request(
+        "旧计划不要执行，现在请计算 3*4")
+
+
+def test_m3_cancel_saved_plan_is_host_owned_and_durable(tmp_path, monkeypatch):
+    from agent.loop import AgentLoop
+    from services.plan_store import ConversationPlanStore
+    from services.db import database
+
+    async def fake_complete(self, *, messages, model, response_schema=None):
+        return understood()
+
+    async def fake_plan_intent(provider, model, message, existing_plan):
+        if not existing_plan:
+            return PlanRequest(intent="plan_only", steps=[
+                {"goal": "计算 12*13", "expected_tool": "calculate",
+                 "expected_arguments": {"expression": "12*13"}},
+                {"goal": "计算 7*9", "expected_tool": "calculate",
+                 "expected_arguments": {"expression": "7*9"}}])
+        return PlanRequest(intent="other")
+
+    async def confirm_create(*args, **kwargs):
+        return True
+
+    async def confirm_cancel(provider, model, message):
+        return "取消" in message and "计划" in message
+
+    async def should_never_run(self, *args, **kwargs):
+        raise AssertionError("cancel_must_not_enter_agent_loop")
+
+    async def policy(message, interpretation):
+        return "read_only"
+
+    monkeypatch.setattr(HTTPUnderstandingModel, "complete", fake_complete)
+    monkeypatch.setattr("apps.api.main.review_plan_intent", fake_plan_intent)
+    monkeypatch.setattr("apps.api.main.review_plan_creation_reference", confirm_create)
+    monkeypatch.setattr("apps.api.main.review_plan_cancellation", confirm_cancel)
+    monkeypatch.setattr(AgentLoop, "run", should_never_run)
+
+    dburl = f"sqlite:///{tmp_path / 'cancel.db'}"
+    settings = Settings(database_url=dburl, model_provider="ollama_proxy",
+                        understanding_strategy="structured")
+    with TestClient(create_app(settings, execution_policy=policy)) as client:
+        cid = client.post("/conversations").json()["id"]
+        url = f"/conversations/{cid}/agent/messages"
+        first = client.post(url, json={
+            "content": "请创建一个两步计划：第一步计算 12*13，第二步计算 7*9。只保存计划，不执行。",
+            "client_request_id": "cancel-host-create-001"})
+        assert first.status_code == 200, first.text
+        assert first.json()["termination_reason"] == "plan_created_pending_execution"
+        cancelled = client.post(url, json={
+            "content": "取消刚才保存的计划，不要执行其中的步骤。",
+            "client_request_id": "cancel-host-cancel-002"})
+        assert cancelled.status_code == 200, cancelled.text
+        body = cancelled.json()
+        assert body["termination_reason"] == "plan_cancelled"
+        assert body["status"] == "completed"
+        assert body["trace"] == [{"step": 0, "type": "plan_cancelled"}]
+        assert not body["plan"]
+        engine, session = database(dburl)
+        try:
+            assert ConversationPlanStore(session, cid).load() is None
+        finally:
+            engine.dispose()

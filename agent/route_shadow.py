@@ -55,11 +55,19 @@ class ShadowClarification(BaseModel):
 
 
 
+class PlanQuoteRecovery(BaseModel):
+    """Only literal current-turn quotations, never route or authorization."""
+    model_config = ConfigDict(extra="forbid")
+    creation_quote: str = Field(min_length=1, max_length=400)
+    step_quotes: list[str] = Field(min_length=2, max_length=2)
+
+
+
 class ShadowRoute(BaseModel):
     model_config = ConfigDict(extra="forbid")
     schema_version: Literal["s25-route-v2"]
     primary_route: Literal["respond", "clarify", "agent_loop", "plan_create",
-                           "plan_execute_first", "plan_resume", "plan_revise", "cancel"]
+                           "plan_execute_first", "plan_resume", "plan_revise", "plan_cancel", "cancel"]
     route_target: Literal["none", "active_goal", "saved_plan",
                           "pending_clarification", "tool_action"]
     execution_scope: Literal["none", "single_tool", "first_step",
@@ -92,6 +100,7 @@ class ShadowRoute(BaseModel):
             "plan_resume": ({"saved_plan"}, {"remaining_steps","all_steps"},
                             {"read_only","mutation_requested"}),
             "plan_revise": ({"saved_plan"}, {"none"}, {"mutation_requested"}),
+            "plan_cancel": ({"saved_plan"}, {"none"}, {"mutation_requested"}),
             "cancel": ({"none","active_goal","saved_plan","pending_clarification"},
                        {"none"}, {"none"}),
         }
@@ -344,6 +353,7 @@ Never provide a non-none clarification reason when required=false.
 For a clear request set ambiguity="clear". For uncertain requests choose
 primary_route="clarify" and provide a matching clarification object.
 Route combinations: respond/cancel => scope none and effect none;
+plan_cancel => target saved_plan, scope none and effect mutation_requested;
 agent_loop => scope single_tool or none; plan_create/plan_revise => scope none,
 effect mutation_requested; plan_execute_first => scope first_step;
 plan_resume => scope remaining_steps or all_steps. No other combination.
@@ -351,6 +361,10 @@ If there is NO saved plan, a reference to continuing one is still a
 plan_resume semantic proposal: lack of checkpoint is a HOST denial, not an
 excuse to invent steps.
 Routing distinctions (semantic proposals ONLY, never authorizations):
+- Cancelling/deleting a SAVED execution plan itself is plan_cancel, target saved_plan,
+  scope none, mutation_requested, reference.kind saved_plan. Do not classify
+  this as plan_resume (execution), or generic cancel (non-effect). A request
+  not to execute plan steps does NOT make plan cancellation a read-only action.
 - Decide between plan_create and agent_loop from the REQUESTED PERSISTED
   OBJECT and its lifecycle. A single task has one title and is immediately
   created by the task tool. A formal executable plan has ordered steps and
@@ -398,8 +412,13 @@ Reference fields: kind none requires null step_number and null pending_field.
 Cancel pending argument is not saved_step; step_number must remain null.
 One-off task-manager item creation is agent_loop/tool_action, not a durable
 ordered multi-step plan. Host independently checks write authorization.
-For plan_create, plan_step_evidence must contain TWO distinct exact spans
-for separately requested ordered steps; never invent missing plan steps.
+For plan_create, provide TWO distinct, non-overlapping exact quotations
+from the CURRENT message in plan_step_quote_evidence (one per ordered step),
+and at least one exact creation-intent quotation in source_quote_evidence.
+Prefer these quote fields over numeric offsets. Never invent steps or quote
+text absent from the message. If two literal ordered steps cannot be quoted,
+leave evidence empty and allow Host to reject the proposal. Do NOT use
+plan_step_evidence numeric offsets unless explicitly verifiable.
 Negative constraints are operation-scoped, not global write prohibitions.
 Do not fabricate source spans or reference fields; use empty/default
  values if original text does not prove the field."""
@@ -422,6 +441,9 @@ Semantic contract:
 Evidence contract:
 - Prefer *_quote_evidence fields with exact current-message substrings.
   The Host locates unique quotes deterministically.
+- For plan_create, populate plan_step_quote_evidence with exactly quoted
+  separately ordered steps; source_quote_evidence must quote the creation intent.
+  These quote fields are not the legacy offset-based plan_step_evidence.
 - Never guess character indices, referents, plan steps, or permission.
 - Explicit legacy source spans remain strict; invalid offsets are not repaired.
 - Durable plans need two separately grounded ordered step quotations.
@@ -440,7 +462,9 @@ async def evaluate_shadow(provider: HTTPUnderstandingModel, model_name: str,
                            message: str, *, has_plan: bool,
                            pending_action: str | None, timeout_s: float = 12,
                            host_facts: Any | None = None,
-                           pending_field: str | None = None) -> dict:
+                           pending_field: str | None = None,
+                           m3c_capture: Any | None = None,
+                           m3c_checkpoint: dict | None = None) -> dict:
     """Isolated evaluation: never invokes AgentLoop, tools, stores or permissions."""
     import asyncio
     began = time.perf_counter()
@@ -464,8 +488,53 @@ async def evaluate_shadow(provider: HTTPUnderstandingModel, model_name: str,
                     "reference_kind": result.reference.kind,
                     "ambiguity": result.ambiguity}
         stage = "source_provenance"
+        # Bounded counts separate missing model evidence from failed Host binding.
+        evidence_diagnostic = {
+            "model_step_quotes": len(result.plan_step_quote_evidence),
+            "model_step_spans": len(result.plan_step_evidence),
+            "model_source_quotes": len(result.source_quote_evidence),
+            "model_source_spans": len(result.source_evidence),
+        }
         # Explicit offsets are immutable assertions; validate before binding quotes.
         verify_source_spans(result, message)
+        # The full route schema has optional evidence fields. Only for an
+        # already-classified plan_create with completely missing evidence,
+        # request a small, evidence-only diagnostic object once.
+        # It cannot change the route/effect/scope/authority.
+        recovery_calls = 0
+        if (result.primary_route == "plan_create"
+                and not result.plan_step_evidence
+                and not result.plan_step_quote_evidence):
+            recovery_calls = 1
+            try:
+                recovered_raw = await asyncio.wait_for(provider.complete(
+                    model=model_name,
+                    response_schema=PlanQuoteRecovery.model_json_schema(),
+                    messages=[
+                        {"role": "system", "content":
+                         "Extract literal substrings from the CURRENT message. "
+                         "Return creation_quote quoting the request to create/save "
+                         "a plan, and step_quotes containing exactly two distinct "
+                         "ordered step substrings. Never paraphrase or invent. "
+                         "This is evidence-only, never permission or execution."},
+                        {"role": "user", "content": message},
+                    ]), timeout=timeout_s)
+                recovered = PlanQuoteRecovery.model_validate_json(recovered_raw)
+                result = result.model_copy(update={
+                    "source_quote_evidence": [
+                        *result.source_quote_evidence,
+                        QuoteEvidence(exact_text=recovered.creation_quote)],
+                    "plan_step_quote_evidence": [
+                        QuoteEvidence(exact_text=quote)
+                        for quote in recovered.step_quotes],
+                })
+            except Exception:
+                # A failed model recovery must never synthesize evidence or
+                # promote an ungrounded route into valid.
+                pass
+        evidence_diagnostic["recovery_model_calls"] = recovery_calls
+        evidence_diagnostic["recovered_step_quotes"] = len(
+            result.plan_step_quote_evidence)
         result = bind_unique_quotes(result, message)
         verify_source_spans(result, message)
         result = bind_diagnostic_pending_reference(
@@ -488,6 +557,11 @@ async def evaluate_shadow(provider: HTTPUnderstandingModel, model_name: str,
                 "missing" if result.reference.pending_field is None else
                 "match" if result.reference.pending_field == host_facts.pending_field
                 else "conflict")
+        m3c_preview = None
+        if m3c_capture is not None:
+            from agent.m3c_shadow_admission import preview_m3c_admission
+            m3c_preview = preview_m3c_admission(
+                result, m3c_capture, checkpoint=m3c_checkpoint)
         return {"state":"valid","route":result.primary_route,
                 "route_target":result.route_target,
                 "reference_kind":result.reference.kind,
@@ -495,6 +569,8 @@ async def evaluate_shadow(provider: HTTPUnderstandingModel, model_name: str,
                 "ambiguity":result.ambiguity,"host_would_deny":would_deny,
                 "host_admission_complete":False,
                 "evidence_spans":len(result.source_evidence),
+                 "recovery_model_calls": recovery_calls,
+                **({"m3c_admission":m3c_preview} if m3c_preview is not None else {}),
                 **({"host_preview":host_preview} if host_preview is not None else {}),
                 **({"pending_field_state":pending_field_state}
                    if pending_field_state is not None else {}),
@@ -523,6 +599,7 @@ async def evaluate_shadow(provider: HTTPUnderstandingModel, model_name: str,
                                         {"read_only", "mutation_requested"}),
                         "plan_execute_first": ({"saved_plan"}, {"first_step"},
                                                {"read_only", "mutation_requested"}),
+                        "plan_cancel": ({"saved_plan"}, {"none"}, {"mutation_requested"}),
                         "cancel": ({"none", "active_goal", "saved_plan",
                                     "pending_clarification"}, {"none"}, {"none"}),
                     }
@@ -567,6 +644,10 @@ async def evaluate_shadow(provider: HTTPUnderstandingModel, model_name: str,
         return {"state":"unavailable","error_class":"ValueError",
                 "semantic_proposal": semantic if stage == "source_provenance" else None,
                 "semantic_schema_valid": stage == "source_provenance",
+                "semantic_route_comparison_only": (
+                    semantic["route"] if stage == "source_provenance" else None),
+                "evidence_admissible": False,
+                **(evidence_diagnostic if stage == "source_provenance" else {}),
                 "provenance_status": "HOLD",
                 "host_admission_complete": False,
                 "failure_stage":stage,"validation_code":code,
@@ -587,6 +668,7 @@ def compare_to_legacy(shadow: dict, result: dict) -> dict:
     reasons = {
         "plan_created_pending_execution": "plan_create",
         "plan_revised_pending_execution": "plan_revise",
+        "plan_cancelled": "plan_cancel",
         "plan_revision_conflict": "plan_revise",
         "existing_plan_requires_revision": "plan_create",
         "plan_first_step_already_completed": "plan_execute_first",

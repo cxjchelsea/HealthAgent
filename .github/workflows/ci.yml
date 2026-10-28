@@ -21,6 +21,8 @@ jobs:
           python-version: '3.12'
       - run: python -m pip install -e '.[dev]'
       - run: python -m pytest -q
+        env:
+          TEST_POSTGRES_URL: postgresql+psycopg://healthagent:ci_local_only@localhost:5432/healthagent
       - run: python -m evals.runner
       - run: python -m evals.s2a_benchmark
       - run: python -m evals.s2b5_benchmark
@@ -37,4 +39,4 @@ jobs:
         run: |
           python -m services.migrate
           python -m services.migrate
-          python -c "from sqlalchemy import create_engine,text; import os; e=create_engine(os.environ['DATABASE_URL']); assert e.connect().execute(text('select version_num from alembic_version')).scalar()=='0007_goal_state'"
+          python -c "from sqlalchemy import create_engine,text; import os; e=create_engine(os.environ['DATABASE_URL']); assert e.connect().execute(text('select version_num from alembic_version')).scalar()=='0008_plan_execution_claim'"

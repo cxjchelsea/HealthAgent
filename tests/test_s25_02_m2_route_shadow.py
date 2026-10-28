@@ -377,3 +377,26 @@ def test_confusion_matrix_handles_unasserted_optional_field():
         {"expected_effect":"read_only","proposed_effect":"read_only"},
     ], "expected_effect", "proposed_effect")
     assert {row["expected"] for row in result} == {"not_asserted", "read_only"}
+
+
+def test_m3_saved_plan_cancellation_shadow_contract():
+    from agent.route_shadow import ShadowRoute, compare_to_legacy
+    from agent.route_shadow_host import ShadowHostFacts, preview_admission
+
+    route = ShadowRoute.model_validate({
+        "schema_version": "s25-route-v2",
+        "primary_route": "plan_cancel", "route_target": "saved_plan",
+        "execution_scope": "none", "effect_intent": "mutation_requested",
+        "ambiguity": "clear", "reference": {"kind": "saved_plan"}})
+    preview = preview_admission(route, ShadowHostFacts(
+        has_plan=True, plan_states=("pending", "pending"), revision_valid=True))
+    assert preview.disposition == "needs_evidence"
+    assert preview.reason == "plan_cancellation_authority_unverified"
+    assert compare_to_legacy(
+        {"state": "valid", "route": "plan_cancel"},
+        {"status": "completed", "termination_reason": "plan_cancelled",
+         "trace": [{"step": 0, "type": "plan_cancelled"}]})["comparison"] == "match"
+    assert compare_to_legacy(
+        {"state": "valid", "route": "plan_resume"},
+        {"status": "completed", "termination_reason": "plan_cancelled",
+         "trace": []})["comparison"] == "mismatch"

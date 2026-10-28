@@ -48,6 +48,15 @@ class ConversationPlan(Base):
         ForeignKey("conversations.id"), primary_key=True)
     snapshot: Mapped[str] = mapped_column(Text, default="{}")
 
+class PlanExecutionClaim(Base):
+    """Durable per-conversation reservation for saved-plan tool execution."""
+    __tablename__ = "plan_execution_claims"
+    conversation_id: Mapped[str] = mapped_column(
+        ForeignKey("conversations.id"), primary_key=True)
+    turn_id: Mapped[str] = mapped_column(ForeignKey("turns.id"), unique=True)
+    snapshot: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
 class ConversationGoalState(Base):
     """Versioned, owner-scoped via parent conversation, verified by caller."""
     __tablename__ = "conversation_goal_states"

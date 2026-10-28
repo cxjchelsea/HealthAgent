@@ -1,0 +1,175 @@
+"""HTTP API integration for durable saved-plan execution claims.
+
+The test exercises the real route, Turn persistence, database claim acquisition,
+competing plan writes, owner checkpoint finalization, and claim release. Model
+classification and the actual tool body are controlled to keep it deterministic.
+"""
+import json
+
+from fastapi.testclient import TestClient
+from sqlalchemy import select
+
+from agent.config import Settings
+from agent.decision import Decision
+from agent.plan_intent import PlanRequest
+from agent.planning import PlanLedger
+from agent.understanding import UnderstandingResult
+from apps.api.main import create_app
+from services.db import ConversationPlan, PlanExecutionClaim, Turn, database
+from services.plan_store import ConversationPlanStore, PlanSnapshotConflict
+
+
+def _understood():
+    return UnderstandingResult.model_validate({
+        "status": "understood",
+        "goal": None,
+        "change": {"kind": "chat", "target_goal_id": None, "delta": None},
+        "clarification": {"required": False, "reason_code": "none", "question": None},
+        "schema_version": "s25-01-v1",
+    })
+
+
+def _checkpoint():
+    ledger = PlanLedger()
+    assert ledger.propose([{
+        "goal": "计算 8*8",
+        "expected_tool": "calculate",
+        "expected_arguments": {"expression": "8*8"},
+    }])["ok"]
+    return ledger.checkpoint()
+
+
+class _UnusedDecider:
+    async def decide(self, messages, tools):
+        raise AssertionError("the controlled API path must not use a model tool decider")
+
+
+def test_http_saved_plan_claim_blocks_competing_writer_and_releases_on_finalize(
+        tmp_path, monkeypatch):
+    import apps.api.main as api
+
+    settings = Settings(
+        database_url=f"sqlite:///{tmp_path / 'm3_claim_api.db'}",
+        model_provider="fake",
+        understanding_strategy="structured",
+    )
+    plan = _checkpoint()
+    run_state = {"guard_calls": 0, "competing_write_blocked": False, "cid": None, "claim_error": None}
+
+    async def fake_understand(self, context):
+        return {"result": _understood(), "attempts": []}
+
+    async def fake_policy(*args, **kwargs):
+        from agent.execution_policy import ExecutionPolicyDecision
+        return ExecutionPolicyDecision(mode="execute", target="tool_action")
+
+    async def fake_reconcile(*args, **kwargs):
+        from agent.execution_policy import ExecutionPolicyDecision
+        return ExecutionPolicyDecision(mode="execute", target="tool_action")
+
+    async def fake_plan_intent(provider, model, message, existing_plan):
+        if "创建" in message:
+            return PlanRequest(intent="plan_only", steps=[{
+                "goal": "计算 8*8", "expected_tool": "calculate",
+                "expected_arguments": {"expression": "8*8"},
+            }])
+        return PlanRequest(intent="execute_first", steps=[])
+
+    async def fake_create_review(*args, **kwargs):
+        return True
+
+    async def fake_execution_review(*args, **kwargs):
+        return True
+
+    async def fake_run(self, message, **kwargs):
+        guard = self.execution_guard
+        run_state["plan_control"] = kwargs.get("plan_control")
+        run_state["guard_installed"] = guard is not None
+        run_state["guard_calls"] += 1
+        run_state["guard_result"] = bool(guard and guard())
+        ledger = PlanLedger.restore(kwargs["plan_checkpoint"])
+        if run_state["guard_result"]:
+            from services.db import database
+            engine, Session = database(settings.database_url)
+            try:
+                store = ConversationPlanStore(Session, run_state["cid"])
+                observed = store.load_raw()
+                try:
+                    with Session.begin() as db:
+                        store.compare_and_swap_in_session(
+                            db, expected_raw=observed,
+                            snapshot={"revision": 99, "steps": []})
+                except PlanSnapshotConflict as exc:
+                    assert "plan_execution_claimed" in str(exc)
+                    run_state["competing_write_blocked"] = True
+                else:
+                    raise AssertionError("competing plan writer unexpectedly passed the claim")
+            finally:
+                engine.dispose()
+            ledger.observe("calculate", {"ok": True, "value": 64}, {"expression": "8*8"})
+        return {
+            "run_id": "controlled",
+            "status": "partial",
+            "termination_reason": "plan_step_completed" if run_state["guard_result"] else "plan_execution_guard_conflict",
+            "answer": "第一步完成" if run_state["guard_result"] else "执行占用未获准",
+            "trace": [{"step": 1, "type": "tool", "name": "calculate", "ok": True}] if run_state["guard_result"] else [],
+            "steps": 1 if run_state["guard_result"] else 0,
+            "plan": ledger.snapshot(),
+            "plan_revision": ledger.revision,
+            "plan_events": [],
+            "plan_checkpoint": ledger.checkpoint(),
+        }
+
+    original_acquire = ConversationPlanStore.acquire_execution_claim_in_session
+    def observe_acquire(self, db, *, turn_id, expected_raw):
+        try:
+            return original_acquire(self, db, turn_id=turn_id, expected_raw=expected_raw)
+        except Exception as exc:
+            run_state["claim_error"] = f"{type(exc).__name__}:{exc}"
+            raise
+
+    monkeypatch.setattr(ConversationPlanStore, "acquire_execution_claim_in_session", observe_acquire)
+    monkeypatch.setattr(api, "review_plan_intent", fake_plan_intent)
+    monkeypatch.setattr(api, "review_plan_creation_reference", fake_create_review)
+    monkeypatch.setattr(api, "review_plan_execution_authorization", fake_execution_review)
+    monkeypatch.setattr(api, "decide_execution_policy_detail", fake_policy)
+    monkeypatch.setattr(api, "reconcile_execution_policy", fake_reconcile)
+    monkeypatch.setattr(api.UnderstandingService, "understand", fake_understand)
+    monkeypatch.setattr(api.AgentLoop, "run", fake_run)
+
+    with TestClient(create_app(settings, agent_decider=None)) as client:
+        cid = client.post("/conversations").json()["id"]
+        run_state["cid"] = cid
+        path = f"/conversations/{cid}/agent/messages"
+        created = client.post(path, json={
+            "content": "创建计划：计算 8*8",
+            "client_request_id": "m3-claim-api-create-001",
+        })
+        assert created.status_code == 200, created.text
+        assert created.json()["termination_reason"] == "plan_created_pending_execution"
+
+        executed = client.post(path, json={
+            "content": "现在只执行已保存计划的第一步",
+            "client_request_id": "m3-claim-api-execute-002",
+        })
+        assert executed.status_code == 200, executed.text
+        assert executed.json()["status"] == "partial"
+        assert run_state["guard_calls"] == 1
+        assert run_state["guard_result"] is True, {"claim_error": run_state["claim_error"], "plan_control": run_state.get("plan_control"), "guard_installed": run_state.get("guard_installed")}
+        assert run_state["competing_write_blocked"] is True
+
+    engine, Session = database(settings.database_url)
+    try:
+        with Session() as db:
+            saved = db.get(ConversationPlan, cid)
+            claim = db.get(PlanExecutionClaim, cid)
+            turns = list(db.scalars(select(Turn).where(Turn.conversation_id == cid)))
+            assert saved is not None
+            final_checkpoint = json.loads(saved.snapshot)
+            assert final_checkpoint["revision"] == 1
+            assert final_checkpoint["steps"][0]["status"] == "completed"
+            assert claim is None, "terminal Turn must release its durable claim"
+            assert len(turns) == 2
+            assert all(turn.state in {"partial", "completed"} for turn in turns)
+    finally:
+        engine.dispose()
