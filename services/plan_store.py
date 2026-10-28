@@ -86,6 +86,17 @@ class ConversationPlanStore:
         if result.rowcount != 1:
             raise PlanSnapshotConflict("plan_snapshot_conflict")
 
+    def cancel_in_session(self, db, *, expected_raw: str) -> None:
+        """Cancel an exact durable plan without a running execution claim."""
+        current = db.execute(select(ConversationPlan).where(
+            ConversationPlan.conversation_id == self.conversation_id
+        ).with_for_update()).scalar_one_or_none()
+        self._assert_claim_owner(db, None)
+        if current is None or current.snapshot != expected_raw:
+            raise PlanSnapshotConflict("plan_snapshot_conflict")
+        db.delete(current)
+        db.flush()
+
     def acquire_execution_claim_in_session(self, db, *, turn_id: str,
                                            expected_raw: str) -> None:
         """Atomically reserve this exact snapshot for a running Turn.
