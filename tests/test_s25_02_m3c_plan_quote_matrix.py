@@ -95,3 +95,52 @@ def test_plan_create_missing_quotes_remains_fail_closed():
     assert result["validation_code"] == "shadow_plan_steps_ungrounded"
     assert result["model_step_quotes"] == 0
     assert result["evidence_admissible"] is False
+
+
+class TwoStageProposal(FixedProposal):
+    def __init__(self, recovery):
+        super().__init__([])
+        self.recovery = recovery
+
+    async def complete(self, **kwargs):
+        self.calls += 1
+        if self.calls == 1:
+            return json.dumps({
+                "schema_version": "s25-route-v2",
+                "primary_route": "plan_create",
+                "route_target": "saved_plan",
+                "execution_scope": "none",
+                "effect_intent": "mutation_requested",
+                "ambiguity": "clear",
+            })
+        return json.dumps(self.recovery, ensure_ascii=False)
+
+
+def test_missing_quotes_can_recover_only_literal_evidence():
+    message = "请创建两步计划：第一步计算 123*456，第二步计算 789*12。只保存，不执行。"
+    provider = TwoStageProposal({
+        "creation_quote": "请创建两步计划",
+        "step_quotes": ["第一步计算 123*456", "第二步计算 789*12"],
+    })
+    result = asyncio.run(evaluate_shadow(
+        provider, "fake", message, has_plan=False, pending_action=None))
+    assert provider.calls == 2
+    assert result["state"] == "valid"
+    assert result["route"] == "plan_create"
+    assert result["recovery_model_calls"] == 1
+    assert result["host_admission_complete"] is False
+    assert result["host_would_deny"] == "write_provenance_unverified"
+
+
+def test_recovery_fabrication_cannot_bypass_source_verification():
+    message = "请创建两步计划：第一步计算 123*456，第二步计算 789*12。"
+    provider = TwoStageProposal({
+        "creation_quote": "请创建两步计划",
+        "step_quotes": ["第一步计算 123*456", "第三步虚构 1*1"],
+    })
+    result = asyncio.run(evaluate_shadow(
+        provider, "fake", message, has_plan=False, pending_action=None))
+    assert result["state"] == "unavailable"
+    assert result["validation_code"] == "shadow_quote_not_found"
+    assert result["host_admission_complete"] is False
+    assert result["evidence_admissible"] is False
