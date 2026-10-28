@@ -113,3 +113,51 @@ def test_m4_guarded_plan_create_requires_unique_current_turn_bindings():
         checkpoint["steps"][0],
         {**checkpoint["steps"][1], "expected_arguments": {"expression": "9*9"}}]}
     assert not admit_guarded_plan_create(**(args | {"checkpoint": forged}))
+
+
+def test_m4_invalid_confirmed_plan_never_enters_agent_loop(tmp_path, monkeypatch):
+    from agent.loop import AgentLoop
+
+    understood = json.dumps({
+        "schema_version": "s25-01-v1", "status": "understood",
+        "goal": {"objective": "保存计划", "subgoals": [],
+                 "constraints": [], "success_criteria": []},
+        "change": {"kind": "new_goal", "target_goal_id": None, "delta": None},
+        "clarification": {"required": False, "reason_code": "none", "question": None}
+    }, ensure_ascii=False)
+
+    async def fake_complete(self, *, messages, model, response_schema=None):
+        return understood
+
+    async def invalid_plan(*args, **kwargs):
+        return PlanRequest(intent="plan_only", steps=[
+            {"goal": "计算不在请求内的表达式", "expected_tool": "calculate",
+             "expected_arguments": {"expression": "999*888"}}])
+
+    async def confirmed(*args, **kwargs):
+        return True
+
+    async def deny_tools(self, *args, **kwargs):
+        raise AssertionError("unbound_plan_must_not_run_tools")
+
+    async def policy(message, interpretation):
+        return "read_only"
+
+    monkeypatch.setattr(HTTPUnderstandingModel, "complete", fake_complete)
+    monkeypatch.setattr("apps.api.main.review_plan_intent", invalid_plan)
+    monkeypatch.setattr("apps.api.main.review_plan_creation_reference", confirmed)
+    monkeypatch.setattr(AgentLoop, "run", deny_tools)
+    settings = Settings(
+        database_url=f"sqlite:///{tmp_path / 'm4_invalid.db'}",
+        model_provider="ollama_proxy", understanding_strategy="structured",
+        route_admission_mode="guarded")
+    with TestClient(create_app(settings, execution_policy=policy)) as client:
+        cid = client.post("/conversations").json()["id"]
+        response = client.post(f"/conversations/{cid}/agent/messages", json={
+            "content": "创建一个包含两步的计划，暂时不要执行",
+            "client_request_id": "m4-guarded-invalid-001"})
+        assert response.status_code == 200, response.text
+        data = response.json()
+        assert data["termination_reason"] == "plan_creation_requires_clarification"
+        assert data["trace"] == [{"step": 0, "type": "plan_execution_fenced"}]
+        assert not data.get("plan_checkpoint")
