@@ -53,3 +53,23 @@ def test_empty_report_cannot_claim_equivalence():
     report = compare_rows([])
     assert report["summary"]["strict_match_rate"] is None
     assert report["readiness"] == "HOLD"
+
+
+def test_cli_accepts_powershell_utf8_bom(tmp_path, monkeypatch):
+    import json
+    import sys
+    from evals.s25_02_m3c_shadow_comparison import main
+
+    source = tmp_path / "powershell-response.json"
+    output = tmp_path / "comparison.json"
+    source.write_text(json.dumps({"route_shadow": {
+        "state": "valid", "route": "agent_loop", "comparison": "match",
+        "m3_preturn_identity": {"result": "MATCH"},
+        "m3_checkpoint_snapshot": {"result": "SAME"},
+    }}), encoding="utf-8-sig")
+    monkeypatch.setattr(sys, "argv", [
+        "s25_02_m3c_shadow_comparison", "--input", str(source),
+        "--output", str(output),
+    ])
+    main()
+    assert json.loads(output.read_text(encoding="utf-8"))["summary"]["MATCH"] == 1
