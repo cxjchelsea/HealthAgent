@@ -11,7 +11,7 @@ from sqlalchemy import select
 
 from agent.config import Settings
 from agent.decision import Decision
-from agent.plan_control import PlanRequest
+from agent.plan_intent import PlanRequest
 from agent.planning import PlanLedger
 from agent.understanding import UnderstandingResult
 from apps.api.main import create_app
@@ -54,7 +54,7 @@ def test_http_saved_plan_claim_blocks_competing_writer_and_releases_on_finalize(
         understanding_strategy="structured",
     )
     plan = _checkpoint()
-    run_state = {"mode": "create", "guard_calls": 0, "competing_write_blocked": False}
+    run_state = {"guard_calls": 0, "competing_write_blocked": False, "cid": None}
 
     async def fake_understand(self, context):
         return {"result": _understood(), "attempts": []}
@@ -83,12 +83,12 @@ def test_http_saved_plan_claim_blocks_competing_writer_and_releases_on_finalize(
         run_state["guard_calls"] += 1
         assert guard() is True
         # The guard's reservation must already be committed before dispatch.
-        with self.session_factory.begin() as db:
-            pass
-        store = api.ConversationPlanStore(api.Session, self.conversation_id)
+        from services.db import database
+        engine, Session = database(settings.database_url)
+        store = ConversationPlanStore(Session, run_state["cid"])
         observed = store.load_raw()
         try:
-            with api.Session.begin() as db:
+            with Session.begin() as db:
                 store.compare_and_swap_in_session(
                     db, expected_raw=observed,
                     snapshot={"revision": 99, "steps": []})
@@ -100,9 +100,9 @@ def test_http_saved_plan_claim_blocks_competing_writer_and_releases_on_finalize(
 
         # Return valid owner-bound progress. The route must CAS this checkpoint
         # and release the claim in the same terminal-turn transaction.
-        from agent.planning import PlanLedger
         ledger = PlanLedger.restore(kwargs["plan_checkpoint"])
-        result = ledger.execute_first(lambda name, args: {"ok": True, "value": 64})
+        ledger.observe("calculate", {"ok": True, "value": 64}, {"expression": "8*8"})
+        engine.dispose()
         return {
             "run_id": "controlled",
             "status": "partial",
@@ -125,6 +125,7 @@ def test_http_saved_plan_claim_blocks_competing_writer_and_releases_on_finalize(
 
     with TestClient(create_app(settings, agent_decider=None)) as client:
         cid = client.post("/conversations").json()["id"]
+        run_state["cid"] = cid
         path = f"/conversations/{cid}/agent/messages"
         created = client.post(path, json={
             "content": "创建计划：计算 8*8",
@@ -149,7 +150,9 @@ def test_http_saved_plan_claim_blocks_competing_writer_and_releases_on_finalize(
             claim = db.get(PlanExecutionClaim, cid)
             turns = list(db.scalars(select(Turn).where(Turn.conversation_id == cid)))
             assert saved is not None
-            assert json.loads(saved.snapshot)["revision"] == 2
+            final_checkpoint = json.loads(saved.snapshot)
+            assert final_checkpoint["revision"] == 1
+            assert final_checkpoint["steps"][0]["status"] == "completed"
             assert claim is None, "terminal Turn must release its durable claim"
             assert len(turns) == 2
             assert all(turn.state in {"partial", "completed"} for turn in turns)
