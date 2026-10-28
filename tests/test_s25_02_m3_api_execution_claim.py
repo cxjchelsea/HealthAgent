@@ -83,37 +83,35 @@ def test_http_saved_plan_claim_blocks_competing_writer_and_releases_on_finalize(
 
     async def fake_run(self, message, **kwargs):
         guard = kwargs.get("execution_guard")
-        assert guard is not None, "saved-plan route must install the pre-dispatch guard"
         run_state["guard_calls"] += 1
-        assert guard() is True
-        # The guard's reservation must already be committed before dispatch.
-        from services.db import database
-        engine, Session = database(settings.database_url)
-        store = ConversationPlanStore(Session, run_state["cid"])
-        observed = store.load_raw()
-        try:
-            with Session.begin() as db:
-                store.compare_and_swap_in_session(
-                    db, expected_raw=observed,
-                    snapshot={"revision": 99, "steps": []})
-        except PlanSnapshotConflict as exc:
-            assert "plan_execution_claimed" in str(exc)
-            run_state["competing_write_blocked"] = True
-        else:
-            raise AssertionError("competing plan writer unexpectedly passed the claim")
-
-        # Return valid owner-bound progress. The route must CAS this checkpoint
-        # and release the claim in the same terminal-turn transaction.
+        run_state["guard_result"] = bool(guard and guard())
         ledger = PlanLedger.restore(kwargs["plan_checkpoint"])
-        ledger.observe("calculate", {"ok": True, "value": 64}, {"expression": "8*8"})
-        engine.dispose()
+        if run_state["guard_result"]:
+            from services.db import database
+            engine, Session = database(settings.database_url)
+            try:
+                store = ConversationPlanStore(Session, run_state["cid"])
+                observed = store.load_raw()
+                try:
+                    with Session.begin() as db:
+                        store.compare_and_swap_in_session(
+                            db, expected_raw=observed,
+                            snapshot={"revision": 99, "steps": []})
+                except PlanSnapshotConflict as exc:
+                    assert "plan_execution_claimed" in str(exc)
+                    run_state["competing_write_blocked"] = True
+                else:
+                    raise AssertionError("competing plan writer unexpectedly passed the claim")
+            finally:
+                engine.dispose()
+            ledger.observe("calculate", {"ok": True, "value": 64}, {"expression": "8*8"})
         return {
             "run_id": "controlled",
             "status": "partial",
-            "termination_reason": "plan_step_completed",
-            "answer": "第一步完成",
-            "trace": [{"step": 1, "type": "tool", "name": "calculate", "ok": True}],
-            "steps": 1,
+            "termination_reason": "plan_step_completed" if run_state["guard_result"] else "plan_execution_guard_conflict",
+            "answer": "第一步完成" if run_state["guard_result"] else "执行占用未获准",
+            "trace": [{"step": 1, "type": "tool", "name": "calculate", "ok": True}] if run_state["guard_result"] else [],
+            "steps": 1 if run_state["guard_result"] else 0,
             "plan": ledger.snapshot(),
             "plan_revision": ledger.revision,
             "plan_events": [],
@@ -146,6 +144,7 @@ def test_http_saved_plan_claim_blocks_competing_writer_and_releases_on_finalize(
         assert executed.status_code == 200, executed.text
         assert executed.json()["status"] == "partial"
         assert run_state["guard_calls"] == 1
+        assert run_state["guard_result"] is True
         assert run_state["competing_write_blocked"] is True
 
     engine, Session = database(settings.database_url)
