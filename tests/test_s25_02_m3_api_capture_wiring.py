@@ -9,7 +9,7 @@ def test_capture_is_inside_turn_creation_transaction_before_legacy_execution():
     turn_flush = source.index("assistant_id, turn_id = response_message.id, turn.id", tx_start)
     capture = source.index("preturn_capture = capture_turn(", turn_flush)
     tx_end = source.index("except IntegrityError as exc:", capture)
-    legacy_store = source.index("existing_checkpoint = plan_store.load()", tx_end)
+    legacy_store = source.index("existing_checkpoint = (json.loads(preturn_plan_raw)", tx_end)
     first_legacy_control = source.index("if body.goal_confirmation is not None:", legacy_store)
     assert tx_start < turn_flush < capture < tx_end < legacy_store < first_legacy_control
 
