@@ -1,6 +1,7 @@
 """M3 read-only Turn snapshot identity, digest and drift telemetry."""
 from agent.m3_turn_capture import (
     capture_turn, compare_captured_identity, compare_checkpoint_snapshot,
+    compare_pending_provenance,
 )
 
 
@@ -81,3 +82,38 @@ def test_non_dict_checkpoint_cannot_be_proven_equal():
     snap = captured({"revision": 1})
     # A non-dict actual value is outside the checkpoint contract and is not equal evidence.
     assert compare_checkpoint_snapshot(snap, None)["result"] == "CHANGED"
+
+
+
+def test_pending_provenance_binds_action_clarification_id_and_question_digest():
+    snap = captured({"revision": 3})
+    matched = compare_pending_provenance(
+        snap, pending_action="mcp_reference_lookup",
+        clarification_id="msg", pending_question="Which term?")
+    assert matched["result"] == "MATCH"
+    assert matched["captured_clarification_id"] == "msg"
+    assert "Which term?" not in str(matched)
+    assert matched["authorization_verified"] is False
+
+    replayed = compare_pending_provenance(
+        snap, pending_action="mcp_reference_lookup",
+        clarification_id="different-msg", pending_question="Which term?")
+    assert replayed["result"] == "MISMATCH"
+    assert replayed["authorization_verified"] is False
+
+    changed_question = compare_pending_provenance(
+        snap, pending_action="mcp_reference_lookup",
+        clarification_id="msg", pending_question="Which other term?")
+    assert changed_question["result"] == "MISMATCH"
+
+
+def test_pending_provenance_missing_source_is_unverifiable_not_match():
+    snap = captured({"revision": 3})
+    assert compare_pending_provenance(
+        snap, pending_action="mcp_reference_lookup",
+        clarification_id=None, pending_question="Which term?"
+    )["result"] == "UNVERIFIABLE"
+    assert compare_pending_provenance(
+        snap, pending_action=None, clarification_id=None,
+        pending_question=None
+    )["result"] == "UNVERIFIABLE"
