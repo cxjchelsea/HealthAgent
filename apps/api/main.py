@@ -881,17 +881,31 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                 result=result,
                 registered_tools=set(SCHEMAS),
             )
-            shadow = await evaluate_shadow(
-                HTTPUnderstandingModel(
-                    settings.model_provider, settings.model_base_url,
-                    settings.model_api_key, settings.model_timeout_seconds,
-                    settings.model_max_output_tokens),
-                settings.understanding_strong_model, body.content,
-                has_plan=existing_checkpoint is not None,
-                pending_action=pending_action, pending_field=pending_field,
-                host_facts=host_facts,
-                m3c_capture=preturn_capture,
-                m3c_checkpoint=preturn_checkpoint)
+            # Diagnostics run after the durable Turn commit. Provider/schema/
+            # preview failures must never turn an already committed success
+            # into an HTTP error or re-dispatch a tool.
+            shadow_started = time.monotonic()
+            try:
+                shadow = await evaluate_shadow(
+                    HTTPUnderstandingModel(
+                        settings.model_provider, settings.model_base_url,
+                        settings.model_api_key, settings.model_timeout_seconds,
+                        settings.model_max_output_tokens),
+                    settings.understanding_strong_model, body.content,
+                    has_plan=existing_checkpoint is not None,
+                    pending_action=pending_action, pending_field=pending_field,
+                    host_facts=host_facts,
+                    m3c_capture=preturn_capture,
+                    m3c_checkpoint=preturn_checkpoint)
+            except Exception as exc:
+                log.warning("shadow diagnostic unavailable turn=%s class=%s",
+                            turn_id, type(exc).__name__)
+                shadow = {"state": "unavailable", "error_class": "ShadowEvaluationError",
+                          "host_admission_complete": False}
+            shadow["diagnostic_elapsed_ms"] = int(
+                (time.monotonic() - shadow_started) * 1000)
+            shadow["diagnostic_model_calls"] = 1
+            shadow["execution_authorized"] = False
         response_data = {**result, "conversation_id": cid,
                          "message_id": assistant_id, "turn_id": turn_id}
         if shadow is not None:
