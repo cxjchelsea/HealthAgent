@@ -143,3 +143,30 @@ def explicit_deferred_plan_request(message: str) -> bool:
         "只保存", "暂不执行", "先不执行", "不要执行", "不执行"))
     has_steps = any(word in message for word in ("第一步", "第1步"))
     return has_plan and has_creation and has_defer and has_steps
+
+
+class PlanCancellationReview(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    cancel_saved_plan: bool
+
+
+async def review_plan_cancellation(provider: HTTPUnderstandingModel, model: str,
+                                   message: str) -> bool:
+    """Independent current-turn cancellation intent; never grants execution."""
+    prompt = (
+        "Return JSON cancel_saved_plan boolean. True ONLY when the current "
+        "user explicitly commands cancelling/discarding an already saved "
+        "execution plan itself, with no execution requested. False for "
+        "canceling a task, an individual plan step, a hypothetical question, "
+        "or a request to execute/revise steps. Never authorize any tool."
+    )
+    try:
+        raw = await provider.complete(
+            model=model,
+            messages=[{"role": "system", "content": prompt},
+                      {"role": "user", "content": json.dumps(
+                          {"current_request": message}, ensure_ascii=False)}],
+            response_schema=PlanCancellationReview.model_json_schema())
+        return PlanCancellationReview.model_validate_json(raw).cancel_saved_plan
+    except (UnderstandingError, ValueError, TypeError):
+        return False
