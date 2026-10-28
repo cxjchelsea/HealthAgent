@@ -39,3 +39,13 @@ def test_stale_no_effect_plan_write_returns_conflict_without_stuck_running_turn(
     assert 'failure_code = "plan_snapshot_conflict"' in source[conflict:finalized]
     assert 'termination_reason": "plan_snapshot_conflict"' in source[conflict:finalized]
     assert finalized > conflict
+
+
+def test_saved_plan_execution_uses_durable_claim_and_owner_bound_cas():
+    source = Path("apps/api/main.py").read_text(encoding="utf-8")
+    assert "acquire_execution_claim_in_session(" in source
+    assert "release_execution_claim_in_session(db, turn_id=turn_id)" in source
+    assert "owner_turn_id=turn_id if plan_control in" in source
+    store_source = Path("services/plan_store.py").read_text(encoding="utf-8")
+    assert "PlanExecutionClaim" in store_source
+    assert "self._assert_claim_owner(db, owner_turn_id)" in store_source
