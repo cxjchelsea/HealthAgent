@@ -78,3 +78,20 @@ def test_provenance_failure_reports_bounded_model_evidence_counts():
     assert result["model_source_quotes"] == 1
     assert result["evidence_admissible"] is False
     assert result["host_admission_complete"] is False
+
+
+def test_plan_create_prompt_names_exact_quote_fields_not_legacy_offsets():
+    from agent.route_shadow import PROMPT
+    assert "plan_step_quote_evidence (one per ordered step)" in PROMPT
+    assert "source_quote_evidence" in PROMPT
+    assert "Do NOT use\nplan_step_evidence numeric offsets" in PROMPT
+
+
+def test_plan_create_missing_quotes_remains_fail_closed():
+    message = "请创建计划：第一步计算 123*456，第二步计算 789*12。"
+    result = asyncio.run(evaluate_shadow(
+        FixedProposal([]), "fake", message,
+        has_plan=False, pending_action=None))
+    assert result["validation_code"] == "shadow_plan_steps_ungrounded"
+    assert result["model_step_quotes"] == 0
+    assert result["evidence_admissible"] is False
