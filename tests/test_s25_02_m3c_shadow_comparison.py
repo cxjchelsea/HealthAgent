@@ -71,5 +71,7 @@ def test_cli_accepts_powershell_utf8_bom(tmp_path, monkeypatch):
         "s25_02_m3c_shadow_comparison", "--input", str(source),
         "--output", str(output),
     ])
-    main()
+    with pytest.raises(SystemExit) as exit_info:
+        main()
+    assert exit_info.value.code == 0
     assert json.loads(output.read_text(encoding="utf-8"))["summary"]["MATCH"] == 1
