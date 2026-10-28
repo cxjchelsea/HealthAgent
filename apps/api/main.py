@@ -29,7 +29,7 @@ from agent.control_admission import admit_clarification
 from agent.plan_intent import review_plan_intent, build_plan_checkpoint
 from agent.plan_control import (resolve_plan_admission, review_missing_plan_reference,
                                 review_plan_creation_reference, explicit_deferred_plan_request,
-                                review_plan_cancellation)
+                                review_plan_cancellation, explicit_saved_plan_cancellation)
 from agent.plan_execution_review import review_plan_execution_authorization
 from agent.plan_execution_scope import review_plan_execution_scope
 from agent.plan_revision_review import review_plan_revision, apply_plan_revision, check_plan_edit_intent, explicit_step_binding_conflict
@@ -737,6 +737,18 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                       "steps": 0}
                         elif result is None and existing_checkpoint:
                             plan_control = plan_control or plan_decision.intent
+            # Never hand explicit saved-plan cancellation to the generic loop
+            # when the independent semantic verifier did not confirm deletion.
+            if (result is None and existing_checkpoint is not None
+                    and settings.understanding_strategy == "structured"
+                    and agent_decider is None
+                    and explicit_saved_plan_cancellation(body.content)):
+                result = {"run_id": turn_id, "status": "partial",
+                          "termination_reason": "plan_cancellation_requires_clarification",
+                          "answer": "无法确认取消当前计划的授权；未取消，也未执行步骤。",
+                          "trace": [{"step": 0, "type": "plan_cancellation_fenced"}],
+                          "steps": 0, "plan": existing_checkpoint["steps"],
+                          "plan_revision": existing_checkpoint["revision"]}
             # A model's failure to recognize an explicitly saved, non-running
             # plan is not permission to invoke ordinary tools. The narrow
             # current-turn constraint fence only blocks execution; it never
