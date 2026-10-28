@@ -65,6 +65,16 @@ def decide_admission(route: ShadowRoute, facts: PreTurnFacts) -> AdmissionDecisi
                 return decision("deny", "pending_cancel_binding_unverified")
             return decision("candidate_execute", "pending_cancel_requires_state_guard")
         return decision("deny", "cancel_target_unverified")
+    if route.primary_route == "plan_cancel":
+        if not facts.has_saved_plan or facts.checkpoint_revision is None:
+            return decision("deny", "missing_plan_checkpoint")
+        if not facts.checkpoint_binding_verified or not facts.plan_schema_valid:
+            return decision("deny", "plan_binding_unverified")
+        if not facts.effect_authorized:
+            return decision("deny", "plan_cancel_write_authority_missing")
+        if route.reference.kind != "saved_plan":
+            return decision("deny", "plan_cancel_reference_unverified")
+        return decision("candidate_execute", "requires_plan_cancel_cas")
     if route.primary_route == "agent_loop":
         if route.route_target == "pending_clarification":
             if not facts.pending_action or not facts.pending_field:
