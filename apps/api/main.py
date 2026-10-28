@@ -791,8 +791,21 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                             plan_store.compare_and_swap_in_session(
                                 db, expected_raw=preturn_plan_raw,
                                 snapshot=result["plan_checkpoint"])
-                        except PlanSnapshotConflict as exc:
-                            raise RuntimeError("plan_snapshot_conflict") from exc
+                        except PlanSnapshotConflict:
+                            # No tool ran on these allowlisted outcomes, so a stale
+                            # write can be rejected and returned as a safe retryable
+                            # conflict without leaving the Turn stuck in "running".
+                            status = "partial"
+                            failure_code = "plan_snapshot_conflict"
+                            answer = "当前计划已发生变化，本次未覆盖新计划；请重新读取计划后再操作。"
+                            result = {
+                                "run_id": turn_id,
+                                "status": status,
+                                "termination_reason": "plan_snapshot_conflict",
+                                "answer": answer,
+                                "trace": [{"step": 0, "type": "plan_snapshot_conflict"}],
+                                "steps": 0,
+                            }
                     else:
                         plan_store.save_in_session(db, result["plan_checkpoint"])
                 if (status in {"completed", "partial"} and parsed_result is not None
