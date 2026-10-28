@@ -67,7 +67,7 @@ class ShadowRoute(BaseModel):
     model_config = ConfigDict(extra="forbid")
     schema_version: Literal["s25-route-v2"]
     primary_route: Literal["respond", "clarify", "agent_loop", "plan_create",
-                           "plan_execute_first", "plan_resume", "plan_revise", "cancel"]
+                           "plan_execute_first", "plan_resume", "plan_revise", "plan_cancel", "cancel"]
     route_target: Literal["none", "active_goal", "saved_plan",
                           "pending_clarification", "tool_action"]
     execution_scope: Literal["none", "single_tool", "first_step",
@@ -100,6 +100,7 @@ class ShadowRoute(BaseModel):
             "plan_resume": ({"saved_plan"}, {"remaining_steps","all_steps"},
                             {"read_only","mutation_requested"}),
             "plan_revise": ({"saved_plan"}, {"none"}, {"mutation_requested"}),
+            "plan_cancel": ({"saved_plan"}, {"none"}, {"mutation_requested"}),
             "cancel": ({"none","active_goal","saved_plan","pending_clarification"},
                        {"none"}, {"none"}),
         }
@@ -352,6 +353,7 @@ Never provide a non-none clarification reason when required=false.
 For a clear request set ambiguity="clear". For uncertain requests choose
 primary_route="clarify" and provide a matching clarification object.
 Route combinations: respond/cancel => scope none and effect none;
+plan_cancel => target saved_plan, scope none and effect mutation_requested;
 agent_loop => scope single_tool or none; plan_create/plan_revise => scope none,
 effect mutation_requested; plan_execute_first => scope first_step;
 plan_resume => scope remaining_steps or all_steps. No other combination.
@@ -359,6 +361,10 @@ If there is NO saved plan, a reference to continuing one is still a
 plan_resume semantic proposal: lack of checkpoint is a HOST denial, not an
 excuse to invent steps.
 Routing distinctions (semantic proposals ONLY, never authorizations):
+- Cancelling/deleting a SAVED execution plan itself is plan_cancel, target saved_plan,
+  scope none, mutation_requested, reference.kind saved_plan. Do not classify
+  this as plan_resume (execution), or generic cancel (non-effect). A request
+  not to execute plan steps does NOT make plan cancellation a read-only action.
 - Decide between plan_create and agent_loop from the REQUESTED PERSISTED
   OBJECT and its lifecycle. A single task has one title and is immediately
   created by the task tool. A formal executable plan has ordered steps and
@@ -593,6 +599,7 @@ async def evaluate_shadow(provider: HTTPUnderstandingModel, model_name: str,
                                         {"read_only", "mutation_requested"}),
                         "plan_execute_first": ({"saved_plan"}, {"first_step"},
                                                {"read_only", "mutation_requested"}),
+                        "plan_cancel": ({"saved_plan"}, {"none"}, {"mutation_requested"}),
                         "cancel": ({"none", "active_goal", "saved_plan",
                                     "pending_clarification"}, {"none"}, {"none"}),
                     }
@@ -661,6 +668,7 @@ def compare_to_legacy(shadow: dict, result: dict) -> dict:
     reasons = {
         "plan_created_pending_execution": "plan_create",
         "plan_revised_pending_execution": "plan_revise",
+        "plan_cancelled": "plan_cancel",
         "plan_revision_conflict": "plan_revise",
         "existing_plan_requires_revision": "plan_create",
         "plan_first_step_already_completed": "plan_execute_first",
