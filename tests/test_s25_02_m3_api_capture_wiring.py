@@ -21,7 +21,8 @@ def test_capture_is_opt_in_and_checkpoint_comparison_is_diagnostic_only():
     assert 'response_data["route_shadow"]["m3_checkpoint_snapshot"]' in source
     assert "compare_checkpoint_snapshot(preturn_capture, existing_checkpoint)" in source
     assert "from services.db import Conversation, ConversationPlan, Message, Turn, database" in source
-    assert "compare_checkpoint_snapshot)" in source
+    assert "from agent.m3_turn_capture import (" in source
+    assert "capture_turn, compare_captured_identity, compare_checkpoint_snapshot," in source
 
 
 def test_snapshot_identity_never_grants_execution_authority():
