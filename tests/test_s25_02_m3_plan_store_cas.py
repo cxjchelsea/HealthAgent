@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from services.db import Base, Conversation, ConversationPlan, database
+from services.db import (Base, Conversation, ConversationPlan, PlanExecutionClaim, Turn, database)
 from services.plan_store import ConversationPlanStore, PlanSnapshotConflict
 
 
@@ -78,3 +78,48 @@ def test_compare_and_swap_creates_only_when_snapshot_was_absent():
     finally:
         Base.metadata.drop_all(engine)
         engine.dispose()
+
+
+def test_execution_claim_blocks_other_plan_writers_and_owner_can_finalize(plan_store):
+    _, Session, store = plan_store
+    observed = store.load_raw()
+    with Session.begin() as db:
+        turn = Turn(conversation_id=store.conversation_id, request_id="claim-owner-0001")
+        db.add(turn)
+        db.flush()
+        turn_id = turn.id
+        store.acquire_execution_claim_in_session(
+            db, turn_id=turn_id, expected_raw=observed)
+
+    with pytest.raises(PlanSnapshotConflict, match="plan_execution_claimed"):
+        with Session.begin() as db:
+            store.compare_and_swap_in_session(
+                db, expected_raw=observed, snapshot={"revision": 2, "steps": []})
+
+    with Session.begin() as db:
+        store.compare_and_swap_in_session(
+            db, expected_raw=observed,
+            snapshot={"revision": 2, "steps": []}, owner_turn_id=turn_id)
+        store.release_execution_claim_in_session(db, turn_id=turn_id)
+    assert store.load() == {"revision": 2, "steps": []}
+    with Session() as db:
+        assert db.get(PlanExecutionClaim, store.conversation_id) is None
+
+
+def test_execution_claim_rejects_stale_snapshot_before_reserving(plan_store):
+    _, Session, store = plan_store
+    observed = store.load_raw()
+    with Session.begin() as db:
+        turn = Turn(conversation_id=store.conversation_id, request_id="claim-stale-0001")
+        db.add(turn)
+        db.flush()
+        turn_id = turn.id
+    with Session.begin() as db:
+        store.compare_and_swap_in_session(
+            db, expected_raw=observed, snapshot={"revision": 2, "steps": []})
+    with pytest.raises(PlanSnapshotConflict, match="plan_execution_guard_conflict"):
+        with Session.begin() as db:
+            store.acquire_execution_claim_in_session(
+                db, turn_id=turn_id, expected_raw=observed)
+    with Session() as db:
+        assert db.get(PlanExecutionClaim, store.conversation_id) is None
