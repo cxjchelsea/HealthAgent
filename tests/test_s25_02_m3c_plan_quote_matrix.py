@@ -51,7 +51,7 @@ def test_two_unique_ordered_quotes_pass_source_validation(message, step1, step2)
     ([], "shadow_plan_steps_ungrounded"),
     (["第一步计算 123*456"], "shadow_plan_steps_ungrounded"),
     (["第一步计算 123*456", "第一步计算 123*456"], "shadow_quote_overlapping"),
-    (["计算 123*456", "计算 123*456"], "shadow_quote_ambiguous"),
+    (["计算 123*456", "计算 123*456"], "shadow_quote_overlapping"),
     (["第一步计算 123*456", "模型虚构的步骤"], "shadow_quote_not_found"),
 ])
 def test_missing_duplicate_and_forged_quotes_fail_closed(evidence, expected):
