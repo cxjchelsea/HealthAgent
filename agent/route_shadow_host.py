@@ -135,6 +135,14 @@ def preview_admission(proposal: ShadowRoute, facts: ShadowHostFacts) -> ShadowAd
     if route == "cancel":
         return out("safe_non_effect", "no_effect_route",
                    "cancel_no_side_effect", True)
+    if route == "plan_cancel":
+        if not facts.has_plan:
+            return out("deny", "missing_saved_plan")
+        if not facts.revision_valid:
+            return out("needs_evidence", "checkpoint_revision_unverified")
+        # Diagnostic labels and post-turn observations are not proof of a
+        # fresh user-authorized, CAS-protected deletion.
+        return out("needs_evidence", "plan_cancellation_authority_unverified")
     if route == "plan_create":
         if facts.has_plan:
             return out("deny", "existing_saved_plan")
