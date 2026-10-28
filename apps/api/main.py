@@ -598,6 +598,7 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                   "steps": 0, "proposed_goal": parsed_result.goal.model_dump(),
                                   "expected_goal_version": previous_goal["version"] + 1}
             plan_control = None
+            confirmed_plan_execution = False
             # Separate authoring a future plan from executing its steps. Only
             # the bound checkpoint can authorize later read-only execution.
             if (result is None and parsed_result is not None
@@ -782,7 +783,7 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                         conversation_id=cid, request_id=body.client_request_id,
                         checkpoint=existing_checkpoint, scope=plan_control,
                         turn_created=True,
-                        semantic_confirmed=bool(locals().get("confirmed_plan_execution", False))):
+                        semantic_confirmed=confirmed_plan_execution):
                     result = {"run_id": turn_id, "status": "partial",
                               "termination_reason": "execution_not_authorized",
                               "answer": "计划执行未通过受控准入；未调用任何工具。",
