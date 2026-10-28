@@ -75,3 +75,22 @@ def test_cli_accepts_powershell_utf8_bom(tmp_path, monkeypatch):
         main()
     assert exit_info.value.code == 0
     assert json.loads(output.read_text(encoding="utf-8"))["summary"]["MATCH"] == 1
+
+
+def test_ungrounded_plan_diagnostic_remains_unavailable():
+    report = compare_rows([{"case": "D03_create", "route_shadow": {
+        "state": "unavailable",
+        "error_class": "ValueError",
+        "semantic_schema_valid": True,
+        "semantic_proposal": {"route": "plan_create"},
+        "semantic_route_comparison_only": "plan_create",
+        "evidence_admissible": False,
+        "validation_code": "shadow_plan_steps_ungrounded",
+        "legacy_route_evidence": "plan_create",
+        "comparison": "uncomparable",
+        "m3_preturn_identity": {"result": "MATCH"},
+        "m3_checkpoint_snapshot": {"result": "UNVERIFIABLE"},
+    }}])
+    assert report["summary"]["UNAVAILABLE"] == 1
+    assert report["summary"]["MATCH"] == 0
+    assert report["readiness"] == "HOLD"
