@@ -67,7 +67,7 @@ def main() -> None:
     parser.add_argument("--input", required=True)
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
-    report = json.loads(Path(args.input).read_text(encoding="utf-8"))
+    report = json.loads(Path(args.input).read_text(encoding="utf-8-sig"))
     if isinstance(report, dict) and isinstance(report.get("rows"), list):
         rows = report["rows"]
     elif isinstance(report, dict) and isinstance(report.get("route_shadow"), dict):
