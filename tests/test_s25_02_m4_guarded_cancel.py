@@ -161,3 +161,29 @@ def test_m4_invalid_confirmed_plan_never_enters_agent_loop(tmp_path, monkeypatch
         assert data["termination_reason"] == "plan_creation_requires_clarification"
         assert data["trace"] == [{"step": 0, "type": "plan_execution_fenced"}]
         assert not data.get("plan_checkpoint")
+
+
+def test_m4_guarded_plan_execution_scopes_and_validation():
+    from agent.m4_guarded_execution import admit_guarded_plan_execution
+    steps = [
+        {"id": 1, "status": "pending", "goal": "计算 3*4",
+         "expected_tool": "calculate", "expected_arguments": {"expression": "3*4"}},
+        {"id": 2, "status": "pending", "goal": "计算 5*6",
+         "expected_tool": "calculate", "expected_arguments": {"expression": "5*6"}}]
+    snapshot = {"revision": 2, "steps": steps}
+    args = dict(conversation_id="cid", request_id="request-001",
+                checkpoint=snapshot, scope="execute_first",
+                turn_created=True, semantic_confirmed=True)
+    assert admit_guarded_plan_execution(**args)
+    assert admit_guarded_plan_execution(**(args | {"scope": "resume"}))
+    assert not admit_guarded_plan_execution(**(args | {"semantic_confirmed": False}))
+    assert not admit_guarded_plan_execution(**(args | {"turn_created": False}))
+    assert not admit_guarded_plan_execution(**(args | {"checkpoint": None}))
+    assert not admit_guarded_plan_execution(**(args | {"scope": "all"}))
+    completed_first = {"revision": 2, "steps": [{**steps[0], "status": "completed"}, steps[1]]}
+    assert not admit_guarded_plan_execution(**(args | {"checkpoint": completed_first}))
+    assert admit_guarded_plan_execution(**(args | {
+        "checkpoint": completed_first, "scope": "resume"}))
+    invalid_binding = {"revision": 2, "steps": [
+        {**steps[0], "expected_arguments": {"expression": 123}}, steps[1]]}
+    assert not admit_guarded_plan_execution(**(args | {"checkpoint": invalid_binding}))
