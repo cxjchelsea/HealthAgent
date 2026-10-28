@@ -82,7 +82,7 @@ def test_http_saved_plan_claim_blocks_competing_writer_and_releases_on_finalize(
         return True
 
     async def fake_run(self, message, **kwargs):
-        guard = kwargs.get("execution_guard")
+        guard = self.execution_guard
         run_state["plan_control"] = kwargs.get("plan_control")
         run_state["guard_installed"] = guard is not None
         run_state["guard_calls"] += 1
