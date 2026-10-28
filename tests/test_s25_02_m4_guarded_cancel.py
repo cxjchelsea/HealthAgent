@@ -187,3 +187,84 @@ def test_m4_guarded_plan_execution_scopes_and_validation():
     invalid_binding = {"revision": 2, "steps": [
         {**steps[0], "expected_arguments": {"expression": 123}}, steps[1]]}
     assert not admit_guarded_plan_execution(**(args | {"checkpoint": invalid_binding}))
+
+
+def test_m4_saved_plan_command_is_not_swallowed_by_generic_goal_clarification(
+        tmp_path, monkeypatch):
+    from agent.understanding import UnderstandingService, UnderstandingResult
+    from agent.loop import AgentLoop
+    from agent.execution_policy import ExecutionPolicyDecision
+
+    async def fake_understand(self, context):
+        is_execute = "只执行已保存" in context.current_message
+        data = {
+            "schema_version": "s25-01-v1",
+            "status": "clarification_required" if is_execute else "understood",
+            "goal": None if is_execute else {
+                "objective": "创建待执行计划", "subgoals": [], "constraints": [],
+                "success_criteria": []},
+            "change": {"kind": "continue" if is_execute else "new_goal",
+                       "target_goal_id": None, "delta": None},
+            "clarification": {
+                "required": is_execute,
+                "reason_code": "ambiguous_target" if is_execute else "none",
+                "question": "如何执行第一步？" if is_execute else None},
+        }
+        return {"result": UnderstandingResult.model_validate(data), "attempts": []}
+
+    async def intent(provider, model, message, existing_plan):
+        if existing_plan:
+            return PlanRequest(intent="execute_first")
+        return PlanRequest(intent="plan_only", steps=[
+            {"goal": "计算 3*4", "expected_tool": "calculate",
+             "expected_arguments": {"expression": "3*4"}},
+            {"goal": "计算 5*6", "expected_tool": "calculate",
+             "expected_arguments": {"expression": "5*6"}},
+        ])
+
+    async def allow(*args, **kwargs):
+        return True
+
+    async def policy(*args, **kwargs):
+        return ExecutionPolicyDecision(mode="read_only", target="tool_action")
+
+    called = []
+    async def fake_run(self, *args, **kwargs):
+        called.append(kwargs.get("plan_control"))
+        assert kwargs.get("plan_control") == "execute_first"
+        checkpoint = kwargs["plan_checkpoint"]
+        assert [x["status"] for x in checkpoint["steps"]] == ["pending", "pending"]
+        updated = {**checkpoint, "steps": [
+            {**checkpoint["steps"][0], "status": "completed",
+             "evidence_tool": "calculate"},
+            checkpoint["steps"][1]]}
+        return {"status": "partial", "answer": "first step verified",
+                "trace": [{"step": 1, "type": "tool", "name": "calculate", "ok": True}],
+                "steps": 1, "plan": updated["steps"],
+                "plan_revision": updated["revision"],
+                "plan_checkpoint": updated}
+
+    monkeypatch.setattr(UnderstandingService, "understand", fake_understand)
+    monkeypatch.setattr("apps.api.main.review_plan_intent", intent)
+    monkeypatch.setattr("apps.api.main.review_plan_creation_reference", allow)
+    monkeypatch.setattr("apps.api.main.review_plan_execution_authorization", allow)
+    monkeypatch.setattr("apps.api.main.decide_execution_policy_detail", policy)
+    monkeypatch.setattr(AgentLoop, "run", fake_run)
+    settings = Settings(
+        database_url=f"sqlite:///{tmp_path / 'm4_priority.db'}",
+        model_provider="ollama_proxy", understanding_strategy="structured",
+        route_admission_mode="guarded")
+    with TestClient(create_app(settings)) as client:
+        cid = client.post("/conversations").json()["id"]
+        endpoint = f"/conversations/{cid}/agent/messages"
+        created = client.post(endpoint, json={
+            "content": "请创建两步计划：第一步计算 3*4，第二步计算 5*6。只保存，不执行。",
+            "client_request_id": "m4-priority-001"})
+        assert created.status_code == 200, created.text
+        assert created.json()["termination_reason"] == "plan_created_pending_execution"
+        first = client.post(endpoint, json={
+            "content": "现在只执行已保存计划的第一步，第二步先不要执行。",
+            "client_request_id": "m4-priority-002"})
+        assert first.status_code == 200, first.text
+        assert first.json()["trace"][0]["type"] == "tool"
+        assert called == ["execute_first"]
