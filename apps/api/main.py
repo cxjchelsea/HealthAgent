@@ -28,7 +28,7 @@ from agent.clarification_review import review_read_only_clarification
 from agent.control_admission import admit_clarification
 from agent.plan_intent import review_plan_intent, build_plan_checkpoint
 from agent.plan_control import (resolve_plan_admission, review_missing_plan_reference,
-                                review_plan_creation_reference)
+                                review_plan_creation_reference, explicit_deferred_plan_request)
 from agent.plan_execution_review import review_plan_execution_authorization
 from agent.plan_execution_scope import review_plan_execution_scope
 from agent.plan_revision_review import review_plan_revision, apply_plan_revision, check_plan_edit_intent, explicit_step_binding_conflict
@@ -715,6 +715,18 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                       "steps": 0}
                         elif result is None and existing_checkpoint:
                             plan_control = plan_control or plan_decision.intent
+            # A model's failure to recognize an explicitly saved, non-running
+            # plan is not permission to invoke ordinary tools. The narrow
+            # current-turn constraint fence only blocks execution; it never
+            # fabricates a plan or writes a checkpoint.
+            if (result is None and agent_decider is None
+                    and settings.understanding_strategy == "structured"
+                    and explicit_deferred_plan_request(body.content)):
+                result = {"run_id": turn_id, "status": "partial",
+                          "termination_reason": "plan_creation_requires_clarification",
+                          "answer": "已识别到只保存、不执行的计划约束，但当前无法可靠保存步骤；请确认计划内容。",
+                          "trace": [{"step": 0, "type": "plan_execution_fenced"}],
+                          "steps": 0}
             if result is None:
                 decider = agent_decider if agent_decider is not None else NativeToolDecision(settings)
                 result = await AgentLoop(decider, task_store=ConversationTaskStore(Session, cid),
