@@ -16,6 +16,7 @@ from agent.route_shadow import evaluate_shadow, compare_to_legacy
 from agent.route_shadow_host import facts_from_legacy_observation
 from agent.m4_guarded_cancel import admit_guarded_plan_cancel
 from agent.m4_guarded_plan import admit_guarded_plan_create
+from agent.m4_guarded_execution import admit_guarded_plan_execution
 from agent.m3_turn_capture import (
     capture_turn, compare_captured_identity, compare_checkpoint_snapshot,
 )
@@ -771,6 +772,22 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                       "steps": 0}
                         elif result is None and existing_checkpoint:
                             plan_control = plan_control or plan_decision.intent
+            # M4 guarded mode narrows existing saved-plan execution admission
+            # after the independent authorization and scope reviews. This
+            # candidate NEVER bypasses the executor's durable execution claim.
+            if (result is None and settings.route_admission_mode == "guarded"
+                    and agent_decider is None
+                    and plan_control in {"execute_first", "resume"}):
+                if not admit_guarded_plan_execution(
+                        conversation_id=cid, request_id=body.client_request_id,
+                        checkpoint=existing_checkpoint, scope=plan_control,
+                        turn_created=True,
+                        semantic_confirmed=bool(locals().get("confirmed_plan_execution", False))):
+                    result = {"run_id": turn_id, "status": "partial",
+                              "termination_reason": "execution_not_authorized",
+                              "answer": "计划执行未通过受控准入；未调用任何工具。",
+                              "trace": [{"step": 0, "type": "plan_execution_denied"}],
+                              "steps": 0}
             # Never hand explicit saved-plan cancellation to the generic loop
             # when the independent semantic verifier did not confirm deletion.
             if (result is None and existing_checkpoint is not None
