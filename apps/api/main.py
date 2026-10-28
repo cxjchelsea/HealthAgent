@@ -904,7 +904,7 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                           "host_admission_complete": False}
             shadow["diagnostic_elapsed_ms"] = int(
                 (time.monotonic() - shadow_started) * 1000)
-            shadow["diagnostic_model_calls"] = 1
+            shadow["diagnostic_model_calls"] = 1 + shadow.get("recovery_model_calls", 0)
             shadow["execution_authorized"] = False
         response_data = {**result, "conversation_id": cid,
                          "message_id": assistant_id, "turn_id": turn_id}
