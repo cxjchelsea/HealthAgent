@@ -49,7 +49,7 @@ class AgentState(TypedDict):
     user_request: str
 
 class AgentLoop:
-    def __init__(self, decider: Any, max_steps: int = 6, clock=None, task_store=None, memory_store=None, mcp_client=None, skill_strategy='dynamic', skill_budget_chars=600):
+    def __init__(self, decider: Any, max_steps: int = 6, clock=None, task_store=None, memory_store=None, mcp_client=None, skill_strategy='dynamic', skill_budget_chars=600, execution_guard=None):
         if max_steps < 1 or max_steps > 20:
             raise ValueError("max_steps must be 1..20")
         self.decider = decider
@@ -60,6 +60,7 @@ class AgentLoop:
         self.mcp_client = mcp_client
         self.skill_strategy = skill_strategy
         self.skill_budget_chars = skill_budget_chars
+        self.execution_guard = execution_guard
         flow = StateGraph(AgentState)
         flow.add_node("decide", self._decide)
         flow.add_node("tools", self._tools)
@@ -358,7 +359,8 @@ class AgentLoop:
                   plan_checkpoint: dict | None = None,
                   understanding_result: dict | None = None,
                   execution_mode: str | None = None,
-                  plan_control: str | None = None) -> dict:
+                  plan_control: str | None = None,
+                  execution_guard=None) -> dict:
         if not goal.strip() or len(goal) > 12000:
             raise ValueError("Goal must contain 1..12000 characters")
         run_id = str(uuid.uuid4())
@@ -431,12 +433,17 @@ class AgentLoop:
                     and isinstance(step.get("expected_arguments"), dict)
                     for step in outstanding))
         if authorized_plan_run:
+            guard = execution_guard or self.execution_guard
             if plan_control == "execute_first":
                 outstanding = outstanding[:1]
             trace = []
             audit = []
             delivered = []
             for step in outstanding:
+                if guard is not None and not guard():
+                    trace.append({"step": len(trace) + 1,
+                                  "type": "plan_execution_guard_conflict"})
+                    break
                 name = step["expected_tool"]
                 arguments = step["expected_arguments"]
                 result = execute_tool(
@@ -474,6 +481,11 @@ class AgentLoop:
                         name, arguments, str(result.get("error", "")))
                     if candidate is None:
                         break
+                    # Re-check the Turn-bound snapshot before recovery dispatch.
+                    if guard is not None and not guard():
+                        trace.append({"step": len(trace) + 1,
+                                      "type": "plan_execution_guard_conflict"})
+                        break
                     # No candidate authorizes a write or marks success by itself.
                     recovery = execute_tool(
                         candidate.tool, candidate.arguments, [],
@@ -498,8 +510,12 @@ class AgentLoop:
                          if step["status"] == "pending"]
             completed = [step["id"] for step in resumed.snapshot()
                          if step["status"] == "completed"]
-            status = "partial" if remaining else "completed"
+            guard_conflict = any(item.get("type") == "plan_execution_guard_conflict"
+                                 for item in trace)
+            status = "partial" if remaining or guard_conflict else "completed"
             lines = ["计划执行结果："]
+            if guard_conflict:
+                lines.append("执行期间计划快照校验失败，已停止后续工具分发；请重新读取当前计划。")
             for step in resumed.snapshot():
                 item = next((d for d in delivered if d["step_id"] == step["id"]), None)
                 if item is not None:
@@ -515,6 +531,9 @@ class AgentLoop:
             answer = "\n".join(lines)
             output = {"run_id": run_id, "status": status, "answer": answer,
                       "trace": [{"step": 0, "type": "plan_resume_execution"}, *trace],
+                      "termination_reason": ("plan_execution_guard_conflict" if guard_conflict
+                                             else "pending_plan_steps" if remaining
+                                             else "plan_execution_completed"),
                       "prompt_version": PROMPT_VERSION,
                       "steps": len(trace), "plan": resumed.snapshot(),
                       "plan_revision": resumed.revision,
