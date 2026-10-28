@@ -177,3 +177,48 @@ def admit_fixture_saved_plan(monkeypatch):
     async def admitted(*args, **kwargs):
         return True
     monkeypatch.setattr("apps.api.main.review_plan_creation_reference", admitted)
+
+
+def test_explicit_save_only_plan_never_falls_back_to_tools(tmp_path, monkeypatch):
+    from agent.loop import AgentLoop
+    from agent.plan_control import explicit_deferred_plan_request
+
+    message = "请创建两步计划：第一步计算 3*4，第二步计算 5*6。只保存，不执行。"
+    assert explicit_deferred_plan_request(message)
+
+    async def fake_complete(self, *, messages, model, response_schema=None):
+        return understood()
+
+    async def missing_plan_proposal(*args, **kwargs):
+        return PlanRequest(intent="other", steps=[])
+
+    async def should_never_run(self, *args, **kwargs):
+        raise AssertionError("unsafe_agent_loop_fallback")
+
+    async def policy(message, interpretation):
+        return "read_only"
+
+    monkeypatch.setattr(HTTPUnderstandingModel, "complete", fake_complete)
+    monkeypatch.setattr("apps.api.main.review_plan_intent", missing_plan_proposal)
+    monkeypatch.setattr(AgentLoop, "run", should_never_run)
+
+    settings = Settings(
+        database_url=f"sqlite:///{tmp_path / 'no_fallback.db'}",
+        model_provider="ollama_proxy", understanding_strategy="structured")
+    with TestClient(create_app(settings, execution_policy=policy)) as client:
+        cid = client.post("/conversations").json()["id"]
+        res = client.post(f"/conversations/{cid}/agent/messages", json={
+            "content": message, "client_request_id": "save-only-no-run-001"})
+        assert res.status_code == 200, res.text
+        data = res.json()
+        assert data["termination_reason"] == "plan_creation_requires_clarification"
+        assert data["trace"] == [{"step": 0, "type": "plan_execution_fenced"}]
+        assert data["plan"] == []
+        assert not any(t["type"] == "tool" for t in data["trace"])
+
+
+def test_deferred_plan_fence_does_not_block_independent_calculation():
+    from agent.plan_control import explicit_deferred_plan_request
+    assert not explicit_deferred_plan_request("请使用计算工具计算 3*4")
+    assert not explicit_deferred_plan_request(
+        "旧计划不要执行，现在请计算 3*4")
