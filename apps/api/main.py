@@ -223,6 +223,18 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
             raise
         plan_store = ConversationPlanStore(Session, cid)
         goal_store = ConversationGoalStore(Session, cid)
+
+        def saved_plan_execution_guard():
+            # Revalidate immediately before each saved-plan tool dispatch.
+            # The active-Turn unique index serializes API turns for this
+            # conversation; this read detects any out-of-band snapshot change.
+            with Session() as guard_db:
+                active_turn = guard_db.get(Turn, turn_id)
+                current_plan = guard_db.get(ConversationPlan, cid)
+                current_raw = current_plan.snapshot if current_plan else None
+                return (active_turn is not None and active_turn.state == "running"
+                        and current_raw == preturn_plan_raw)
+
         previous_goal = None
         parsed_result = None
         began = time.monotonic()
@@ -706,7 +718,10 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                 result = await AgentLoop(decider, task_store=ConversationTaskStore(Session, cid),
                     memory_store=MemoryStore(Session, uid, write_allowed=body.memory_write_consent),
                     mcp_client=StdioMCPClient(), skill_strategy=settings.skill_strategy,
-                    skill_budget_chars=settings.skill_budget_chars).run(body.content, history=context,
+                    skill_budget_chars=settings.skill_budget_chars,
+                    execution_guard=(saved_plan_execution_guard
+                        if plan_control in {"execute_first", "resume"} else None)).run(
+                                          body.content, history=context,
                                           plan_checkpoint=existing_checkpoint,
                                           understanding_result=interpretation,
                                           execution_mode=execution_mode,
@@ -775,39 +790,28 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                 if response is None or turn is None or turn.state != "running":
                     raise RuntimeError("turn_finalization_conflict")
                 if status in {"completed", "partial"} and result.get("plan_checkpoint"):
-                    termination_reason = result.get("termination_reason")
-                    # Plan authoring / no-tool terminal observations have no external
-                    # side effects. CAS them against the snapshot bound to this Turn.
-                    # Tool-execution checkpoints intentionally remain on the legacy
-                    # write path until an execution reservation is wired before dispatch.
-                    cas_safe_plan_outcomes = {
-                        "plan_created_pending_execution",
-                        "plan_revised_pending_execution",
-                        "plan_already_completed",
-                        "plan_first_step_already_completed",
-                    }
-                    if termination_reason in cas_safe_plan_outcomes:
-                        try:
-                            plan_store.compare_and_swap_in_session(
-                                db, expected_raw=preturn_plan_raw,
-                                snapshot=result["plan_checkpoint"])
-                        except PlanSnapshotConflict:
-                            # No tool ran on these allowlisted outcomes, so a stale
-                            # write can be rejected and returned as a safe retryable
-                            # conflict without leaving the Turn stuck in "running".
-                            status = "partial"
-                            failure_code = "plan_snapshot_conflict"
-                            answer = "当前计划已发生变化，本次未覆盖新计划；请重新读取计划后再操作。"
-                            result = {
-                                "run_id": turn_id,
-                                "status": status,
-                                "termination_reason": "plan_snapshot_conflict",
-                                "answer": answer,
-                                "trace": [{"step": 0, "type": "plan_snapshot_conflict"}],
-                                "steps": 0,
-                            }
-                    else:
-                        plan_store.save_in_session(db, result["plan_checkpoint"])
+                    try:
+                        # Every plan checkpoint, including tool-execution evidence,
+                        # must match the exact snapshot bound to this Turn.
+                        plan_store.compare_and_swap_in_session(
+                            db, expected_raw=preturn_plan_raw,
+                            snapshot=result["plan_checkpoint"])
+                    except PlanSnapshotConflict:
+                        # Never overwrite a newer durable plan. If a tool was
+                        # already dispatched, tell the user to verify its effect
+                        # before retrying; the database cannot roll that effect back.
+                        status = "partial"
+                        failure_code = "plan_snapshot_conflict"
+                        answer = ("当前计划已发生变化，本次没有覆盖新计划。若本轮已调用工具，"
+                                  "请先核对工具执行结果，再决定是否重试，避免重复执行。")
+                        result = {
+                            "run_id": turn_id,
+                            "status": status,
+                            "termination_reason": "plan_snapshot_conflict",
+                            "answer": answer,
+                            "trace": [{"step": 0, "type": "plan_snapshot_conflict"}],
+                            "steps": 0,
+                        }
                 if (status in {"completed", "partial"} and parsed_result is not None
                         and not suppress_persistent_routing and execution_mode not in {"respond_only", "read_only"}
                         and execution_target == "goal_state"
