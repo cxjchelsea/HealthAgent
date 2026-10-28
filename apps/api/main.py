@@ -28,7 +28,8 @@ from agent.clarification_review import review_read_only_clarification
 from agent.control_admission import admit_clarification
 from agent.plan_intent import review_plan_intent, build_plan_checkpoint
 from agent.plan_control import (resolve_plan_admission, review_missing_plan_reference,
-                                review_plan_creation_reference, explicit_deferred_plan_request)
+                                review_plan_creation_reference, explicit_deferred_plan_request,
+                                review_plan_cancellation)
 from agent.plan_execution_review import review_plan_execution_authorization
 from agent.plan_execution_scope import review_plan_execution_scope
 from agent.plan_revision_review import review_plan_revision, apply_plan_revision, check_plan_edit_intent, explicit_step_binding_conflict
@@ -268,6 +269,27 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                           "trace": [{"step": 0, "type": "goal_confirmation"}], "steps": 0}
             if settings.understanding_strategy not in {"direct", "structured"}:
                 raise UnderstandingError("invalid_understanding_strategy")
+            # A confirmed cancellation is a Host-owned plan mutation, not an
+            # AgentLoop tool. The exact pre-turn snapshot is CAS-deleted during
+            # terminal Turn commit. No tools or step execution occur here.
+            if (result is None and existing_checkpoint is not None
+                    and settings.understanding_strategy == "structured"
+                    and agent_decider is None and body.goal_confirmation is None
+                    and await review_plan_cancellation(
+                        HTTPUnderstandingModel(
+                            settings.model_provider, settings.model_base_url,
+                            settings.model_api_key, settings.model_timeout_seconds,
+                            settings.model_max_output_tokens),
+                        settings.understanding_strong_model, body.content)):
+                result = {"run_id": turn_id, "status": "completed",
+                          "termination_reason": "plan_cancelled",
+                          "answer": "已取消当前保存的计划，未执行任何步骤。",
+                          "trace": [{"step": 0, "type": "plan_cancelled"}],
+                          "steps": 0, "plan": [], "plan_events": [
+                              {"event": "plan_cancelled",
+                               "revision": existing_checkpoint["revision"]}],
+                          "plan_revision": existing_checkpoint["revision"],
+                          "plan_cancellation_requested": True}
             # A strict, user-grounded contradiction can be rejected before
             # invoking any classifier or generic Understanding model.
             if (result is None and existing_checkpoint
@@ -803,6 +825,20 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                 turn = db.get(Turn, turn_id)
                 if response is None or turn is None or turn.state != "running":
                     raise RuntimeError("turn_finalization_conflict")
+                if (status == "completed" and result
+                        and result.get("plan_cancellation_requested")):
+                    try:
+                        plan_store.cancel_in_session(
+                            db, expected_raw=preturn_plan_raw)
+                    except PlanSnapshotConflict:
+                        status = "partial"
+                        failure_code = "plan_snapshot_conflict"
+                        answer = "计划已发生变化，未取消新的计划。"
+                        result = {"run_id": turn_id, "status": status,
+                                  "termination_reason": "plan_snapshot_conflict",
+                                  "answer": answer,
+                                  "trace": [{"step": 0, "type": "plan_snapshot_conflict"}],
+                                  "steps": 0}
                 if status in {"completed", "partial"} and result.get("plan_checkpoint"):
                     try:
                         # Every plan checkpoint, including tool-execution evidence,
