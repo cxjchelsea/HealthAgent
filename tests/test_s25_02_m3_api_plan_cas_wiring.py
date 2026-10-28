@@ -22,11 +22,13 @@ def test_no_effect_plan_outcomes_use_exact_snapshot_cas():
     assert "snapshot=result[\"plan_checkpoint\"]" in source
 
 
-def test_plan_execution_checkpoint_is_not_misrepresented_as_cas_protected():
+def test_all_plan_checkpoints_use_cas_and_saved_plan_dispatch_has_guard():
     source = Path("apps/api/main.py").read_text(encoding="utf-8")
-    marker = "# Tool-execution checkpoints intentionally remain on the legacy"
-    assert marker in source
-    assert "plan_store.save_in_session(db, result[\"plan_checkpoint\"])" in source
+    assert "plan_store.compare_and_swap_in_session(" in source
+    assert "expected_raw=preturn_plan_raw" in source
+    assert "saved_plan_execution_guard" in source
+    assert 'plan_control in {"execute_first", "resume"}' in source
+    assert "plan_store.save_in_session(db, result[\"plan_checkpoint\"])" not in source
 
 
 def test_stale_no_effect_plan_write_returns_conflict_without_stuck_running_turn():
