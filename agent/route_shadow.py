@@ -55,6 +55,14 @@ class ShadowClarification(BaseModel):
 
 
 
+class PlanQuoteRecovery(BaseModel):
+    """Only literal current-turn quotations, never route or authorization."""
+    model_config = ConfigDict(extra="forbid")
+    creation_quote: str = Field(min_length=1, max_length=400)
+    step_quotes: list[str] = Field(min_length=2, max_length=2)
+
+
+
 class ShadowRoute(BaseModel):
     model_config = ConfigDict(extra="forbid")
     schema_version: Literal["s25-route-v2"]
@@ -483,6 +491,44 @@ async def evaluate_shadow(provider: HTTPUnderstandingModel, model_name: str,
         }
         # Explicit offsets are immutable assertions; validate before binding quotes.
         verify_source_spans(result, message)
+        # The full route schema has optional evidence fields. Only for an
+        # already-classified plan_create with completely missing evidence,
+        # request a small, evidence-only diagnostic object once.
+        # It cannot change the route/effect/scope/authority.
+        recovery_calls = 0
+        if (result.primary_route == "plan_create"
+                and not result.plan_step_evidence
+                and not result.plan_step_quote_evidence):
+            recovery_calls = 1
+            try:
+                recovered_raw = await asyncio.wait_for(provider.complete(
+                    model=model_name,
+                    response_schema=PlanQuoteRecovery.model_json_schema(),
+                    messages=[
+                        {"role": "system", "content":
+                         "Extract literal substrings from the CURRENT message. "
+                         "Return creation_quote quoting the request to create/save "
+                         "a plan, and step_quotes containing exactly two distinct "
+                         "ordered step substrings. Never paraphrase or invent. "
+                         "This is evidence-only, never permission or execution."},
+                        {"role": "user", "content": message},
+                    ]), timeout=timeout_s)
+                recovered = PlanQuoteRecovery.model_validate_json(recovered_raw)
+                result = result.model_copy(update={
+                    "source_quote_evidence": [
+                        *result.source_quote_evidence,
+                        QuoteEvidence(exact_text=recovered.creation_quote)],
+                    "plan_step_quote_evidence": [
+                        QuoteEvidence(exact_text=quote)
+                        for quote in recovered.step_quotes],
+                })
+            except Exception:
+                # A failed model recovery must never synthesize evidence or
+                # promote an ungrounded route into valid.
+                pass
+        evidence_diagnostic["recovery_model_calls"] = recovery_calls
+        evidence_diagnostic["recovered_step_quotes"] = len(
+            result.plan_step_quote_evidence)
         result = bind_unique_quotes(result, message)
         verify_source_spans(result, message)
         result = bind_diagnostic_pending_reference(
@@ -517,6 +563,7 @@ async def evaluate_shadow(provider: HTTPUnderstandingModel, model_name: str,
                 "ambiguity":result.ambiguity,"host_would_deny":would_deny,
                 "host_admission_complete":False,
                 "evidence_spans":len(result.source_evidence),
+                 "recovery_model_calls": recovery_calls,
                 **({"m3c_admission":m3c_preview} if m3c_preview is not None else {}),
                 **({"host_preview":host_preview} if host_preview is not None else {}),
                 **({"pending_field_state":pending_field_state}
