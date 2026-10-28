@@ -812,6 +812,7 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
             # fabricates a plan or writes a checkpoint.
             if (result is None and agent_decider is None
                     and settings.understanding_strategy == "structured"
+                    and pending_plan_execution_intent is None
                     and explicit_deferred_plan_request(body.content)):
                 result = {"run_id": turn_id, "status": "partial",
                           "termination_reason": "plan_creation_requires_clarification",
