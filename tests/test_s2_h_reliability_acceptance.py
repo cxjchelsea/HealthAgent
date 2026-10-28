@@ -58,9 +58,10 @@ def test_h06_checkpoint_commit_failure_never_leaks_success(tmp_path, monkeypatch
     with TestClient(create_app(Settings(database_url=url, model_provider="fake"),
                                agent_decider=OneStep())) as client:
         cid = client.post("/conversations").json()["id"]
-        def reject_snapshot(self, db, snapshot):
+        def reject_snapshot(self, db, *, expected_raw, snapshot):
             raise RuntimeError("test_injected_checkpoint_commit_failure")
-        monkeypatch.setattr(ConversationPlanStore, "save_in_session", reject_snapshot)
+        monkeypatch.setattr(
+            ConversationPlanStore, "compare_and_swap_in_session", reject_snapshot)
         response = client.post(f"/conversations/{cid}/agent/messages",
             json={"content": "Create and execute a plan",
                   "client_request_id": "h06-request-0001"})
