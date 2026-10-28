@@ -431,7 +431,11 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                         question=pending_question or REQUIRED_USER_VALUES[pending_action][1],
                         reply=body.content, tool=pending_action)
                 if (parsed["result"].clarification.required
-                        and pending_reply_kind != "answer"):
+                        and pending_reply_kind != "answer"
+                        and pending_plan_execution_intent is None):
+                    # A pre-reviewed saved-plan execution request is not an
+                    # incomplete generic goal. Keep its independent plan
+                    # authorization/scope checks and final Host guards intact.
                     # A missing MCP term is a pending *argument* to an
                     # already-requested read-only operation, not a new tool
                     # capability request. Persist this source-bound state
