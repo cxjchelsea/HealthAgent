@@ -228,7 +228,6 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
         result = None
         failure_code = None
         decision_steps = 0
-        preturn_capture = locals().get("preturn_capture")
         try:
             existing_checkpoint = plan_store.load()
             interpretation = None
