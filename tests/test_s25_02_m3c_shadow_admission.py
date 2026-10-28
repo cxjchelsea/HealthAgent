@@ -33,7 +33,7 @@ def test_saved_plan_shadow_does_not_infer_execution_authority():
     assert result["shadow_only"] is True
     assert result["execution_authorized"] is False
     assert result["disposition"] == "deny"
-    assert result["reason"] == "concurrency_or_idempotency_unverified"
+    assert result["reason"] == "replay_or_stale_request"
 
 
 def test_no_plan_shadow_denies_saved_plan_execution():
