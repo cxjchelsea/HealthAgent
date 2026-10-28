@@ -133,3 +133,13 @@ def resolve_plan_admission(
         proposal, existing_checkpoint=existing_checkpoint,
         missing_reference=missing_reference)
     return PlanAdmission(admitted if admitted is not None else "ordinary")
+
+
+def explicit_deferred_plan_request(message: str) -> bool:
+    """Recognize explicit non-execution constraint, never authorize a tool."""
+    has_plan = any(word in message for word in ("计划", "流程"))
+    has_creation = any(word in message for word in ("创建", "建立", "制定", "保存"))
+    has_defer = any(word in message for word in (
+        "只保存", "暂不执行", "先不执行", "不要执行", "不执行"))
+    has_steps = any(word in message for word in ("第一步", "第1步"))
+    return has_plan and has_creation and has_defer and has_steps
