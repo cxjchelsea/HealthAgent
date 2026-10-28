@@ -170,3 +170,13 @@ async def review_plan_cancellation(provider: HTTPUnderstandingModel, model: str,
         return PlanCancellationReview.model_validate_json(raw).cancel_saved_plan
     except (UnderstandingError, ValueError, TypeError):
         return False
+
+
+def explicit_saved_plan_cancellation(message: str) -> bool:
+    """Narrow no-execution fence; does not authorize deleting any plan."""
+    return (
+        "计划" in message
+        and any(token in message for token in ("取消", "撤销", "废弃"))
+        and any(token in message for token in ("保存", "已有", "当前", "刚才"))
+        and not any(token in message for token in ("如果", "假如", "如何", "怎么"))
+    )
