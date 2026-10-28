@@ -27,9 +27,13 @@ class ConversationPlanStore:
             record = db.get(ConversationPlan, self.conversation_id)
             return record.snapshot if record else None
 
-    def _assert_claim_owner(self, db, owner_turn_id: str | None) -> None:
+    def _assert_claim_owner(self, db, owner_turn_id: str | None,
+                            expected_raw: str | None = None) -> None:
         claim = db.get(PlanExecutionClaim, self.conversation_id)
-        if claim is not None and claim.turn_id != owner_turn_id:
+        if claim is None:
+            return
+        if (claim.turn_id != owner_turn_id
+                or (expected_raw is not None and claim.snapshot != expected_raw)):
             raise PlanSnapshotConflict("plan_execution_claimed")
 
     def save_in_session(self, db, snapshot: dict):
@@ -70,7 +74,7 @@ class ConversationPlanStore:
         current = db.execute(select(ConversationPlan).where(
             ConversationPlan.conversation_id == self.conversation_id
         ).with_for_update()).scalar_one_or_none()
-        self._assert_claim_owner(db, owner_turn_id)
+        self._assert_claim_owner(db, owner_turn_id, expected_raw)
         if current is None or current.snapshot != expected_raw:
             raise PlanSnapshotConflict("plan_snapshot_conflict")
         result = db.execute(
