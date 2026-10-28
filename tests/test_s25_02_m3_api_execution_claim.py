@@ -83,6 +83,8 @@ def test_http_saved_plan_claim_blocks_competing_writer_and_releases_on_finalize(
 
     async def fake_run(self, message, **kwargs):
         guard = kwargs.get("execution_guard")
+        run_state["plan_control"] = kwargs.get("plan_control")
+        run_state["guard_installed"] = guard is not None
         run_state["guard_calls"] += 1
         run_state["guard_result"] = bool(guard and guard())
         ledger = PlanLedger.restore(kwargs["plan_checkpoint"])
@@ -153,7 +155,7 @@ def test_http_saved_plan_claim_blocks_competing_writer_and_releases_on_finalize(
         assert executed.status_code == 200, executed.text
         assert executed.json()["status"] == "partial"
         assert run_state["guard_calls"] == 1
-        assert run_state["guard_result"] is True, run_state["claim_error"]
+        assert run_state["guard_result"] is True, {"claim_error": run_state["claim_error"], "plan_control": run_state.get("plan_control"), "guard_installed": run_state.get("guard_installed")}
         assert run_state["competing_write_blocked"] is True
 
     engine, Session = database(settings.database_url)
