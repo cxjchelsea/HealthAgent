@@ -889,7 +889,9 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                 settings.understanding_strong_model, body.content,
                 has_plan=existing_checkpoint is not None,
                 pending_action=pending_action, pending_field=pending_field,
-                host_facts=host_facts)
+                host_facts=host_facts,
+                m3c_capture=preturn_capture,
+                m3c_checkpoint=preturn_checkpoint)
         response_data = {**result, "conversation_id": cid,
                          "message_id": assistant_id, "turn_id": turn_id}
         if shadow is not None:
