@@ -466,6 +466,13 @@ async def evaluate_shadow(provider: HTTPUnderstandingModel, model_name: str,
                     "reference_kind": result.reference.kind,
                     "ambiguity": result.ambiguity}
         stage = "source_provenance"
+        # Bounded counts separate missing model evidence from failed Host binding.
+        evidence_diagnostic = {
+            "model_step_quotes": len(result.plan_step_quote_evidence),
+            "model_step_spans": len(result.plan_step_evidence),
+            "model_source_quotes": len(result.source_quote_evidence),
+            "model_source_spans": len(result.source_evidence),
+        }
         # Explicit offsets are immutable assertions; validate before binding quotes.
         verify_source_spans(result, message)
         result = bind_unique_quotes(result, message)
@@ -578,6 +585,7 @@ async def evaluate_shadow(provider: HTTPUnderstandingModel, model_name: str,
                 "semantic_route_comparison_only": (
                     semantic["route"] if stage == "source_provenance" else None),
                 "evidence_admissible": False,
+                **(evidence_diagnostic if stage == "source_provenance" else {}),
                 "provenance_status": "HOLD",
                 "host_admission_complete": False,
                 "failure_stage":stage,"validation_code":code,
