@@ -642,9 +642,17 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                     try:
                         checkpoint = build_plan_checkpoint(body.content, plan_decision)
                     except ValueError:
-                        # An invalid model plan proposal cannot intercept a
-                        # standalone action or grant any write permission.
-                        plan_decision = None
+                        # Once the independent semantic review has confirmed
+                        # plan authoring, a failed binding must not silently
+                        # grant the ordinary AgentLoop tool execution route.
+                        if settings.route_admission_mode == "guarded":
+                            result = {"run_id": turn_id, "status": "partial",
+                                      "termination_reason": "plan_creation_requires_clarification",
+                                      "answer": "计划步骤未通过绑定校验；未保存，也未执行工具。",
+                                      "trace": [{"step": 0, "type": "plan_execution_fenced"}],
+                                      "steps": 0}
+                        else:
+                            plan_decision = None
                     else:
                         if (settings.route_admission_mode == "guarded"
                                 and not admit_guarded_plan_create(
