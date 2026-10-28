@@ -63,6 +63,10 @@ def test_http_saved_plan_claim_blocks_competing_writer_and_releases_on_finalize(
         from agent.execution_policy import ExecutionPolicyDecision
         return ExecutionPolicyDecision(mode="execute", target="tool_action")
 
+    async def fake_reconcile(*args, **kwargs):
+        from agent.execution_policy import ExecutionPolicyDecision
+        return ExecutionPolicyDecision(mode="execute", target="tool_action")
+
     async def fake_plan_intent(provider, model, message, existing_plan):
         if "创建" in message:
             return PlanRequest(intent="plan_only", steps=[{
@@ -120,6 +124,7 @@ def test_http_saved_plan_claim_blocks_competing_writer_and_releases_on_finalize(
     monkeypatch.setattr(api, "review_plan_creation_reference", fake_create_review)
     monkeypatch.setattr(api, "review_plan_execution_authorization", fake_execution_review)
     monkeypatch.setattr(api, "decide_execution_policy_detail", fake_policy)
+    monkeypatch.setattr(api, "reconcile_execution_policy", fake_reconcile)
     monkeypatch.setattr(api.UnderstandingService, "understand", fake_understand)
     monkeypatch.setattr(api.AgentLoop, "run", fake_run)
 
