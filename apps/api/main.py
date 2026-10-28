@@ -15,6 +15,7 @@ from agent.execution_policy import decide_execution_policy_detail, reconcile_exe
 from agent.route_shadow import evaluate_shadow, compare_to_legacy
 from agent.route_shadow_host import facts_from_legacy_observation
 from agent.m4_guarded_cancel import admit_guarded_plan_cancel
+from agent.m4_guarded_plan import admit_guarded_plan_create
 from agent.m3_turn_capture import (
     capture_turn, compare_captured_identity, compare_checkpoint_snapshot,
 )
@@ -645,7 +646,19 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                         # standalone action or grant any write permission.
                         plan_decision = None
                     else:
-                        result = {"run_id": turn_id, "status": "partial",
+                        if (settings.route_admission_mode == "guarded"
+                                and not admit_guarded_plan_create(
+                                    message=body.content, conversation_id=cid,
+                                    request_id=body.client_request_id,
+                                    checkpoint=checkpoint, turn_created=True,
+                                    semantic_confirmed=creation_confirmed)):
+                            result = {"run_id": turn_id, "status": "partial",
+                                      "termination_reason": "plan_creation_requires_clarification",
+                                      "answer": "计划步骤无法逐项绑定到当前请求；未保存，也未执行工具。",
+                                      "trace": [{"step": 0, "type": "plan_execution_fenced"}],
+                                      "steps": 0}
+                        else:
+                            result = {"run_id": turn_id, "status": "partial",
                                   "termination_reason": "plan_created_pending_execution",
                                   "answer": "已建立计划，尚未执行任何步骤。请指定执行步骤。",
                                   "trace": [{"step": 0, "type": "plan_created"}],
