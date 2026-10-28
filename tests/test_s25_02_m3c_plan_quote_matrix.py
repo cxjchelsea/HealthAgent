@@ -64,3 +64,17 @@ def test_missing_duplicate_and_forged_quotes_fail_closed(evidence, expected):
     assert outcome["evidence_admissible"] is False
     assert outcome["semantic_route_comparison_only"] == "plan_create"
     assert outcome["host_admission_complete"] is False
+
+
+def test_provenance_failure_reports_bounded_model_evidence_counts():
+    msg = "请保存计划：第一步计算 2*3，第二步计算 4*5。"
+    result = asyncio.run(evaluate_shadow(
+        FixedProposal(["第一步计算 2*3"]), "fake", msg,
+        has_plan=False, pending_action=None))
+    assert result["state"] == "unavailable"
+    assert result["validation_code"] == "shadow_plan_steps_ungrounded"
+    assert result["model_step_quotes"] == 1
+    assert result["model_step_spans"] == 0
+    assert result["model_source_quotes"] == 1
+    assert result["evidence_admissible"] is False
+    assert result["host_admission_complete"] is False
