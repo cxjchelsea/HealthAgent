@@ -225,15 +225,17 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
         goal_store = ConversationGoalStore(Session, cid)
 
         def saved_plan_execution_guard():
-            # Revalidate immediately before each saved-plan tool dispatch.
-            # The active-Turn unique index serializes API turns for this
-            # conversation; this read detects any out-of-band snapshot change.
-            with Session() as guard_db:
-                active_turn = guard_db.get(Turn, turn_id)
-                current_plan = guard_db.get(ConversationPlan, cid)
-                current_raw = current_plan.snapshot if current_plan else None
-                return (active_turn is not None and active_turn.state == "running"
-                        and current_raw == preturn_plan_raw)
+            # Claim the exact Turn-bound snapshot in a DB transaction before
+            # dispatch. Every supported plan writer checks this same claim.
+            if preturn_plan_raw is None:
+                return False
+            try:
+                with Session.begin() as guard_db:
+                    plan_store.acquire_execution_claim_in_session(
+                        guard_db, turn_id=turn_id, expected_raw=preturn_plan_raw)
+                return True
+            except (PlanSnapshotConflict, IntegrityError):
+                return False
 
         previous_goal = None
         parsed_result = None
@@ -795,7 +797,8 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                         # must match the exact snapshot bound to this Turn.
                         plan_store.compare_and_swap_in_session(
                             db, expected_raw=preturn_plan_raw,
-                            snapshot=result["plan_checkpoint"])
+                            snapshot=result["plan_checkpoint"],
+                            owner_turn_id=turn_id if plan_control in {"execute_first", "resume"} else None)
                     except PlanSnapshotConflict:
                         # Never overwrite a newer durable plan. If a tool was
                         # already dispatched, tell the user to verify its effect
@@ -825,6 +828,9 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                     goal_store.resolve_confirmation_in_session(
                         db, previous_goal, body.expected_goal_version,
                         body.goal_confirmation == "accept")
+                # Release any saved-plan claim in the same transaction that
+                # persists the terminal Turn state, including partial/error paths.
+                plan_store.release_execution_claim_in_session(db, turn_id=turn_id)
                 response.content = answer
                 response.status = status
                 turn.state = status
