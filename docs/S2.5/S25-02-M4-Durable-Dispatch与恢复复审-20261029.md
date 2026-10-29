@@ -66,3 +66,15 @@ python -m evals.s25_02_m4_durable_physical --database healthagent.db `
 3. 离线恢复需要维护人员实际停止全部 worker、证明权限和执行效果；当前 CLI 的 `operator_id` 属于审计标识，不是独立管理员认证。**不得在面向不可信终端的共享主机上开放该 CLI**。
 4. 目前没有完成 PostgreSQL 多 worker kill/restart 物理验收、Qwen 接入新 Dispatch/Receipt 的本机物理证据或 legacy/guarded 完整延迟对照。M4 仍 HOLD，不应宣告生产级完整关闭。
 
+
+
+## 2026-10-29 真实模型与 SQLite 物理验收（用户本机）
+
+用户上传 `m4-durable-live.json` 与 `m4-durable-physical.json`；审查输入是两个文件中的逐项原始报告，不是 CI 的模拟测试。服务自报 `ollama_proxy / qwen3:14b / guarded / guarded-plan-route-priority-v2`。
+
+- **真实 API：5 PASS / 0 FAIL / 0 BLOCKED**。CREATE 保存 `3*4` 和 `5*6` 为 pending，不提前调用工具；FIRST 一次 `calculate(3*4)=12`，第一步 completed、第二步 pending；REMAINING 一次 `calculate(5*6)=30`，两步 completed，第一步无重复派发；CANCEL_PREPARE 独立建立两步待取消计划、CANCEL 成功取消，两者均无工具调用。
+- **物理 SQLite：9 PASS / 0 FAIL**。`dispatch_migration` PASS，证明读回库处于 Alembic `0010_plan_recovery_audit`；FIRST、REMAINING 各一条同 Turn、同 request_id 的 Dispatch，工具名称、表达式、回执值与 `checkpointed` 精确匹配；CREATE、CANCEL_PREPARE、CANCEL 均无 Dispatch；`PRAGMA quick_check` 为 ok。
+- Shadow：所有五个场景 `state=valid`；创建、取消为 `comparison=match`；FIRST 与 REMAINING 为 `compatible_plan_execution` 而非严格 `match`。Shadow-only `m3c_admission` deny 及 `execution_authorized=false` 是诊断契约，不代表正式 guarded 路径未执行。
+- **结论：M4 guarded 已保存计划正常路径的真实 Qwen3 + SQLite Durable Dispatch/Receipt 验收 PASS**，此前缺失的新版本实测证据已补齐。
+- **不得外推**：报告自身仍要求确认实际 API `DATABASE_URL` 与物理读回的 `healthagent.db` 是同一库；本轮未执行真实 OS kill/重启故障、多 worker PostgreSQL 端到端读回、外部具写入副作用工具的 exactly-once，且未做 legacy/guarded 同题时延与模型调用成本对照。离线人工恢复仅有确定性测试，尚未进行独立真实故障演练。
+- **门禁：M4 仍 VERIFYING/HOLD**。继续默认 legacy；只有完成剩余的多进程崩溃恢复物理证据和独立性能/权限审查后才讨论 M4 关闭，不自动合并 main。
