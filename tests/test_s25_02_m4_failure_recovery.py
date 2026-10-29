@@ -119,6 +119,12 @@ def test_guarded_post_tool_exception_blocks_automatic_replay(
         assert retry.status_code == 200, retry.text
         assert retry.json()["termination_reason"] == "plan_execution_reconciliation_required"
         assert retry.json()["steps"] == 0
+        inspection = client.get(f"/conversations/{cid}/plan/recovery-status")
+        assert inspection.status_code == 200
+        assert inspection.json()["reconciliation_required"] is True
+        assert inspection.json()["uncertain_turn_count"] == 1
+        assert inspection.json()["claim_present"] is False
+        assert inspection.json()["automatic_replay_permitted"] is False
         assert events == ["tool_executed"]
 
     engine, Session = database(settings.database_url)
