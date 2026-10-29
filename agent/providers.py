@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator
 from typing import Protocol
 import httpx
 from agent.http_policy import model_http_trust_env
+from agent.understanding import model_call_counter
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +37,9 @@ class OpenAICompatibleProvider:
         url=f"{self.base_url}/chat/completions"
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(self.timeout,connect=10)) as client:
+                counter = model_call_counter.get()
+                if counter is not None:
+                    counter["total"] += 1
                 async with client.stream("POST", url,
                     headers={"Authorization":f"Bearer {self.api_key}"},
                     json={"model":self.model,"messages":messages,"stream":True}) as response:
@@ -90,6 +94,9 @@ class OllamaProxyProvider:
         visible_parts = 0
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(self.timeout, connect=10), trust_env=model_http_trust_env('ollama_proxy', self.base_url)) as client:
+                counter = model_call_counter.get()
+                if counter is not None:
+                    counter["total"] += 1
                 async with client.stream("POST", url, json=request_body) as response:
                     if response.status_code >= 400:
                         raise ModelUnavailable(f"Ollama gateway HTTP {response.status_code}")
