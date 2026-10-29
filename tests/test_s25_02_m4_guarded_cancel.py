@@ -268,3 +268,14 @@ def test_m4_saved_plan_command_is_not_swallowed_by_generic_goal_clarification(
         assert first.status_code == 200, first.text
         assert first.json()["trace"][0]["type"] == "tool"
         assert called == ["execute_first"]
+
+
+def test_m4_model_endpoint_reports_runtime_route_mode(tmp_path):
+    settings = Settings(
+        database_url=f"sqlite:///{tmp_path / 'm4_mode.db'}",
+        route_admission_mode="guarded")
+    with TestClient(create_app(settings)) as client:
+        response = client.get("/model")
+        assert response.status_code == 200
+        assert response.json()["route_admission_mode"] == "guarded"
+        assert response.json()["m4_contract"] == "guarded-plan-route-priority-v2"
