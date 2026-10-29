@@ -10,7 +10,7 @@ from agent.route_primary_m5_binding import (
 
 def proposal(route="plan_execute_first", **overrides):
     action = {"route": route, "scope": "first_step",
-              "evidence": [{"start": 0, "end": 4, "exact_text": "第一步"}]}
+              "evidence": [{"start": 0, "end": 3, "exact_text": "第一步"}]}
     fields = dict(schema_version="s25-m5-primary-v1", route=route,
                   scope="first_step", effect_intent="read_only",
                   ambiguity="clear", operation=action)
@@ -34,7 +34,7 @@ def test_fake_source_span_rejected():
 
 def test_wrong_operation_route_rejected():
     fields = proposal(operation={"route": "plan_cancel", "evidence": [
-        {"start": 0, "end": 4, "exact_text": "第一步"}]})
+        {"start": 0, "end": 3, "exact_text": "第一步"}]})
     with pytest.raises(ValidationError, match="m5_operation_route_mismatch"):
         PrimarySemanticProposal.model_validate(fields)
 
