@@ -41,7 +41,12 @@ def request(client, path, body=None):
         data = response.json()
     except ValueError:
         data = {"error": "non_json_response"}
-    return {"http": response.status_code, "elapsed_ms": ms, "response": data}
+    def count_header(name):
+        raw = response.headers.get(name)
+        return int(raw) if raw is not None and raw.isdecimal() else None
+    return {"http": response.status_code, "elapsed_ms": ms, "response": data,
+            "provider_http_attempts": count_header("X-HealthAgent-Model-HTTP-Attempts"),
+            "shadow_http_attempts": count_header("X-HealthAgent-Shadow-HTTP-Attempts")}
 
 
 def assess(records):
@@ -57,45 +62,42 @@ def assess(records):
             and sum(t.get("type") == "tool" and t.get("ok") is True for t in c.get("trace", [])) == 1)
 
 
-def run_mode(endpoint, expected_mode, count, timeout):
-    with httpx.Client(base_url=endpoint, timeout=timeout) as client:
-        model = client.get("/model").json()
-        if (model.get("route_admission_mode") != expected_mode
-                or model.get("provider") == "fake"):
-            raise ValueError("wrong_model_or_route_mode_" + expected_mode)
-        cases = []
-        for index in range(count):
-            cid = client.post("/conversations").json()["id"]
-            records = []
-            for prompt in PROMPTS:
-                records.append(request(client, f"/conversations/{cid}/agent/messages",
-                                       {"content": prompt,
-                                        "client_request_id": uuid.uuid4().hex}))
-                if records[-1]["http"] != 200:
-                    break
-            cases.append({"index": index, "conversation_id": cid,
-                          "functional_pass": assess(records),
-                          "requests": records})
-            print(expected_mode, index, "PASS" if cases[-1]["functional_pass"] else "FAIL")
-        elapsed = [r["elapsed_ms"] for case in cases for r in case["requests"]]
-        shadow_elapsed = [r["response"]["route_shadow"].get("diagnostic_elapsed_ms")
-                          for case in cases for r in case["requests"]
-                          if isinstance(r["response"].get("route_shadow"), dict)]
-        shadow_calls = [r["response"]["route_shadow"].get("diagnostic_model_calls")
-                        for case in cases for r in case["requests"]
-                        if isinstance(r["response"].get("route_shadow"), dict)]
-        return {"model": model, "cases": cases,
-                "functional_pass": sum(c["functional_pass"] for c in cases),
-                "sample_requests": len(elapsed),
-                "latency_ms": {"p50": percentile(elapsed, .5),
-                               "p95": percentile(elapsed, .95),
-                               "mean": round(statistics.mean(elapsed),1) if elapsed else None},
-                "shadow_diagnostic_ms": {"p50": percentile(shadow_elapsed,.5),
-                                          "p95": percentile(shadow_elapsed,.95)},
-                "shadow_diagnostic_model_calls": {
-                    "observed_total": sum(c for c in shadow_calls if isinstance(c,int)),
-                    "count_observed": sum(isinstance(c,int) for c in shadow_calls)},
-                "core_model_calls": "NOT_INSTRUMENTED"}
+def run_cycle(client, index):
+    cid = client.post("/conversations").json()["id"]
+    records = []
+    for prompt in PROMPTS:
+        records.append(request(client, f"/conversations/{cid}/agent/messages",
+                               {"content": prompt, "client_request_id": uuid.uuid4().hex}))
+        if records[-1]["http"] != 200:
+            break
+    result = {"index": index, "conversation_id": cid,
+              "functional_pass": assess(records), "requests": records}
+    return result
+
+
+def summarize(model, cases):
+    elapsed = [r["elapsed_ms"] for c in cases for r in c["requests"]]
+    calls = [r["provider_http_attempts"] for c in cases for r in c["requests"]]
+    shadows = [r["shadow_http_attempts"] for c in cases for r in c["requests"]]
+    shadow_elapsed = [r["response"]["route_shadow"].get("diagnostic_elapsed_ms")
+                      for c in cases for r in c["requests"]
+                      if isinstance(r["response"].get("route_shadow"), dict)]
+    complete = all(isinstance(x, int) for x in calls)
+    return {"model": model, "cases": cases,
+            "functional_pass": sum(c["functional_pass"] for c in cases),
+            "sample_requests": len(elapsed),
+            "latency_ms": {"p50": percentile(elapsed, .5),
+                           "p95": percentile(elapsed, .95),
+                           "mean": round(statistics.mean(elapsed), 1) if elapsed else None},
+            "shadow_diagnostic_ms": {"p50": percentile(shadow_elapsed, .5),
+                                     "p95": percentile(shadow_elapsed, .95)},
+            "provider_http_attempts": {"total": sum(calls) if complete else None,
+                                       "observed": sum(isinstance(x, int) for x in calls),
+                                       "per_request": calls},
+            "shadow_http_attempts": {"total": sum(shadows) if all(
+                isinstance(x, int) for x in shadows) else None},
+            "core_model_calls": "NOT_INSTRUMENTED",
+            "measurement_note": "Provider HTTP attempts are real attempted HTTP calls via HTTPUnderstandingModel; other provider adapters may not be counted."}
 
 
 def main():
@@ -120,12 +122,33 @@ def main():
               "limitations": [
                   "Different isolated databases and identical Qwen model settings required.",
                   "HTTP wall time includes queueing and any Shadow diagnostics.",
-                  "Core provider model-call count is not instrumented.",
+                  "Provider HTTP attempt counts are measured via per-request response headers; full adapter coverage is not guaranteed.",
                   "Small cycle count cannot establish stable performance percentiles.",
                   "External concurrency and exactly-once safety are outside this benchmark."]}
-    for mode, endpoint in (("legacy",a.legacy_endpoint),
-                           ("guarded",a.guarded_endpoint)):
-        result[mode] = run_mode(endpoint, mode, a.cycles, a.timeout)
+    models = {}
+    cases = {"legacy": [], "guarded": []}
+    with httpx.Client(base_url=a.legacy_endpoint, timeout=a.timeout) as legacy, \
+         httpx.Client(base_url=a.guarded_endpoint, timeout=a.timeout) as guarded:
+        clients = {"legacy": legacy, "guarded": guarded}
+        for mode in ("legacy", "guarded"):
+            models[mode] = clients[mode].get("/model").json()
+            if (models[mode].get("route_admission_mode") != mode
+                    or models[mode].get("provider") == "fake"):
+                raise ValueError("wrong_model_or_route_mode_" + mode)
+        if (models["legacy"].get("model"), models["legacy"].get("provider")) != (
+                models["guarded"].get("model"), models["guarded"].get("provider")):
+            raise ValueError("provider_or_model_mismatch")
+        for index in range(a.cycles):
+            order = ("legacy", "guarded") if index % 2 == 0 else ("guarded", "legacy")
+            for mode in order:
+                record = run_cycle(clients[mode], index)
+                cases[mode].append(record)
+                print(mode, index, "PASS" if record["functional_pass"] else "FAIL")
+    result["cycle_orders"] = [
+        ["legacy", "guarded"] if i % 2 == 0 else ["guarded", "legacy"]
+        for i in range(a.cycles)]
+    for mode in ("legacy", "guarded"):
+        result[mode] = summarize(models[mode], cases[mode])
     Path(a.output).write_text(json.dumps(result,ensure_ascii=False,indent=2),encoding="utf-8")
     print("legacy",result["legacy"]["latency_ms"],"guarded",result["guarded"]["latency_ms"])
 
