@@ -49,7 +49,7 @@ class AgentState(TypedDict):
     user_request: str
 
 class AgentLoop:
-    def __init__(self, decider: Any, max_steps: int = 6, clock=None, task_store=None, memory_store=None, mcp_client=None, skill_strategy='dynamic', skill_budget_chars=600, execution_guard=None):
+    def __init__(self, decider: Any, max_steps: int = 6, clock=None, task_store=None, memory_store=None, mcp_client=None, skill_strategy='dynamic', skill_budget_chars=600, execution_guard=None, dispatch_journal=None):
         if max_steps < 1 or max_steps > 20:
             raise ValueError("max_steps must be 1..20")
         self.decider = decider
@@ -61,6 +61,7 @@ class AgentLoop:
         self.skill_strategy = skill_strategy
         self.skill_budget_chars = skill_budget_chars
         self.execution_guard = execution_guard
+        self.dispatch_journal = dispatch_journal
         flow = StateGraph(AgentState)
         flow.add_node("decide", self._decide)
         flow.add_node("tools", self._tools)
@@ -446,10 +447,15 @@ class AgentLoop:
                     break
                 name = step["expected_tool"]
                 arguments = step["expected_arguments"]
+                dispatch_id = None
+                if self.dispatch_journal is not None:
+                    dispatch_id = self.dispatch_journal.begin(step["id"], name, arguments)
                 result = execute_tool(
                     name, arguments, [],
                     self.clock, task_store=self.task_store,
                     memory_store=self.memory_store, mcp_client=self.mcp_client)
+                if dispatch_id is not None:
+                    self.dispatch_journal.record_receipt(dispatch_id, result)
                 resumed.observe(name, result, arguments)
                 # Preserve only the bounded, tool-observed output for delivery.
                 # Never synthesize results for previously completed steps.
@@ -487,6 +493,11 @@ class AgentLoop:
                                       "type": "plan_execution_guard_conflict"})
                         break
                     # No candidate authorizes a write or marks success by itself.
+                    # A recovery tool is a second side effect under the same
+                    # step. In guarded journal mode, stop rather than issuing
+                    # an unjournaled second dispatch.
+                    if self.dispatch_journal is not None:
+                        break
                     recovery = execute_tool(
                         candidate.tool, candidate.arguments, [],
                         self.clock, task_store=self.task_store,

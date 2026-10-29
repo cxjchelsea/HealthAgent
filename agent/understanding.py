@@ -4,6 +4,8 @@ No regex / keyword intent classifier. This module does not authorize or execute
 actions. Both standalone inspection and Agent integration must consume this API.
 """
 from __future__ import annotations
+from contextvars import ContextVar
+
 import json
 import time
 from typing import Any, Literal, Protocol
@@ -106,6 +108,10 @@ class UnderstandingModel(Protocol):
     async def complete(self, *, messages: list[dict[str, str]], model: str,
                        response_schema: dict | None = None) -> str: ...
 
+# Request-local telemetry; the mutable dict propagates through async tasks.
+# Counts dispatched provider HTTP attempts, including failures, not tokens.
+model_call_counter = ContextVar("model_call_counter", default=None)
+
 class HTTPUnderstandingModel:
     def __init__(self, provider: str, base_url: str, key: str, timeout: float, output_tokens: int):
         self.provider, self.base_url, self.key = provider, base_url.rstrip("/"), key
@@ -130,6 +136,9 @@ class HTTPUnderstandingModel:
             raise UnderstandingError("unsupported_provider")
         try:
             async with httpx.AsyncClient(timeout=self.timeout, trust_env=model_http_trust_env(self.provider, self.base_url)) as client:
+                counter = model_call_counter.get()
+                if counter is not None:
+                    counter["total"] += 1
                 response = await client.post(url, json=body, headers=headers)
                 response.raise_for_status()
                 data = response.json()

@@ -11,9 +11,13 @@ from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from agent.config import Settings
 from agent.understanding import UnderstandingContext, UnderstandingService, HTTPUnderstandingModel, UnderstandingError
+from agent.understanding import model_call_counter
 from agent.execution_policy import decide_execution_policy_detail, reconcile_execution_policy
 from agent.route_shadow import evaluate_shadow, compare_to_legacy
 from agent.route_shadow_host import facts_from_legacy_observation
+from agent.m4_guarded_cancel import admit_guarded_plan_cancel
+from agent.m4_guarded_plan import admit_guarded_plan_create
+from agent.m4_guarded_execution import admit_guarded_plan_execution
 from agent.m3_turn_capture import (
     capture_turn, compare_captured_identity, compare_checkpoint_snapshot,
 )
@@ -39,8 +43,10 @@ from agent.context import build_context
 from services.task_store import ConversationTaskStore
 from services.memory_store import MemoryStore
 from services.plan_store import ConversationPlanStore, PlanSnapshotConflict
+from services.plan_dispatch import PlanDispatchJournal, UNRESOLVED_DISPATCH_STATUSES
 from services.goal_store import ConversationGoalStore
 from services.db import Conversation, ConversationPlan, Message, Turn, database
+from services.db import PlanExecutionClaim, PlanToolDispatch
 
 log=logging.getLogger("healthagent")
 logging.basicConfig(level=logging.INFO,format='%(levelname)s %(message)s')
@@ -73,6 +79,20 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
 
     app=FastAPI(title="HealthAgent Unified Agent", version="0.2.0",lifespan=lifespan)
     app.state.settings=settings
+
+    @app.middleware("http")
+    async def count_model_http_attempts(request: Request, call_next):
+        counter = {"total": 0, "shadow": 0}
+        token = model_call_counter.set(counter)
+        try:
+            response = await call_next(request)
+            # Safe aggregate counters only: no prompts, credentials or arguments.
+            response.headers["X-HealthAgent-Model-HTTP-Attempts"] = str(counter["total"])
+            response.headers["X-HealthAgent-Shadow-HTTP-Attempts"] = str(counter["shadow"])
+            return response
+        finally:
+            model_call_counter.reset(token)
+
 
     def user_id(request:Request):
         tokens=dict(pair.split(":",1) for pair in settings.user_tokens.split(",") if ":" in pair)
@@ -223,9 +243,11 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                 raise HTTPException(409, "conversation_turn_in_progress") from exc
             raise
         plan_store = ConversationPlanStore(Session, cid)
+        execution_claim_acquired = False
         goal_store = ConversationGoalStore(Session, cid)
 
         def saved_plan_execution_guard():
+            nonlocal execution_claim_acquired
             # Claim the exact Turn-bound snapshot in a DB transaction before
             # dispatch. Every supported plan writer checks this same claim.
             if preturn_plan_raw is None:
@@ -234,6 +256,7 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                 with Session.begin() as guard_db:
                     plan_store.acquire_execution_claim_in_session(
                         guard_db, turn_id=turn_id, expected_raw=preturn_plan_raw)
+                execution_claim_acquired = True
                 return True
             except (PlanSnapshotConflict, IntegrityError):
                 return False
@@ -281,7 +304,19 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                             settings.model_api_key, settings.model_timeout_seconds,
                             settings.model_max_output_tokens),
                         settings.understanding_strong_model, body.content)):
-                result = {"run_id": turn_id, "status": "completed",
+                if settings.route_admission_mode == "guarded" and not admit_guarded_plan_cancel(
+                        message=body.content, conversation_id=cid,
+                        request_id=body.client_request_id,
+                        checkpoint=existing_checkpoint, turn_created=True,
+                        semantic_confirmed=True):
+                    result = {"run_id": turn_id, "status": "partial",
+                              "termination_reason": "plan_cancellation_requires_clarification",
+                              "answer": "无法验证当前计划取消权限；未取消，也未执行工具。",
+                              "trace": [{"step": 0, "type": "plan_cancellation_fenced"}],
+                              "steps": 0, "plan": existing_checkpoint["steps"],
+                              "plan_revision": existing_checkpoint["revision"]}
+                else:
+                    result = {"run_id": turn_id, "status": "completed",
                           "termination_reason": "plan_cancelled",
                           "answer": "已取消当前保存的计划，未执行任何步骤。",
                           "trace": [{"step": 0, "type": "plan_cancelled"}],
@@ -416,7 +451,12 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                         question=pending_question or REQUIRED_USER_VALUES[pending_action][1],
                         reply=body.content, tool=pending_action)
                 if (parsed["result"].clarification.required
-                        and pending_reply_kind != "answer"):
+                        and pending_reply_kind != "answer"
+                        and (settings.route_admission_mode != "guarded"
+                             or pending_plan_execution_intent is None)):
+                    # A pre-reviewed saved-plan execution request is not an
+                    # incomplete generic goal. Keep its independent plan
+                    # authorization/scope checks and final Host guards intact.
                     # A missing MCP term is a pending *argument* to an
                     # already-requested read-only operation, not a new tool
                     # capability request. Persist this source-bound state
@@ -583,6 +623,7 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                   "steps": 0, "proposed_goal": parsed_result.goal.model_dump(),
                                   "expected_goal_version": previous_goal["version"] + 1}
             plan_control = None
+            confirmed_plan_execution = False
             # Separate authoring a future plan from executing its steps. Only
             # the bound checkpoint can authorize later read-only execution.
             if (result is None and parsed_result is not None
@@ -628,11 +669,31 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                     try:
                         checkpoint = build_plan_checkpoint(body.content, plan_decision)
                     except ValueError:
-                        # An invalid model plan proposal cannot intercept a
-                        # standalone action or grant any write permission.
-                        plan_decision = None
+                        # Once the independent semantic review has confirmed
+                        # plan authoring, a failed binding must not silently
+                        # grant the ordinary AgentLoop tool execution route.
+                        if settings.route_admission_mode == "guarded":
+                            result = {"run_id": turn_id, "status": "partial",
+                                      "termination_reason": "plan_creation_requires_clarification",
+                                      "answer": "计划步骤未通过绑定校验；未保存，也未执行工具。",
+                                      "trace": [{"step": 0, "type": "plan_execution_fenced"}],
+                                      "steps": 0}
+                        else:
+                            plan_decision = None
                     else:
-                        result = {"run_id": turn_id, "status": "partial",
+                        if (settings.route_admission_mode == "guarded"
+                                and not admit_guarded_plan_create(
+                                    message=body.content, conversation_id=cid,
+                                    request_id=body.client_request_id,
+                                    checkpoint=checkpoint, turn_created=True,
+                                    semantic_confirmed=creation_confirmed)):
+                            result = {"run_id": turn_id, "status": "partial",
+                                      "termination_reason": "plan_creation_requires_clarification",
+                                      "answer": "计划步骤无法逐项绑定到当前请求；未保存，也未执行工具。",
+                                      "trace": [{"step": 0, "type": "plan_execution_fenced"}],
+                                      "steps": 0}
+                        else:
+                            result = {"run_id": turn_id, "status": "partial",
                                   "termination_reason": "plan_created_pending_execution",
                                   "answer": "已建立计划，尚未执行任何步骤。请指定执行步骤。",
                                   "trace": [{"step": 0, "type": "plan_created"}],
@@ -737,6 +798,22 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                       "steps": 0}
                         elif result is None and existing_checkpoint:
                             plan_control = plan_control or plan_decision.intent
+            # M4 guarded mode narrows existing saved-plan execution admission
+            # after the independent authorization and scope reviews. This
+            # candidate NEVER bypasses the executor's durable execution claim.
+            if (result is None and settings.route_admission_mode == "guarded"
+                    and agent_decider is None
+                    and plan_control in {"execute_first", "resume"}):
+                if not admit_guarded_plan_execution(
+                        conversation_id=cid, request_id=body.client_request_id,
+                        checkpoint=existing_checkpoint, scope=plan_control,
+                        turn_created=True,
+                        semantic_confirmed=confirmed_plan_execution):
+                    result = {"run_id": turn_id, "status": "partial",
+                              "termination_reason": "execution_not_authorized",
+                              "answer": "计划执行未通过受控准入；未调用任何工具。",
+                              "trace": [{"step": 0, "type": "plan_execution_denied"}],
+                              "steps": 0}
             # Never hand explicit saved-plan cancellation to the generic loop
             # when the independent semantic verifier did not confirm deletion.
             if (result is None and existing_checkpoint is not None
@@ -755,12 +832,29 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
             # fabricates a plan or writes a checkpoint.
             if (result is None and agent_decider is None
                     and settings.understanding_strategy == "structured"
+                    and pending_plan_execution_intent is None
                     and explicit_deferred_plan_request(body.content)):
                 result = {"run_id": turn_id, "status": "partial",
                           "termination_reason": "plan_creation_requires_clarification",
                           "answer": "已识别到只保存、不执行的计划约束，但当前无法可靠保存步骤；请确认计划内容。",
                           "trace": [{"step": 0, "type": "plan_execution_fenced"}],
                           "steps": 0}
+            if (result is None and settings.route_admission_mode == "guarded"
+                    and plan_control in {"execute_first", "resume"}):
+                with Session() as recovery_db:
+                    unresolved_dispatch = recovery_db.scalar(select(PlanToolDispatch.id).where(
+                        PlanToolDispatch.conversation_id == cid,
+                        PlanToolDispatch.status.in_(UNRESOLVED_DISPATCH_STATUSES)))
+                    unknown = recovery_db.scalar(select(Turn.id).where(
+                        Turn.conversation_id == cid,
+                        Turn.failure_code == "plan_execution_outcome_unknown"))
+                if unknown is not None or unresolved_dispatch is not None:
+                    result = {"run_id": turn_id, "status": "partial",
+                              "termination_reason": "plan_execution_reconciliation_required",
+                              "answer": "此前计划执行结果尚未核实。已停止后续工具调用，请先人工核对执行记录与当前计划，再决定是否恢复。",
+                              "trace": [{"step": 0, "type": "plan_execution_fenced"}],
+                              "steps": 0, "plan": existing_checkpoint["steps"],
+                              "plan_revision": existing_checkpoint["revision"]}
             if result is None:
                 decider = agent_decider if agent_decider is not None else NativeToolDecision(settings)
                 result = await AgentLoop(decider, task_store=ConversationTaskStore(Session, cid),
@@ -768,7 +862,10 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                     mcp_client=StdioMCPClient(), skill_strategy=settings.skill_strategy,
                     skill_budget_chars=settings.skill_budget_chars,
                     execution_guard=(saved_plan_execution_guard
-                        if plan_control in {"execute_first", "resume"} else None)).run(
+                        if plan_control in {"execute_first", "resume"} else None),
+                    dispatch_journal=(PlanDispatchJournal(Session, cid, turn_id)
+                        if settings.route_admission_mode == "guarded"
+                        and plan_control in {"execute_first", "resume"} else None)).run(
                                           body.content, history=context,
                                           plan_checkpoint=existing_checkpoint,
                                           understanding_result=interpretation,
@@ -827,7 +924,9 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
         except Exception as exc:
             log.warning("conversation Agent failed turn=%s class=%s", turn_id, type(exc).__name__)
             status, answer = "provider_error", ""
-            failure_code = "agent_exception"
+            failure_code = ("plan_execution_outcome_unknown"
+                            if settings.route_admission_mode == "guarded"
+                            and execution_claim_acquired else "agent_exception")
         # Atomic local DB commit: never expose a successful message separately
         # from its corresponding plan checkpoint and turn terminal state.
         # External tool effects remain outside this transaction.
@@ -859,12 +958,17 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                             db, expected_raw=preturn_plan_raw,
                             snapshot=result["plan_checkpoint"],
                             owner_turn_id=turn_id if plan_control in {"execute_first", "resume"} else None)
+                        if settings.route_admission_mode == "guarded" and plan_control in {"execute_first", "resume"}:
+                            PlanDispatchJournal(Session, cid, turn_id).checkpoint_in_session(db, result["plan_checkpoint"])
                     except PlanSnapshotConflict:
                         # Never overwrite a newer durable plan. If a tool was
                         # already dispatched, tell the user to verify its effect
                         # before retrying; the database cannot roll that effect back.
                         status = "partial"
-                        failure_code = "plan_snapshot_conflict"
+                        failure_code = ("plan_execution_outcome_unknown"
+                                        if settings.route_admission_mode == "guarded"
+                                        and execution_claim_acquired
+                                        else "plan_snapshot_conflict")
                         answer = ("当前计划已发生变化，本次没有覆盖新计划。若本轮已调用工具，"
                                   "请先核对工具执行结果，再决定是否重试，避免重复执行。")
                         result = {
@@ -945,6 +1049,8 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
             # preview failures must never turn an already committed success
             # into an HTTP error or re-dispatch a tool.
             shadow_started = time.monotonic()
+            counter = model_call_counter.get()
+            shadow_calls_before = counter["total"] if counter is not None else None
             try:
                 shadow = await evaluate_shadow(
                     HTTPUnderstandingModel(
@@ -962,6 +1068,8 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                             turn_id, type(exc).__name__)
                 shadow = {"state": "unavailable", "error_class": "ShadowEvaluationError",
                           "host_admission_complete": False}
+            if counter is not None and shadow_calls_before is not None:
+                counter["shadow"] += counter["total"] - shadow_calls_before
             shadow["diagnostic_elapsed_ms"] = int(
                 (time.monotonic() - shadow_started) * 1000)
             shadow["diagnostic_model_calls"] = 1 + shadow.get("recovery_model_calls", 0)
@@ -992,6 +1100,33 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                     "decision_steps": turn.decision_steps,
                     "duration_ms": turn.duration_ms}
 
+    @app.get("/conversations/{cid}/plan/recovery-status")
+    def plan_recovery_status(cid: str, uid=Depends(user_id)):
+        """Owner-scoped read-only inspection; never releases a claim or retries a tool."""
+        with Session() as db:
+            get_owned(db, cid, uid)
+            active = list(db.scalars(select(Turn).where(
+                Turn.conversation_id == cid, Turn.state == "running")))
+            uncertain = list(db.scalars(select(Turn).where(
+                Turn.conversation_id == cid,
+                Turn.failure_code == "plan_execution_outcome_unknown")))
+            claim = db.get(PlanExecutionClaim, cid)
+            unresolved = list(db.scalars(select(PlanToolDispatch.id).where(
+                PlanToolDispatch.conversation_id == cid,
+                PlanToolDispatch.status.in_(UNRESOLVED_DISPATCH_STATUSES))))
+            plan = db.get(ConversationPlan, cid)
+            return {
+                "reconciliation_required": bool(uncertain or active or claim or unresolved),
+                "uncheckpointed_dispatch_count": len(unresolved),
+                "active_turn_count": len(active),
+                "uncertain_turn_count": len(uncertain),
+                "claim_present": claim is not None,
+                "plan_present": plan is not None,
+                "automatic_replay_permitted": False,
+                "next_action": ("manual_investigation" if uncertain or active or claim or unresolved
+                                else "no_recovery_fence_observed"),
+            }
+
     @app.get("/healthz")
     def healthz():return {"status":"ok"}
 
@@ -1007,7 +1142,9 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
     @app.get("/model")
     def model_info(uid=Depends(user_id)):
         return {"provider":settings.model_provider,"model": "fake" if settings.model_provider=="fake" else settings.model_name,
-                "configured":settings.provider_ready}
+                "configured":settings.provider_ready,
+                "route_admission_mode": settings.route_admission_mode,
+                "m4_contract": "guarded-plan-route-priority-v2"}
 
     @app.post("/conversations",status_code=201)
     def new_conversation(uid=Depends(user_id)):
