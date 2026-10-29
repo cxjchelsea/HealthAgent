@@ -113,3 +113,60 @@ def test_reconcile_successful_persisted_calculate_receipt_without_tool_dispatch(
             reconcile_verified_receipts(**args)
     finally:
         engine.dispose()
+
+
+def test_quarantine_ignores_historical_quarantined_dispatch_same_conversation(tmp_path):
+    engine, Session, url, cid, tid, hash_value, evidence, valid = fixture(tmp_path)
+    args = dict(database_url=url, conversation_id=cid, turn_id=tid,
+                snapshot_sha256=hash_value, evidence_file=evidence,
+                operator_id="local-maintainer")
+    try:
+        with Session.begin() as db:
+            old_turn = Turn(conversation_id=cid, request_id="old-quarantined-turn",
+                            state="provider_error",
+                            failure_code="plan_execution_manually_quarantined")
+            db.add(old_turn)
+            db.flush()
+            old_id = old_turn.id
+            db.add(PlanToolDispatch(
+                conversation_id=cid, turn_id=old_id, step_id=1,
+                tool_name="calculate", arguments_json='{"expression":"1+1"}',
+                status="quarantined_no_replay"))
+        result = quarantine(**args)
+        assert result["status"] == "quarantined_without_replay"
+        with Session() as db:
+            entries = list(db.scalars(select(PlanToolDispatch).where(
+                PlanToolDispatch.conversation_id == cid)))
+            assert len(entries) == 2
+            assert all(x.status == "quarantined_no_replay" for x in entries)
+            assert db.get(PlanToolDispatch, next(x.id for x in entries
+                          if x.turn_id == old_id)).turn_id == old_id
+            assert db.get(PlanExecutionClaim, cid) is None
+            assert db.get(ConversationPlan, cid) is None
+    finally:
+        engine.dispose()
+
+
+def test_quarantine_still_rejects_another_unresolved_dispatch(tmp_path):
+    engine, Session, url, cid, tid, hash_value, evidence, valid = fixture(tmp_path)
+    args = dict(database_url=url, conversation_id=cid, turn_id=tid,
+                snapshot_sha256=hash_value, evidence_file=evidence,
+                operator_id="local-maintainer")
+    try:
+        with Session.begin() as db:
+            other = Turn(conversation_id=cid, request_id="old-unresolved-turn",
+                         state="provider_error",
+                         failure_code="plan_execution_manually_quarantined")
+            db.add(other)
+            db.flush()
+            db.add(PlanToolDispatch(
+                conversation_id=cid, turn_id=other.id, step_id=1,
+                tool_name="calculate", arguments_json='{"expression":"1+1"}',
+                status="dispatch_unknown"))
+        with pytest.raises(RecoveryRefused, match="other_unresolved_dispatch"):
+            quarantine(**args)
+        with Session() as db:
+            assert db.get(ConversationPlan, cid) is not None
+            assert db.get(PlanExecutionClaim, cid) is not None
+    finally:
+        engine.dispose()
