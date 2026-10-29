@@ -17,7 +17,8 @@ def test_capture_is_inside_turn_creation_transaction_before_legacy_execution():
 def test_capture_is_opt_in_and_checkpoint_comparison_is_diagnostic_only():
     source = Path("apps/api/main.py").read_text(encoding="utf-8")
     assert "plan_record = db.get(ConversationPlan, cid)" in source
-    assert "if settings.route_shadow_enabled or (settings.m5_first_route_enabled" in source
+    assert "if settings.route_shadow_enabled or ((settings.m5_first_route_enabled" in source
+    assert "or settings.m5_unified_route_enabled)" in source
     assert "and settings.route_admission_mode == \"guarded\"" in source
     assert "preturn_capture = capture_turn(" in source
     assert 'response_data["route_shadow"]["m3_preturn_identity"]' in source
