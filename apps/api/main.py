@@ -317,9 +317,21 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                             settings.model_api_key, settings.model_timeout_seconds,
                             settings.model_max_output_tokens),
                         settings.understanding_strong_model, body.content)
-                except SavedPlanRouteRefused:
+                except SavedPlanRouteRefused as exc:
+                    # Only our fixed internal error codes, never model text,
+                    # arguments, quotes, or exception repr, reach diagnostics.
+                    refusal_code = str(exc)
+                    if refusal_code not in {
+                            "m5_quote_not_found", "m5_quote_ambiguous",
+                            "m5_create_unexpected_steps",
+                            "m5_create_invalid_step_count",
+                            "m5_create_invalid_arguments",
+                            "m5_create_argument_not_in_evidence",
+                            "m5_create_binding_refused"}:
+                        refusal_code = "m5_create_unclassified_refusal"
                     result = {"run_id": turn_id, "status": "partial",
                               "termination_reason": "m5_unified_create_refused",
+                              "m5_refusal_code": refusal_code,
                               "answer": "本轮新建计划的来源或参数未验证；未保存或执行工具。",
                               "trace": [{"step": 0, "type": "m5_unified_fenced"}],
                               "steps": 0}
