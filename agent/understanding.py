@@ -11,6 +11,7 @@ import time
 from typing import Any, Literal, Protocol
 import httpx
 from agent.http_policy import model_http_trust_env
+from agent.m5_model_call_metrics import model_call_category
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 class ConstraintSpec(BaseModel):
@@ -139,6 +140,9 @@ class HTTPUnderstandingModel:
                 counter = model_call_counter.get()
                 if counter is not None:
                     counter["total"] += 1
+                    by_category = counter.setdefault("by_category", {})
+                    category = model_call_category.get()
+                    by_category[category] = by_category.get(category, 0) + 1
                 response = await client.post(url, json=body, headers=headers)
                 response.raise_for_status()
                 data = response.json()
