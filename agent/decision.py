@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 import httpx
 from agent.http_policy import model_http_trust_env
+from agent.understanding import model_call_counter
 from agent.providers import ModelUnavailable
 
 @dataclass
@@ -60,6 +61,9 @@ class NativeToolDecision:
         for attempt in range(2):
             try:
                 async with httpx.AsyncClient(timeout=s.model_timeout_seconds, trust_env=model_http_trust_env(s.model_provider, s.model_base_url)) as client:
+                    counter = model_call_counter.get()
+                    if counter is not None:
+                        counter["total"] += 1
                     response = await client.post(url, json=body, headers=headers)
                     response.raise_for_status()
                     payload = response.json()
