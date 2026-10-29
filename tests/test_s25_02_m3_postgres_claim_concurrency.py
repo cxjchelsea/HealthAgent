@@ -31,7 +31,7 @@ def test_competing_plan_writer_waits_for_claim_then_fails_closed():
         snapshot = json.dumps({"revision": 1, "steps": []})
         db.add(ConversationPlan(conversation_id=cid, snapshot=snapshot))
         owner = Turn(conversation_id=cid, request_id="claim-owner")
-        writer = Turn(conversation_id=cid, request_id="claim-writer")
+        writer = Turn(conversation_id=cid, request_id="claim-writer", state="completed")
         db.add_all([owner, writer])
         db.flush()
         owner_id = owner.id
