@@ -78,7 +78,7 @@ def apply_plan_revision(checkpoint: dict, message: str,
             target_mentioned = True
             continue
         after = message[mention.end():]
-        if not re.match(r"\\s*(?:(?:保持|维持)\\s*)?(?:不变|原样|无需修改|不修改)(?=$|[，。；,;！!\\s])", after):
+        if not re.match(r"\s*(?:(?:保持|维持)\s*)?(?:不变|原样|无需修改|不修改)(?=$|[，。；,;！!\s])", after):
             return None
     if mentions and not target_mentioned:
         return None
