@@ -43,7 +43,8 @@ from services.task_store import ConversationTaskStore
 from services.memory_store import MemoryStore
 from services.plan_store import ConversationPlanStore, PlanSnapshotConflict
 from services.goal_store import ConversationGoalStore
-from services.db import Conversation, ConversationPlan, PlanExecutionClaim, Message, Turn, database
+from services.db import Conversation, ConversationPlan, Message, Turn, database
+from services.db import PlanExecutionClaim
 
 log=logging.getLogger("healthagent")
 logging.basicConfig(level=logging.INFO,format='%(levelname)s %(message)s')
