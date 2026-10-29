@@ -52,9 +52,15 @@ def test_single_owner_selects_exactly_one_route(route, message, quote):
 
 
 def test_bad_source_never_authorizes_action():
+    # Model arithmetic is advisory; an exact quote is Host-located.
+    assert invoke("plan_cancel", "请取消当前保存的计划",
+                  "取消当前保存的计划", corrupt=True) == ("plan_cancel", 1)
+    # A fabricated or repeated quote is never usable as evidence.
     with pytest.raises(SavedPlanRouteRefused):
-        invoke("plan_cancel", "请取消当前保存的计划", "取消当前保存的计划",
-               corrupt=True)
+        invoke("plan_cancel", "请取消当前保存的计划", "不存在的引文")
+    with pytest.raises(SavedPlanRouteRefused):
+        invoke("plan_cancel", "请取消当前保存的计划并取消步骤",
+               "取消")
 
 
 def test_captured_snapshot_is_not_execution_authority():
