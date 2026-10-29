@@ -15,13 +15,16 @@ def fixture(tmp_path):
     Base.metadata.create_all(engine)
     with Session.begin() as db:
         c = Conversation(owner_id="test")
-        db.add(c); db.flush()
+        db.add(c)
+        db.flush()
         cid = c.id
         assistant = Message(conversation_id=cid, role="assistant", status="pending", content="")
-        db.add(assistant); db.flush()
+        db.add(assistant)
+        db.flush()
         t = Turn(conversation_id=cid, request_id="crash-turn-1", state="running",
                  assistant_message_id=assistant.id)
-        db.add(t); db.flush()
+        db.add(t)
+        db.flush()
         tid = t.id
         snapshot = json.dumps({"revision": 1, "steps": [
             {"id": 1, "status": "pending", "goal": "calculate",
