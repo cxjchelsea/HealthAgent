@@ -80,6 +80,21 @@ class Turn(Base):
     failure_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     decision_steps: Mapped[int] = mapped_column(Integer, default=0)
 
+
+class PlanToolDispatch(Base):
+    """Durable pre-dispatch intention. An unreceipted dispatch is never retryable."""
+    __tablename__ = "plan_tool_dispatches"
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: str(uuid.uuid4()))
+    conversation_id: Mapped[str] = mapped_column(ForeignKey("conversations.id"), index=True)
+    turn_id: Mapped[str] = mapped_column(ForeignKey("turns.id"), index=True)
+    step_id: Mapped[int] = mapped_column(Integer)
+    tool_name: Mapped[str] = mapped_column(String(80))
+    arguments_json: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(24), default="dispatch_unknown")
+    receipt_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    __table_args__ = (UniqueConstraint("turn_id", "step_id", name="uq_plan_dispatch_turn_step"),)
+
 def engine_for(url):
     if url == "sqlite://":
         return create_engine(url, connect_args={"check_same_thread":False}, poolclass=StaticPool)
