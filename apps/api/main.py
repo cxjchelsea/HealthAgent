@@ -829,7 +829,7 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                 with Session() as recovery_db:
                     unresolved_dispatch = recovery_db.scalar(select(PlanToolDispatch.id).where(
                         PlanToolDispatch.conversation_id == cid,
-                        PlanToolDispatch.status != "checkpointed"))
+                        PlanToolDispatch.status.in_(("dispatch_unknown", "observed", "observed_failure"))))
                     unknown = recovery_db.scalar(select(Turn.id).where(
                         Turn.conversation_id == cid,
                         Turn.failure_code == "plan_execution_outcome_unknown"))
@@ -1094,7 +1094,7 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
             claim = db.get(PlanExecutionClaim, cid)
             unresolved = list(db.scalars(select(PlanToolDispatch.id).where(
                 PlanToolDispatch.conversation_id == cid,
-                PlanToolDispatch.status != "checkpointed")))
+                PlanToolDispatch.status.in_(("dispatch_unknown", "observed", "observed_failure")))))
             plan = db.get(ConversationPlan, cid)
             return {
                 "reconciliation_required": bool(uncertain or active or claim or unresolved),
