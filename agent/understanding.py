@@ -1,3 +1,4 @@
+from contextvars import ContextVar
 """S25-01: one validated, model-driven goal understanding contract.
 
 No regex / keyword intent classifier. This module does not authorize or execute
@@ -108,7 +109,6 @@ class UnderstandingModel(Protocol):
 
 # Request-local telemetry; the mutable dict propagates through async tasks.
 # Counts dispatched provider HTTP attempts, including failures, not tokens.
-from contextvars import ContextVar
 model_call_counter = ContextVar("model_call_counter", default=None)
 
 class HTTPUnderstandingModel:
