@@ -1,5 +1,5 @@
-from agent.m5_model_call_metrics import attributed
 """Guarded plan revision proposal: validate exact target and prior binding; never execute."""
+from agent.m5_model_call_metrics import attributed
 import json
 import re
 from typing import Literal
