@@ -1,3 +1,4 @@
+from agent.m5_model_call_metrics import attributed
 """Independent scope guard for plan execution.
 
 Never permits more steps if the request is explicitly limited to the first.
@@ -12,6 +13,7 @@ class ScopeReview(BaseModel):
     scope: str
 
 
+@attributed("plan_execution_scope")
 async def review_plan_execution_scope(provider: HTTPUnderstandingModel, model: str,
                                       message: str) -> str:
     try:
