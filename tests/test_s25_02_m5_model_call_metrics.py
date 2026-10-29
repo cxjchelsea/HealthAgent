@@ -19,13 +19,15 @@ def test_model_call_category_nested_reset():
             pass
 
 
-@pytest.mark.asyncio
-async def test_attribution_decorator_scoped_per_async_task():
+def test_attribution_decorator_scoped_per_async_task():
     @attributed("plan_revision")
     async def reviewer():
         await asyncio.sleep(0)
         return model_call_category.get()
 
-    result = await asyncio.gather(reviewer(), asyncio.sleep(0, result=model_call_category.get()))
+    async def run():
+        return await asyncio.gather(reviewer(), asyncio.sleep(0, result=model_call_category.get()))
+
+    result = asyncio.run(run())
     assert result == ["plan_revision", "other"]
     assert model_call_category.get() == "other"
