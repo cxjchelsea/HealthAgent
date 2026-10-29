@@ -1,9 +1,9 @@
-from agent.m5_model_call_metrics import attributed
 """Host admission for model-proposed saved-plan control.
 
 Classification is not authority. Route a missing-checkpoint continuation only
 after a separate semantic confirmation; ordinary tool requests stay in AgentLoop.
 """
+from agent.m5_model_call_metrics import attributed
 import json
 from dataclasses import dataclass
 from typing import Literal
