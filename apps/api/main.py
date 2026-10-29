@@ -362,15 +362,31 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                         preturn_capture, conversation_id=cid,
                         request_id=body.client_request_id, turn_id=turn_id,
                         checkpoint=existing_checkpoint)
-                    if confirmed_first:
+                    if confirmed_first is True:
                         reviewed_plan_intent = PlanRequest(
                             intent="execute_first", steps=[])
-                    else:
+                    elif confirmed_first is False:
+                        # Explicit FIRST with unbound evidence must fail closed.
                         result = {"run_id": turn_id, "status": "partial",
                                   "termination_reason": "m5_primary_scope_unverified",
-                                  "answer": "M5 试验范围只允许明确执行已保存计划第一步；本轮未执行工具。",
+                                  "answer": "无法验证本轮第一步执行请求的来源；未执行工具。",
                                   "trace": [{"step": 0, "type": "m5_primary_fenced"}],
                                   "steps": 0}
+                    else:
+                        # Other operations retain existing legacy handling.
+                        reviewed_plan_intent = await review_plan_intent(
+                            HTTPUnderstandingModel(
+                                settings.model_provider, settings.model_base_url,
+                                settings.model_api_key, settings.model_timeout_seconds,
+                                settings.model_max_output_tokens),
+                            settings.understanding_strong_model,
+                            body.content, True)
+                        if reviewed_plan_intent.intent == "execute_first":
+                            result = {"run_id": turn_id, "status": "partial",
+                                      "termination_reason": "m5_primary_scope_unverified",
+                                      "answer": "当前轮第一步执行意图未获 M5 语义确认；未执行工具。",
+                                      "trace": [{"step": 0, "type": "m5_primary_fenced"}],
+                                      "steps": 0}
                 else:
                     reviewed_plan_intent = await review_plan_intent(
                         HTTPUnderstandingModel(
@@ -379,7 +395,8 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                             settings.model_max_output_tokens),
                         settings.understanding_strong_model,
                         body.content, True)
-                if reviewed_plan_intent.intent in {"execute_first", "resume"}:
+                if (reviewed_plan_intent is not None
+                        and reviewed_plan_intent.intent in {"execute_first", "resume"}):
                     pending_plan_execution_intent = reviewed_plan_intent
             # Saved plan edits have their own bounded contract. Apply only a
             # proven single pending-step binding change before generic goal
