@@ -171,3 +171,116 @@ def test_unified_failed_binding_or_revision_never_executes_tools(
         with Session() as db:
             row = db.get(ConversationPlan, cid)
             assert json.loads(row.snapshot) == checkpoint
+
+
+def test_unified_resume_scope_disagreement_cannot_execute_first(tmp_path, monkeypatch):
+    from agent.execution_policy import ExecutionPolicyDecision
+    from agent.understanding import HTTPUnderstandingModel
+
+    settings = Settings(database_url=f"sqlite:///{tmp_path / 'scope.db'}",
+                        model_provider="ollama_proxy",
+                        route_admission_mode="guarded",
+                        understanding_strategy="structured",
+                        m5_unified_route_enabled=True)
+    counter = {"scope": 0, "authorization": 0, "tools": 0}
+
+    async def primary(*args, **kwargs):
+        return "plan_resume"
+
+    async def confirmed(*args, **kwargs):
+        counter["authorization"] += 1
+        return True
+
+    async def downscope(*args, **kwargs):
+        counter["scope"] += 1
+        return "one"
+
+    async def policy(*args, **kwargs):
+        return ExecutionPolicyDecision(mode="read_only", target="tool_action")
+
+    async def complete(self, *, model, messages, response_schema=None):
+        return json.dumps({
+            "schema_version": "s25-01-v1", "status": "understood",
+            "goal": {"objective": "继续执行计划", "subgoals": [],
+                     "constraints": [], "success_criteria": []},
+            "change": {"kind": "new_goal", "target_goal_id": None, "delta": None},
+            "clarification": {"required": False, "reason_code": "none", "question": None},
+        }, ensure_ascii=False)
+
+    def no_tools(*args, **kwargs):
+        counter["tools"] += 1
+        raise AssertionError("unverified resume must not dispatch")
+
+    monkeypatch.setattr("apps.api.main.propose_saved_plan_route", primary)
+    monkeypatch.setattr("apps.api.main.review_plan_execution_authorization", confirmed)
+    monkeypatch.setattr("apps.api.main.review_plan_execution_scope", downscope)
+    monkeypatch.setattr("apps.api.main.decide_execution_policy_detail", policy)
+    monkeypatch.setattr("apps.api.main.execute_tool", no_tools)
+    monkeypatch.setattr(HTTPUnderstandingModel, "complete", complete)
+
+    checkpoint = {"revision": 1, "next_step_id": 3, "steps": [
+        {"id": 1, "goal": "计算 3*4", "status": "pending",
+         "expected_tool": "calculate", "expected_arguments": {"expression": "3*4"}},
+        {"id": 2, "goal": "计算 5*6", "status": "pending",
+         "expected_tool": "calculate", "expected_arguments": {"expression": "5*6"}},
+    ]}
+    with TestClient(create_app(settings)) as client:
+        cid = client.post("/conversations").json()["id"]
+        _, Session = database(settings.database_url)
+        with Session.begin() as db:
+            db.add(ConversationPlan(conversation_id=cid,
+                                    snapshot=json.dumps(checkpoint, ensure_ascii=False)))
+        response = client.post(f"/conversations/{cid}/agent/messages", json={
+            "content": "请继续执行剩余步骤",
+            "client_request_id": "m5-unified-resume-scope-001",
+        })
+        assert response.status_code == 200, response.text
+        assert response.json()["termination_reason"] == "m5_unified_scope_unverified"
+        assert response.json()["steps"] == 0
+        assert counter == {"scope": 1, "authorization": 1, "tools": 0}
+        with Session() as db:
+            assert json.loads(db.get(ConversationPlan, cid).snapshot) == checkpoint
+
+
+def test_unified_revision_uncertain_parameters_skip_legacy_edit_classifier(
+        tmp_path, monkeypatch):
+    from agent.plan_revision_review import RevisionProposal
+
+    settings = Settings(database_url=f"sqlite:///{tmp_path / 'revision.db'}",
+                        model_provider="fake", route_admission_mode="guarded",
+                        understanding_strategy="structured",
+                        m5_unified_route_enabled=True)
+    async def primary(*args, **kwargs):
+        return "plan_revise"
+
+    async def missing_arguments(*args, **kwargs):
+        return RevisionProposal(intent="other", edit_requested=None)
+
+    async def forbidden(*args, **kwargs):
+        raise AssertionError("duplicate legacy edit-intent review")
+
+    monkeypatch.setattr("apps.api.main.propose_saved_plan_route", primary)
+    monkeypatch.setattr("apps.api.main.review_plan_revision", missing_arguments)
+    monkeypatch.setattr("apps.api.main.check_plan_edit_intent", forbidden)
+    monkeypatch.setattr("apps.api.main.review_plan_intent", forbidden)
+
+    with TestClient(create_app(settings)) as client:
+        cid = client.post("/conversations").json()["id"]
+        _, Session = database(settings.database_url)
+        checkpoint = {"revision": 1, "next_step_id": 3, "steps": [
+            {"id": 1, "goal": "计算 3*4", "status": "pending",
+             "expected_tool": "calculate", "expected_arguments": {"expression": "3*4"}},
+            {"id": 2, "goal": "计算 5*6", "status": "pending",
+             "expected_tool": "calculate", "expected_arguments": {"expression": "5*6"}},
+        ]}
+        with Session.begin() as db:
+            db.add(ConversationPlan(conversation_id=cid,
+                                    snapshot=json.dumps(checkpoint, ensure_ascii=False)))
+        response = client.post(f"/conversations/{cid}/agent/messages", json={
+            "content": "把第二步改一改",
+            "client_request_id": "m5-unified-revise-uncertain-001",
+        })
+        assert response.status_code == 200, response.text
+        assert response.json()["termination_reason"] == "plan_revision_conflict"
+        with Session() as db:
+            assert json.loads(db.get(ConversationPlan, cid).snapshot) == checkpoint
