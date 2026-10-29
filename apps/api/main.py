@@ -43,7 +43,7 @@ from agent.context import build_context
 from services.task_store import ConversationTaskStore
 from services.memory_store import MemoryStore
 from services.plan_store import ConversationPlanStore, PlanSnapshotConflict
-from services.plan_dispatch import PlanDispatchJournal
+from services.plan_dispatch import PlanDispatchJournal, UNRESOLVED_DISPATCH_STATUSES
 from services.goal_store import ConversationGoalStore
 from services.db import Conversation, ConversationPlan, Message, Turn, database
 from services.db import PlanExecutionClaim, PlanToolDispatch
@@ -844,7 +844,7 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                 with Session() as recovery_db:
                     unresolved_dispatch = recovery_db.scalar(select(PlanToolDispatch.id).where(
                         PlanToolDispatch.conversation_id == cid,
-                        PlanToolDispatch.status.in_(("dispatch_unknown", "observed", "observed_failure"))))
+                        PlanToolDispatch.status.in_(UNRESOLVED_DISPATCH_STATUSES)))
                     unknown = recovery_db.scalar(select(Turn.id).where(
                         Turn.conversation_id == cid,
                         Turn.failure_code == "plan_execution_outcome_unknown"))
@@ -1113,7 +1113,7 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
             claim = db.get(PlanExecutionClaim, cid)
             unresolved = list(db.scalars(select(PlanToolDispatch.id).where(
                 PlanToolDispatch.conversation_id == cid,
-                PlanToolDispatch.status.in_(("dispatch_unknown", "observed", "observed_failure")))))
+                PlanToolDispatch.status.in_(UNRESOLVED_DISPATCH_STATUSES))))
             plan = db.get(ConversationPlan, cid)
             return {
                 "reconciliation_required": bool(uncertain or active or claim or unresolved),
