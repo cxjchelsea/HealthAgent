@@ -1,5 +1,5 @@
-from agent.m5_model_call_metrics import attributed
 """Independent, fail-closed authorization re-review for saved plan continuation."""
+from agent.m5_model_call_metrics import attributed
 import json
 import re
 from pydantic import BaseModel, ConfigDict
