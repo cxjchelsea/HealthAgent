@@ -119,7 +119,7 @@ def test_guarded_post_tool_exception_blocks_automatic_replay(
         assert retry.status_code == 200, retry.text
         assert retry.json()["termination_reason"] == "plan_execution_reconciliation_required"
         assert retry.json()["steps"] == 0
-        assert events == ["claim_acquired"]
+        assert events == ["tool_executed"]
 
     engine, Session = database(settings.database_url)
     with Session() as db:
