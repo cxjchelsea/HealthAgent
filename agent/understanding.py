@@ -1,10 +1,11 @@
-from contextvars import ContextVar
 """S25-01: one validated, model-driven goal understanding contract.
 
 No regex / keyword intent classifier. This module does not authorize or execute
 actions. Both standalone inspection and Agent integration must consume this API.
 """
 from __future__ import annotations
+from contextvars import ContextVar
+
 import json
 import time
 from typing import Any, Literal, Protocol
