@@ -39,6 +39,13 @@ def test_intent_before_dispatch_and_checkpoint_atomic(tmp_path):
             assert json.loads(row.receipt_json)["value"] == "28"
         with pytest.raises(DispatchConflict, match="unreconciled_dispatch"):
             journal.begin(1, "calculate", {"expression": "4*7"})
+        with pytest.raises(DispatchConflict, match="receipt_checkpoint_binding_mismatch"):
+            with Session.begin() as db:
+                journal.checkpoint_in_session(db, {"steps": [
+                    {"id": 1, "status": "pending", "evidence_tool": "calculate",
+                     "expected_arguments": {"expression": "4*7"}}]})
+        with Session() as db:
+            assert db.get(PlanToolDispatch, dispatch_id).status == "observed"
         with Session.begin() as db:
             journal.checkpoint_in_session(db, {"steps": [
                 {"id": 1, "status": "completed",
