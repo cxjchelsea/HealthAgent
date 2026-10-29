@@ -17,3 +17,16 @@ def categorize_model_calls(category: str):
         yield
     finally:
         model_call_category.reset(token)
+
+
+def attributed(category: str):
+    """Wrap an async semantic reviewer without changing its decision contract."""
+    from functools import wraps
+
+    def decorate(fn):
+        @wraps(fn)
+        async def wrapped(*args, **kwargs):
+            with categorize_model_calls(category):
+                return await fn(*args, **kwargs)
+        return wrapped
+    return decorate
