@@ -1071,6 +1071,29 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                     "decision_steps": turn.decision_steps,
                     "duration_ms": turn.duration_ms}
 
+    @app.get("/conversations/{cid}/plan/recovery-status")
+    def plan_recovery_status(cid: str, uid=Depends(user_id)):
+        """Owner-scoped read-only inspection; never releases a claim or retries a tool."""
+        with Session() as db:
+            get_owned(db, cid, uid)
+            active = list(db.scalars(select(Turn).where(
+                Turn.conversation_id == cid, Turn.state == "running")))
+            uncertain = list(db.scalars(select(Turn).where(
+                Turn.conversation_id == cid,
+                Turn.failure_code == "plan_execution_outcome_unknown")))
+            claim = db.get(PlanExecutionClaim, cid)
+            plan = db.get(ConversationPlan, cid)
+            return {
+                "reconciliation_required": bool(uncertain or active or claim),
+                "active_turn_count": len(active),
+                "uncertain_turn_count": len(uncertain),
+                "claim_present": claim is not None,
+                "plan_present": plan is not None,
+                "automatic_replay_permitted": False,
+                "next_action": ("manual_investigation" if uncertain or active or claim
+                                else "no_recovery_fence_observed"),
+            }
+
     @app.get("/healthz")
     def healthz():return {"status":"ok"}
 
