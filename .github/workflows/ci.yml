@@ -27,6 +27,10 @@ jobs:
         env:
           TEST_POSTGRES_URL: postgresql+psycopg://healthagent:ci_local_only@localhost:5432/healthagent
         run: python -m pytest -q -rs tests/test_s25_02_m3_postgres_claim_concurrency.py
+      - name: M4 isolated PostgreSQL subprocess crash and recovery
+        env:
+          TEST_POSTGRES_URL: postgresql+psycopg://healthagent:ci_local_only@localhost:5432/healthagent
+        run: python -m pytest -q -rs tests/test_s25_02_m4_postgres_subprocess_crash.py
       - run: python -m evals.runner
       - run: python -m evals.s2a_benchmark
       - run: python -m evals.s2b5_benchmark
