@@ -1,3 +1,4 @@
+from agent.m5_model_call_metrics import attributed
 """Host admission for model-proposed saved-plan control.
 
 Classification is not authority. Route a missing-checkpoint continuation only
@@ -150,6 +151,7 @@ class PlanCancellationReview(BaseModel):
     cancel_saved_plan: bool
 
 
+@attributed("plan_cancellation")
 async def review_plan_cancellation(provider: HTTPUnderstandingModel, model: str,
                                    message: str) -> bool:
     """Independent current-turn cancellation intent; never grants execution."""
