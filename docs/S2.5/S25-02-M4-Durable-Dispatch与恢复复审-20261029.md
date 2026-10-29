@@ -114,3 +114,14 @@ New `tests/test_s25_02_m4_postgres_api_workers.py`: starts two independent FastA
 New paired benchmark script `evals/s25_02_m4_paired_performance.py` remains **NOT RUN** on real Qwen. It requires two local services with matching model/provider/strategy and **separate databases**. Invoke using explicit `RUN_S25_02_M4_PAIRED_LIVE=1`, `--legacy-endpoint`, `--guarded-endpoint`, `--cycles`, `--output`. Main model-call totals are not instrumented in the current HTTP response, so it reports `core_model_calls=NOT_INSTRUMENTED` and separately reports observable Shadow diagnostic calls. Avoid treating a few iterations as statistically stable P95 or as proof of equal model cost.
 
 **Gate**: PostgreSQL 2-process HTTP blocking + restart PASS; performance comparison still awaiting a real two-endpoint run; M4 VERIFYING/HOLD, no merge and no legacy-default change.
+
+
+## 2026-10-29 Real Qwen legacy-vs-guarded comparison (five cycles each)
+
+Evidence: user-supplied `m4-paired-comparison.json` (schema `s25-m4-paired-performance-v1`), provider `ollama_proxy`, model `qwen3:14b`, distinct endpoints/modes, five three-request plan lifecycles per mode.
+
+- Legacy: 4/5 complete lifecycle functional passes, 15/15 HTTP 200; cycle 0 FIRST returned `goal_clarification` (zero tool calls) instead of executing only the first step. Its REMAINING then ran two calculator steps in one turn, so completion did **not** satisfy requested staged execution sequence.
+- Guarded: 5/5 functional passes, 15/15 HTTP 200, CREATE saved two pending steps, FIRST one calculator call, REMAINING one calculator call, no repeated first step.
+- Overall request latency: legacy mean 6789.5 ms, P50 7839.0 ms, P95 10276.6 ms; guarded mean 6361.6 ms, P50 7842.0 ms, P95 8431.1 ms. Guarded observed mean is 6.3% lower, but cannot be interpreted as statistically proven speed gain.
+- Both Shadow diagnostic observations are empty (Shadow off); `core_model_calls=NOT_INSTRUMENTED` for both modes. Request latency includes model response and other runtime time. The current runner executes all legacy requests before all guarded requests rather than alternating by cycle despite its comment, introducing warmup/order bias. Five cycles and one legacy first-cycle cold-start/outlier are insufficient for reliable P95 or cost conclusions.
+- **Decision**: M4 guarded plan semantics PASS in this small local Qwen test; no clear HTTP median regression observed. Performance / model-call overhead remains VERIFYING, not quantified enough for permanent route switch. Keep M4 HOLD, default legacy unchanged, no main merge.
