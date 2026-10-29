@@ -53,8 +53,19 @@ def test_source_or_arguments_mismatch_fails_closed():
     bad["steps"][0]["arguments"] = {"expression": "8*8"}
     with pytest.raises(SavedPlanRouteRefused):
         asyncio.run(propose_new_plan_route(Provider(bad), "model", MESSAGE))
+    # Numerical offsets from the model are not source authority:
+    # Host recovers the only exact occurrence from its current request.
     bad = payload()
     bad["steps"][1]["start"] += 1
+    assert asyncio.run(propose_new_plan_route(
+        Provider(bad), "model", MESSAGE)).intent == "plan_only"
+    # But missing or ambiguous exact quote remains fail-closed.
+    bad = payload()
+    bad["steps"][1]["quote"] = "not in user request"
+    with pytest.raises(SavedPlanRouteRefused):
+        asyncio.run(propose_new_plan_route(Provider(bad), "model", MESSAGE))
+    bad = payload()
+    bad["quote"] = "计算"
     with pytest.raises(SavedPlanRouteRefused):
         asyncio.run(propose_new_plan_route(Provider(bad), "model", MESSAGE))
 
@@ -150,3 +161,22 @@ def test_api_unbound_create_never_falls_through_to_tools(tmp_path, monkeypatch):
         assert response.status_code == 200, response.text
         assert response.json()["termination_reason"] == "m5_unified_create_refused"
         assert not any(t.get("type") == "tool" for t in response.json()["trace"])
+
+
+def test_quote_only_without_model_offsets_binds_on_host():
+    raw = payload()
+    raw.pop("start")
+    raw.pop("end")
+    for step in raw["steps"]:
+        step.pop("start")
+        step.pop("end")
+    assert asyncio.run(propose_new_plan_route(
+        Provider(raw), "model", MESSAGE)).intent == "plan_only"
+
+
+def test_ordinary_quote_only_with_unreliable_offsets_is_not_rejected():
+    message = "请使用计算工具计算 19+23 的结果，不要创建计划。"
+    raw = {"route": "other", "quote": "不要创建计划", "steps": [],
+           "start": 0, "end": 1}
+    assert asyncio.run(propose_new_plan_route(
+        Provider(raw), "model", message)).intent == "other"
