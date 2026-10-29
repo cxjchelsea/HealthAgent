@@ -301,7 +301,11 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
             if settings.understanding_strategy not in {"direct", "structured"}:
                 raise UnderstandingError("invalid_understanding_strategy")
             unified_new_plan_decision = None
+            # Pending tool arguments and open clarifications belong to the
+            # verified preturn origin; they cannot become a fresh plan route.
+            # Preserve the existing pending/clarification Host pipeline.
             if (result is None and existing_checkpoint is None
+                    and pending_action is None and clarification_id is None
                     and settings.m5_unified_route_enabled
                     and settings.route_admission_mode == "guarded"
                     and settings.understanding_strategy == "structured"
@@ -321,6 +325,7 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                               "steps": 0}
             unified_saved_route = None
             if (result is None and existing_checkpoint is not None
+                    and pending_action is None and clarification_id is None
                     and settings.m5_unified_route_enabled
                     and settings.route_admission_mode == "guarded"
                     and settings.understanding_strategy == "structured"
