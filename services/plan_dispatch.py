@@ -47,7 +47,7 @@ class PlanDispatchJournal:
             if not entry or entry.turn_id != self.turn_id or entry.status != "dispatch_unknown":
                 raise DispatchConflict("dispatch_not_current")
             entry.receipt_json = json.dumps(bounded, ensure_ascii=False)
-            entry.status = "observed"
+            entry.status = "observed" if bounded["ok"] else "observed_failure"
 
     def checkpoint_in_session(self, db):
         for entry in db.scalars(select(PlanToolDispatch).where(
