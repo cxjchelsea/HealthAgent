@@ -101,3 +101,16 @@ Coverage restriction: process termination is a spawned test helper, **not** two 
 新增 `evals/s25_02_m4_paired_performance.py`：仅在显式 `RUN_S25_02_M4_PAIRED_LIVE=1` 时对本机两个不同端口的真实 legacy 和 guarded 服务发等价三阶段计划，记录各请求 HTTP 总时延、P50/P95、方案功能 PASS/FAIL 和可观测的 Shadow 额外诊断调用。**此脚本不能从 HTTP 回包得知主链模型准确调用次数，标记为 NOT_INSTRUMENTED；未实际提供双服务运行证据前，不得声称性能对照完成。** 两端需相同实际模型及超时、独立 DB，建议至少 10 次循环且注意 Qwen 本机并发资源竞争；统计数字仅代表运行环境和请求集。
 
 仅当最新精确 HEAD CI、PostgreSQL 专项均 PASS 时，将数据库级多进程状态验证标为 PASS。M4 继续 VERIFYING/HOLD，默认 legacy，不合并 main。
+
+
+## 2026-10-29 PostgreSQL two-API-worker CI acceptance
+
+Exact code HEAD `6ee71323c8444dfa2c71d0e007968779e446109d`, run `40803797015`: SUCCESS. 687 passed, 3 skipped. PostgreSQL Alembic migration is now executed **before** integration tests, ensuring the `uq_running_turn_per_conversation` partial unique index exists. Earlier CI 503 was an invalid schema setup (direct `create_all` without migration), not a demonstrated safe concurrent rejection. The previously present M3 Claim contention test is now consistent with the unique-index schema: its second test Turn is terminal, while Claim/CAS competition remains covered.
+
+New `tests/test_s25_02_m4_postgres_api_workers.py`: starts two independent FastAPI processes against same isolated PostgreSQL CI DB; injects an orphan running Turn into a dedicated test Conversation; terminates one spawned worker; verifies HTTP 409 on the second, read-only recovery status and no replay permission; restarts the first worker and verifies HTTP 409 persists. The CI step `M4 PostgreSQL two API worker restart isolation` succeeded.
+
+**Limit**: a running Turn is synthetically persisted by test setup, rather than deliberately killing a real in-flight model/tool invocation. Tests prove database-scoped API worker admission under a lost-owner state, not a full actual Qwen tool call interrupted during network I/O. Existing isolated subprocess crash tests independently cover durable Dispatch/Receipt physical persistence and offline recovery. Do not combine them into an unsupported claim of end-to-end killed-Qwen exactly-once.
+
+New paired benchmark script `evals/s25_02_m4_paired_performance.py` remains **NOT RUN** on real Qwen. It requires two local services with matching model/provider/strategy and **separate databases**. Invoke using explicit `RUN_S25_02_M4_PAIRED_LIVE=1`, `--legacy-endpoint`, `--guarded-endpoint`, `--cycles`, `--output`. Main model-call totals are not instrumented in the current HTTP response, so it reports `core_model_calls=NOT_INSTRUMENTED` and separately reports observable Shadow diagnostic calls. Avoid treating a few iterations as statistically stable P95 or as proof of equal model cost.
+
+**Gate**: PostgreSQL 2-process HTTP blocking + restart PASS; performance comparison still awaiting a real two-endpoint run; M4 VERIFYING/HOLD, no merge and no legacy-default change.
