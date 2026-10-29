@@ -24,7 +24,7 @@ class PlanDispatchJournal:
             if db.scalar(select(PlanToolDispatch.id).where(
                     PlanToolDispatch.conversation_id == self.conversation_id,
                     PlanToolDispatch.step_id == step_id,
-                    PlanToolDispatch.status != "checkpointed")):
+                    PlanToolDispatch.status.in_(("dispatch_unknown", "observed", "observed_failure")))):
                 raise DispatchConflict("unreconciled_dispatch")
             entry = PlanToolDispatch(
                 conversation_id=self.conversation_id, turn_id=self.turn_id,
