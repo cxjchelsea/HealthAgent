@@ -20,7 +20,7 @@ def bind_captured_proposal(proposal: PrimarySemanticProposal, message: str,
     if compare_captured_identity(capture, conversation_id=conversation_id,
                                  request_id=request_id, turn_id=turn_id)["result"] != "MATCH":
         raise ProposalBindingRefused("m5_turn_identity_mismatch")
-    if compare_checkpoint_snapshot(capture, checkpoint)["result"] != "SAME":
+    if not (not capture.checkpoint_present and checkpoint is None) and (\n            compare_checkpoint_snapshot(capture, checkpoint)["result"] != "SAME"):
         raise ProposalBindingRefused("m5_checkpoint_changed")
     if proposal.route in {"plan_execute_first", "plan_resume", "plan_revise", "plan_cancel"}:
         if not capture.checkpoint_present or capture.checkpoint_revision is None:
