@@ -940,7 +940,10 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                         # already dispatched, tell the user to verify its effect
                         # before retrying; the database cannot roll that effect back.
                         status = "partial"
-                        failure_code = "plan_snapshot_conflict"
+                        failure_code = ("plan_execution_outcome_unknown"
+                                        if settings.route_admission_mode == "guarded"
+                                        and execution_claim_acquired
+                                        else "plan_snapshot_conflict")
                         answer = ("当前计划已发生变化，本次没有覆盖新计划。若本轮已调用工具，"
                                   "请先核对工具执行结果，再决定是否重试，避免重复执行。")
                         result = {
