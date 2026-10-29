@@ -41,8 +41,10 @@ def test_physical_readback_finds_durable_dispatch_and_replay(tmp_path):
                              "response": {"turn_id": turn.id, "message_id": assistant.id}})
             db.add(ConversationPlan(conversation_id=cid, snapshot=json.dumps(
                 {"revision": 1, "steps": [
-                    {"id": 1, "status": "completed", "evidence_tool": "calculate"},
-                    {"id": 2, "status": "pending"}]})))
+                    {"id": 1, "status": "completed", "evidence_tool": "calculate",
+                     "expected_tool": "calculate", "expected_arguments": {"expression": "3*4"}},
+                    {"id": 2, "status": "pending", "expected_tool": "calculate",
+                     "expected_arguments": {"expression": "5*6"}}]})))
             db.add(PlanToolDispatch(conversation_id=cid, turn_id=turn.id,
                                     step_id=1, tool_name="calculate",
                                     arguments_json='{"expression":"3*4"}',
