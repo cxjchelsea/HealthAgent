@@ -944,7 +944,7 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                             snapshot=result["plan_checkpoint"],
                             owner_turn_id=turn_id if plan_control in {"execute_first", "resume"} else None)
                         if settings.route_admission_mode == "guarded" and plan_control in {"execute_first", "resume"}:
-                            PlanDispatchJournal(Session, cid, turn_id).checkpoint_in_session(db)
+                            PlanDispatchJournal(Session, cid, turn_id).checkpoint_in_session(db, result["plan_checkpoint"])
                     except PlanSnapshotConflict:
                         # Never overwrite a newer durable plan. If a tool was
                         # already dispatched, tell the user to verify its effect
