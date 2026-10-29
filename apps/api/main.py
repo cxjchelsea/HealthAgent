@@ -364,6 +364,8 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
             if (result is None and existing_checkpoint is not None
                     and settings.understanding_strategy == "structured"
                     and agent_decider is None and body.goal_confirmation is None
+                    and (settings.effective_routing_profile != "unified"
+                         or (pending_action is None and clarification_id is None))
                     and (unified_saved_route == "plan_cancel"
                          if unified_saved_route is not None
                          else await review_plan_cancellation(
@@ -413,7 +415,9 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
             reviewed_plan_intent = None
             if (result is None and existing_checkpoint
                     and settings.understanding_strategy == "structured"
-                    and agent_decider is None and body.goal_confirmation is None):
+                    and agent_decider is None and body.goal_confirmation is None
+                    and (settings.effective_routing_profile != "unified"
+                         or (pending_action is None and clarification_id is None))):
                 if unified_saved_route is not None:
                     # One shared owner has already selected the saved-plan route.
                     # Typed semantic evidence does not replace Host authorization.
@@ -478,6 +482,8 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
             # Understanding, which must not rewrite the PlanLedger on its own.
             if (result is None and existing_checkpoint
                     and (unified_saved_route is None or unified_saved_route == "plan_revise")
+                    and (settings.effective_routing_profile != "unified"
+                         or (pending_action is None and clarification_id is None))
                     and not pending_plan_execution_intent
                     and settings.understanding_strategy == "structured"
                     and agent_decider is None and body.goal_confirmation is None):
@@ -751,7 +757,9 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
             # Separate authoring a future plan from executing its steps. Only
             # the bound checkpoint can authorize later read-only execution.
             if (result is None and parsed_result is not None
-                    and not suppress_persistent_routing and agent_decider is None):
+                    and not suppress_persistent_routing and agent_decider is None
+                    and (settings.effective_routing_profile != "unified"
+                         or (pending_action is None and clarification_id is None))):
                 plan_decision = (reviewed_plan_intent or unified_new_plan_decision
                                  or await review_plan_intent(
                     HTTPUnderstandingModel(settings.model_provider,
