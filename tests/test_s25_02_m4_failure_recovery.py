@@ -139,3 +139,50 @@ def test_guarded_post_tool_exception_blocks_automatic_replay(
         snapshot = json.loads(saved.snapshot)
         assert [step["status"] for step in snapshot["steps"]] == ["pending", "pending"]
     engine.dispose()
+
+
+def test_orphaned_running_turn_and_claim_require_manual_investigation(tmp_path):
+    """Simulate post-crash durable rows: inspect safely, never auto-clear/replay."""
+    from services.db import Conversation, Message, PlanExecutionClaim
+    settings = Settings(database_url=f"sqlite:///{tmp_path / 'orphan.db'}",
+                        model_provider="fake", route_admission_mode="guarded")
+    with TestClient(create_app(settings)) as client:
+        engine, Session = database(settings.database_url)
+        try:
+            with Session.begin() as db:
+                conversation = Conversation(owner_id=settings.demo_user_id)
+                db.add(conversation)
+                db.flush()
+                cid = conversation.id
+                response = Message(conversation_id=cid, role="assistant",
+                                   content="", status="pending")
+                db.add(response)
+                db.flush()
+                turn = Turn(conversation_id=cid, request_id="orphaned-run-001",
+                            state="running", assistant_message_id=response.id)
+                db.add(turn)
+                db.flush()
+                snapshot = json.dumps({"revision": 1, "steps": [
+                    {"id": 1, "status": "pending", "goal": "compute",
+                     "expected_tool": "calculate",
+                     "expected_arguments": {"expression": "4*7"}}]})
+                db.add(ConversationPlan(conversation_id=cid, snapshot=snapshot))
+                db.add(PlanExecutionClaim(conversation_id=cid, turn_id=turn.id,
+                                          snapshot=snapshot))
+            inspected = client.get(f"/conversations/{cid}/plan/recovery-status")
+            assert inspected.status_code == 200
+            details = inspected.json()
+            assert details["reconciliation_required"]
+            assert details["active_turn_count"] == 1
+            assert details["claim_present"] is True
+            assert details["automatic_replay_permitted"] is False
+            blocked = client.post(f"/conversations/{cid}/agent/messages",
+                                  json={"content": "继续执行保存的计划",
+                                        "client_request_id": "after-crash-new-001"})
+            assert blocked.status_code == 409
+            assert blocked.json()["detail"] == "conversation_turn_in_progress"
+            with Session() as db:
+                assert db.get(PlanExecutionClaim, cid) is not None
+                assert db.get(ConversationPlan, cid).snapshot == snapshot
+        finally:
+            engine.dispose()
