@@ -49,8 +49,19 @@ class PlanDispatchJournal:
             entry.receipt_json = json.dumps(bounded, ensure_ascii=False)
             entry.status = "observed" if bounded["ok"] else "observed_failure"
 
-    def checkpoint_in_session(self, db):
+    def checkpoint_in_session(self, db, checkpoint):
+        """Only a positively bound completed plan step can close a receipt.
+
+        A success-looking tool result that failed PlanLedger binding must not
+        unblock the next request.
+        """
+        steps = checkpoint.get("steps", []) if isinstance(checkpoint, dict) else []
         for entry in db.scalars(select(PlanToolDispatch).where(
                 PlanToolDispatch.turn_id == self.turn_id,
                 PlanToolDispatch.status == "observed")):
+            step = next((s for s in steps if s.get("id") == entry.step_id), None)
+            if (step is None or step.get("status") != "completed"
+                    or step.get("evidence_tool") != entry.tool_name
+                    or step.get("expected_arguments") != json.loads(entry.arguments_json)):
+                raise DispatchConflict("receipt_checkpoint_binding_mismatch")
             entry.status = "checkpointed"
