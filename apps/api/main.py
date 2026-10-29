@@ -32,7 +32,8 @@ from agent.clarification_review import review_read_only_clarification
 from agent.control_admission import admit_clarification
 from agent.plan_intent import PlanRequest, review_plan_intent, build_plan_checkpoint
 from agent.m5_first_route import propose_first_route
-from agent.m5_unified_route import propose_saved_plan_route, SavedPlanRouteRefused
+from agent.m5_unified_route import (propose_saved_plan_route, propose_new_plan_route,
+                                    SavedPlanRouteRefused)
 from agent.plan_control import (resolve_plan_admission, review_missing_plan_reference,
                                 review_plan_creation_reference, explicit_deferred_plan_request,
                                 review_plan_cancellation, explicit_saved_plan_cancellation)
@@ -299,6 +300,25 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                           "trace": [{"step": 0, "type": "goal_confirmation"}], "steps": 0}
             if settings.understanding_strategy not in {"direct", "structured"}:
                 raise UnderstandingError("invalid_understanding_strategy")
+            unified_new_plan_decision = None
+            if (result is None and existing_checkpoint is None
+                    and settings.m5_unified_route_enabled
+                    and settings.route_admission_mode == "guarded"
+                    and settings.understanding_strategy == "structured"
+                    and agent_decider is None and body.goal_confirmation is None):
+                try:
+                    unified_new_plan_decision = await propose_new_plan_route(
+                        HTTPUnderstandingModel(
+                            settings.model_provider, settings.model_base_url,
+                            settings.model_api_key, settings.model_timeout_seconds,
+                            settings.model_max_output_tokens),
+                        settings.understanding_strong_model, body.content)
+                except SavedPlanRouteRefused:
+                    result = {"run_id": turn_id, "status": "partial",
+                              "termination_reason": "m5_unified_create_refused",
+                              "answer": "本轮新建计划的来源或参数未验证；未保存或执行工具。",
+                              "trace": [{"step": 0, "type": "m5_unified_fenced"}],
+                              "steps": 0}
             unified_saved_route = None
             if (result is None and existing_checkpoint is not None
                     and settings.m5_unified_route_enabled
@@ -712,19 +732,22 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
             # the bound checkpoint can authorize later read-only execution.
             if (result is None and parsed_result is not None
                     and not suppress_persistent_routing and agent_decider is None):
-                plan_decision = reviewed_plan_intent or await review_plan_intent(
+                plan_decision = (reviewed_plan_intent or unified_new_plan_decision
+                                 or await review_plan_intent(
                     HTTPUnderstandingModel(settings.model_provider,
                                            settings.model_base_url,
                                            settings.model_api_key,
                                            settings.model_timeout_seconds,
                                            settings.model_max_output_tokens),
                     settings.understanding_strong_model,
-                    body.content, bool(existing_checkpoint))
+                    body.content, bool(existing_checkpoint)))
                 # Produce a single mutually exclusive Host route from model
                 # proposals and independently checked saved-plan references.
-                creation_confirmed = False
+                creation_confirmed = bool(
+                    unified_new_plan_decision is not None
+                    and unified_new_plan_decision.intent == "plan_only")
                 missing_reference = None
-                if plan_decision.intent == "plan_only":
+                if plan_decision.intent == "plan_only" and not creation_confirmed:
                     creation_confirmed = await review_plan_creation_reference(
                         HTTPUnderstandingModel(
                             settings.model_provider, settings.model_base_url,
