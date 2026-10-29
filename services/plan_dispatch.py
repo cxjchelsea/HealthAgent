@@ -8,6 +8,9 @@ from sqlalchemy import select
 from services.db import PlanToolDispatch, Turn
 
 
+UNRESOLVED_DISPATCH_STATUSES = ("dispatch_unknown", "observed", "observed_failure")
+
+
 class DispatchConflict(RuntimeError):
     pass
 
@@ -24,7 +27,7 @@ class PlanDispatchJournal:
             if db.scalar(select(PlanToolDispatch.id).where(
                     PlanToolDispatch.conversation_id == self.conversation_id,
                     PlanToolDispatch.step_id == step_id,
-                    PlanToolDispatch.status.in_(("dispatch_unknown", "observed", "observed_failure")))):
+                    PlanToolDispatch.status.in_(UNRESOLVED_DISPATCH_STATUSES))):
                 raise DispatchConflict("unreconciled_dispatch")
             entry = PlanToolDispatch(
                 conversation_id=self.conversation_id, turn_id=self.turn_id,
