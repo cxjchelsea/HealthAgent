@@ -23,12 +23,24 @@ class SavedPlanRouteSignal(BaseModel):
     route: Literal["plan_execute_first", "plan_resume", "plan_revise",
                    "plan_cancel", "other"]
     quote: str = Field(min_length=1, max_length=400)
-    start: int = Field(ge=0)
-    end: int = Field(gt=0)
+    start: int | None = Field(default=None, ge=0)
+    end: int | None = Field(default=None, gt=0)
 
 
 class SavedPlanRouteRefused(ValueError):
     """Model named a saved-plan operation but failed deterministic source binding."""
+
+def _host_unique_span(message: str, quote: str) -> dict:
+    """Only exact, uniquely occurring quote text can supply source evidence.
+
+    Model-provided numerical offsets are advisory and never grant authority.
+    """
+    start = message.find(quote)
+    if start < 0:
+        raise SavedPlanRouteRefused("m5_quote_not_found")
+    if message.find(quote, start + 1) >= 0:
+        raise SavedPlanRouteRefused("m5_quote_ambiguous")
+    return {"start": start, "end": start + len(quote), "exact_text": quote}
 
 
 @attributed("primary")
@@ -43,9 +55,9 @@ async def propose_saved_plan_route(provider, model: str, message: str, capture, 
         "plan_revise ONLY for editing a saved step without execution, "
         "plan_cancel ONLY for cancelling the whole saved plan without execution, "
         "otherwise other (ordinary chat, tool commands, new plan, ambiguous). "
-        "Return JSON route, quote, start, end. The quote MUST be a contiguous "
-        "EXACT substring of current message proving route. start/end are "
-        "zero-based Unicode codepoint offsets, end exclusive. For other, quote "
+        "Return JSON route and quote; omit start/end. The quote MUST be a contiguous "
+        "EXACT substring of current message proving route. It must be "
+        "copied character-for-character and occur exactly once. For other, quote "
         "an exact nonempty substring too. Never infer permissions or execute."
     )
     raw = await provider.complete(
@@ -59,8 +71,7 @@ async def propose_saved_plan_route(provider, model: str, message: str, capture, 
         signal = SavedPlanRouteSignal.model_validate_json(raw)
     except ValueError as exc:
         raise UnderstandingError("m5_unified_primary_invalid") from exc
-    if message[signal.start:signal.end] != signal.quote:
-        raise SavedPlanRouteRefused("m5_unified_source_mismatch")
+    source_span = _host_unique_span(message, signal.quote)
     if signal.route == "other":
         return "other"
     operations = {
@@ -74,8 +85,7 @@ async def propose_saved_plan_route(provider, model: str, message: str, capture, 
         "plan_cancel": {"route": "plan_cancel"},
     }
     op = dict(operations[signal.route])
-    op["evidence"] = [{"start": signal.start, "end": signal.end,
-                        "exact_text": signal.quote}]
+    op["evidence"] = [source_span]
     scope = ("first_step" if signal.route == "plan_execute_first"
              else "remaining_steps" if signal.route == "plan_resume" else "none")
     try:
@@ -102,16 +112,16 @@ class ProposedNewStep(BaseModel):
     tool_name: Literal["calculate", "mcp_reference_lookup"]
     arguments: dict
     quote: str = Field(min_length=1, max_length=400)
-    start: int = Field(ge=0)
-    end: int = Field(gt=0)
+    start: int | None = Field(default=None, ge=0)
+    end: int | None = Field(default=None, gt=0)
 
 
 class NewPlanRouteSignal(BaseModel):
     model_config = ConfigDict(extra="forbid")
     route: Literal["plan_create", "other"]
     quote: str = Field(min_length=1, max_length=400)
-    start: int = Field(ge=0)
-    end: int = Field(gt=0)
+    start: int | None = Field(default=None, ge=0)
+    end: int | None = Field(default=None, gt=0)
     steps: list[ProposedNewStep] = Field(default_factory=list, max_length=8)
 
 
@@ -127,12 +137,12 @@ async def propose_new_plan_route(provider, model: str, message: str) -> PlanRequ
         "to CREATE/SAVE a FUTURE EXECUTABLE plan without running any step now; "
         "otherwise other (standalone tools, chat, follow-ups, ambiguous or "
         "requests to execute a missing prior plan). "
-        "Return JSON route, quote, start, end, steps. For plan_create, output "
+        "Return JSON route, quote, steps (omit start/end). For plan_create, output "
         "2 to 8 ordered steps ONLY, with goal, tool_name (calculate or "
         "mcp_reference_lookup), arguments (calculate: expression; lookup: term), "
-        "quote/start/end of EXACT user substring containing each argument. "
+        "quote as an EXACT user substring containing each argument. "
         "The top-level quote must exactly prove the user's plan-save request. "
-        "All offsets are zero-based Unicode codepoint, end exclusive. "
+        "Each quote must occur exactly once in the current user request. "
         "Never invent arguments, execute tools, or infer authority. "
         "For other return steps=[] and an exact nonempty user substring."
     )
@@ -147,8 +157,7 @@ async def propose_new_plan_route(provider, model: str, message: str) -> PlanRequ
         signal = NewPlanRouteSignal.model_validate_json(raw)
     except ValueError as exc:
         raise UnderstandingError("m5_unified_create_invalid") from exc
-    if message[signal.start:signal.end] != signal.quote:
-        raise SavedPlanRouteRefused("m5_create_source_mismatch")
+    source_span = _host_unique_span(message, signal.quote)
     if signal.route == "other":
         if signal.steps:
             raise SavedPlanRouteRefused("m5_create_unexpected_steps")
@@ -158,8 +167,7 @@ async def propose_new_plan_route(provider, model: str, message: str) -> PlanRequ
     proposal_steps = []
     plan_steps = []
     for step in signal.steps:
-        if message[step.start:step.end] != step.quote:
-            raise SavedPlanRouteRefused("m5_create_step_source_mismatch")
+        step_span = _host_unique_span(message, step.quote)
         if set(step.arguments) != ({"expression"} if step.tool_name == "calculate"
                                     else {"term"}):
             raise SavedPlanRouteRefused("m5_create_invalid_arguments")
@@ -169,8 +177,7 @@ async def propose_new_plan_route(provider, model: str, message: str) -> PlanRequ
         proposal_steps.append({
             "goal": step.goal, "tool_name": step.tool_name,
             "arguments": step.arguments,
-            "evidence": [{"start": step.start, "end": step.end,
-                          "exact_text": step.quote}],
+            "evidence": [step_span],
         })
         plan_steps.append({
             "goal": step.goal, "expected_tool": step.tool_name,
@@ -182,8 +189,7 @@ async def propose_new_plan_route(provider, model: str, message: str) -> PlanRequ
             "route": "plan_create", "scope": "none",
             "effect_intent": "mutation_requested", "ambiguity": "clear",
             "reference": {"kind": "none"},
-            "evidence": [{"start": signal.start, "end": signal.end,
-                          "exact_text": signal.quote}],
+            "evidence": [source_span],
             "operation": {"route": "plan_create", "save_only": True,
                           "steps": proposal_steps},
         })
