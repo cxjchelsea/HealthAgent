@@ -95,6 +95,19 @@ class PlanToolDispatch(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     __table_args__ = (UniqueConstraint("turn_id", "step_id", name="uq_plan_dispatch_turn_step"),)
 
+
+class PlanRecoveryAudit(Base):
+    """Immutable recovery operator attestations (no credentials)."""
+    __tablename__ = "plan_recovery_audits"
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: str(uuid.uuid4()))
+    conversation_id: Mapped[str] = mapped_column(String(40), index=True)
+    turn_id: Mapped[str] = mapped_column(String(40))
+    operator_id: Mapped[str] = mapped_column(String(128))
+    decision: Mapped[str] = mapped_column(String(48))
+    evidence_sha256: Mapped[str] = mapped_column(String(64))
+    snapshot_sha256: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
 def engine_for(url):
     if url == "sqlite://":
         return create_engine(url, connect_args={"check_same_thread":False}, poolclass=StaticPool)
