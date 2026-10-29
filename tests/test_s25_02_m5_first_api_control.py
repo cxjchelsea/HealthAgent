@@ -21,7 +21,7 @@ def test_m5_nonfirst_keeps_revision_route_and_bad_first_fences(tmp_path, monkeyp
         understanding_strategy="structured",
         m5_first_route_enabled=True,
     )
-    decision = {"primary": None, "legacy_calls": 0}
+    decision = {"primary": None, "legacy_calls": 0, "legacy_intent": "other"}
 
     async def no_cancel(*args, **kwargs):
         return False
@@ -31,7 +31,7 @@ def test_m5_nonfirst_keeps_revision_route_and_bad_first_fences(tmp_path, monkeyp
 
     async def legacy_plan(*args, **kwargs):
         decision["legacy_calls"] += 1
-        return PlanRequest(intent="other", steps=[])
+        return PlanRequest(intent=decision["legacy_intent"], steps=[])
 
     async def uncertain_edit(*args, **kwargs):
         return RevisionProposal(intent="other", edit_requested=True)
@@ -78,3 +78,16 @@ def test_m5_nonfirst_keeps_revision_route_and_bad_first_fences(tmp_path, monkeyp
         assert rejected.json()["termination_reason"] == "m5_primary_scope_unverified"
         assert decision["legacy_calls"] == 0
         assert not any(x.get("type") == "tool" for x in rejected.json()["trace"])
+
+        # A legacy disagreement may not revive FIRST when primary says non-FIRST.
+        decision["primary"] = None
+        decision["legacy_intent"] = "execute_first"
+        decision["legacy_calls"] = 0
+        disagreement = client.post(url, json={
+            "content": "请只执行第一步",
+            "client_request_id": "m5-legacy-disagreement-003",
+        })
+        assert disagreement.status_code == 200, disagreement.text
+        assert disagreement.json()["termination_reason"] == "m5_primary_scope_unverified"
+        assert decision["legacy_calls"] == 1
+        assert not any(x.get("type") == "tool" for x in disagreement.json()["trace"])
