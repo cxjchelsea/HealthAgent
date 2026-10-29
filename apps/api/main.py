@@ -1292,6 +1292,9 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
         return {"provider":settings.model_provider,"model": "fake" if settings.model_provider=="fake" else settings.model_name,
                 "configured":settings.provider_ready,
                 "route_admission_mode": settings.route_admission_mode,
+                "understanding_strategy": settings.understanding_strategy,
+                "routing_profile": settings.effective_routing_profile,
+                "routing_profile_requested": settings.routing_profile,
                 "m5_unified_route_enabled": settings.m5_unified_route_enabled,
                 "m4_contract": "guarded-plan-route-priority-v2"}
 
