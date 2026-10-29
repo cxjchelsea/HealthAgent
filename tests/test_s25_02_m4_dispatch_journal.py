@@ -40,7 +40,11 @@ def test_intent_before_dispatch_and_checkpoint_atomic(tmp_path):
         with pytest.raises(DispatchConflict, match="unreconciled_dispatch"):
             journal.begin(1, "calculate", {"expression": "4*7"})
         with Session.begin() as db:
-            journal.checkpoint_in_session(db)
+            journal.checkpoint_in_session(db, {"steps": [
+                {"id": 1, "status": "completed",
+                 "expected_tool": "calculate",
+                 "expected_arguments": {"expression": "4*7"},
+                 "evidence_tool": "calculate"}]})
             db.get(Turn, tid).state = "completed"
         with Session() as db:
             assert db.get(PlanToolDispatch, dispatch_id).status == "checkpointed"
