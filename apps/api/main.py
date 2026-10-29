@@ -478,10 +478,13 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                     body.content, existing_checkpoint)
                 if revision_proposal.intent != "revise":
                     edit_unresolved = revision_proposal.edit_requested
+                    if edit_unresolved is None and unified_saved_route == "plan_revise":
+                        # Primary has already chosen EDIT; uncertainty in its
+                        # parameter binding is a clarification, not a second
+                        # opportunity to classify the user's intent.
+                        edit_unresolved = True
                     if edit_unresolved is None:
-                        # Compatibility for legacy/test proposals. Current
-                        # production schema carries this semantic signal in
-                        # the first revision review, avoiding another call.
+                        # Legacy compatibility only, when no M5 primary choice.
                         edit_unresolved = await check_plan_edit_intent(
                             HTTPUnderstandingModel(
                                 settings.model_provider, settings.model_base_url,
@@ -856,7 +859,22 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                     settings.model_api_key, settings.model_timeout_seconds,
                                     settings.model_max_output_tokens),
                                 settings.understanding_strong_model, body.content)
-                            plan_control = "resume" if scope == "all" else "execute_first"
+                            if (unified_saved_route == "plan_resume"
+                                    and scope != "all"):
+                                # The independent scope reviewer can VETO the
+                                # primary's broad RESUME, never silently turn it
+                                # into a first-step execution authorization.
+                                result = {
+                                    "run_id": turn_id, "status": "partial",
+                                    "termination_reason": "m5_unified_scope_unverified",
+                                    "answer": "无法验证继续执行剩余步骤的范围；未调用工具。",
+                                    "trace": [{"step": 0, "type": "m5_unified_fenced"}],
+                                    "steps": 0,
+                                }
+                                plan_control = None
+                            else:
+                                plan_control = ("resume" if scope == "all"
+                                                else "execute_first")
                         else:
                             plan_control = plan_route.kind
                         # A completed checkpoint is terminal: subsequent continuation
