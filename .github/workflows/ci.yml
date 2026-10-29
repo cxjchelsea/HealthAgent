@@ -31,6 +31,10 @@ jobs:
         env:
           TEST_POSTGRES_URL: postgresql+psycopg://healthagent:ci_local_only@localhost:5432/healthagent
         run: python -m pytest -q -rs tests/test_s25_02_m4_postgres_subprocess_crash.py
+      - name: M4 PostgreSQL two API worker restart isolation
+        env:
+          TEST_POSTGRES_URL: postgresql+psycopg://healthagent:ci_local_only@localhost:5432/healthagent
+        run: python -m pytest -q -rs tests/test_s25_02_m4_postgres_api_workers.py
       - run: python -m evals.runner
       - run: python -m evals.s2a_benchmark
       - run: python -m evals.s2b5_benchmark
