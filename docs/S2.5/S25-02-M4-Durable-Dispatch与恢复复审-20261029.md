@@ -78,3 +78,15 @@ python -m evals.s25_02_m4_durable_physical --database healthagent.db `
 - **结论：M4 guarded 已保存计划正常路径的真实 Qwen3 + SQLite Durable Dispatch/Receipt 验收 PASS**，此前缺失的新版本实测证据已补齐。
 - **不得外推**：报告自身仍要求确认实际 API `DATABASE_URL` 与物理读回的 `healthagent.db` 是同一库；本轮未执行真实 OS kill/重启故障、多 worker PostgreSQL 端到端读回、外部具写入副作用工具的 exactly-once，且未做 legacy/guarded 同题时延与模型调用成本对照。离线人工恢复仅有确定性测试，尚未进行独立真实故障演练。
 - **门禁：M4 仍 VERIFYING/HOLD**。继续默认 legacy；只有完成剩余的多进程崩溃恢复物理证据和独立性能/权限审查后才讨论 M4 关闭，不自动合并 main。
+
+
+## 2026-10-29 PostgreSQL isolated subprocess crash acceptance
+
+Implemented tests/test_s25_02_m4_postgres_subprocess_crash.py, explicitly run in GitHub Actions CI as "M4 isolated PostgreSQL subprocess crash and recovery" using TEST_POSTGRES_URL against the dedicated PostgreSQL 16 CI service.
+
+- Case A: child process persists Claim and pre-dispatch journal row (dispatch_unknown), then exits abruptly with os._exit(73) before receipt. Parent process confirms running Turn, Claim, pending plan and unknown dispatch survive. Operator-attested quarantine cancels the old plan without any tool replay, releases Claim and persists recovery audit.
+- Case B: child persists Claim, calls actual local calculate(4*7), persists observed successful receipt, then exits abruptly before checkpoint. Parent sees unchanged pending plan and observed dispatch. Operator-attested receipt reconciliation commits completed plan step and checkpointed receipt, releases Claim and records audit with **no additional tool call**.
+- Test cleanup is limited to dedicated test Conversation records in the isolated CI database. No actual API service or external worker is killed.
+- CI run 40803054338 at HEAD 68876d85adfbbe8d19f64072dc482f3f72f66e29: SUCCESS; 686 passed / 3 skipped in aggregate; separate PostgreSQL claim-row-lock, crash/recovery, and migration steps each SUCCESS.
+
+Coverage restriction: process termination is a spawned test helper, **not** two independently running FastAPI workers or a crash with a non-idempotent external write tool. This establishes crash durability + controlled recovery for current calculate path; it does not establish general external exactly-once or production multi-worker behavior. Next independent work: full API multi-worker kill/restart E2E with physical traces, guarded/legacy model invocation and latency comparison, then final M4 closure review.
