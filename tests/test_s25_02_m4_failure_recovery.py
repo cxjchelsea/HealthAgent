@@ -61,7 +61,7 @@ def test_guarded_provider_timeout_before_tool_keeps_saved_plan(tmp_path, monkeyp
     engine.dispose()
 
 
-def test_guarded_executor_exception_releases_claim_without_advancing_plan(
+def test_guarded_post_tool_exception_blocks_automatic_replay(
         tmp_path, monkeypatch):
     import apps.api.main as api
     from agent.execution_policy import ExecutionPolicyDecision
@@ -84,8 +84,11 @@ def test_guarded_executor_exception_releases_claim_without_advancing_plan(
         guard = self.execution_guard
         assert guard is not None
         assert guard()
-        events.append("claim_acquired")
-        raise RuntimeError("injected_after_claim_before_tool")
+        from agent.tools import execute_tool
+        observation = execute_tool("calculate", {"expression": "4*7"}, [])
+        assert observation["ok"] and observation["value"] == 28
+        events.append("tool_executed")
+        raise RuntimeError("injected_after_tool_before_checkpoint")
 
     monkeypatch.setattr(UnderstandingService, "understand", fake_understand)
     monkeypatch.setattr(api, "review_plan_intent", intent)
@@ -109,7 +112,7 @@ def test_guarded_executor_exception_releases_claim_without_advancing_plan(
             "content": "现在只执行已保存计划的第一步。",
             "client_request_id": "m4-failure-execute-002"})
         assert failed.status_code == 503, failed.text
-        assert events == ["claim_acquired"]
+        assert events == ["tool_executed"]
         retry = client.post(endpoint, json={
             "content": "继续执行已保存计划剩余步骤。",
             "client_request_id": "m4-failure-retry-003"})
