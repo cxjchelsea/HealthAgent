@@ -3,6 +3,7 @@
 Never permits more steps if the request is explicitly limited to the first.
 Fail closed for ambiguous scope.
 """
+from agent.m5_model_call_metrics import attributed
 import json
 from pydantic import BaseModel, ConfigDict
 from agent.understanding import HTTPUnderstandingModel, UnderstandingError
@@ -12,6 +13,7 @@ class ScopeReview(BaseModel):
     scope: str
 
 
+@attributed("plan_execution_scope")
 async def review_plan_execution_scope(provider: HTTPUnderstandingModel, model: str,
                                       message: str) -> str:
     try:

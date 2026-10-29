@@ -30,7 +30,8 @@ from agent.pending_reference_review import review_pending_reference_lookup
 from agent.capability_review import review_unsupported_capability
 from agent.clarification_review import review_read_only_clarification
 from agent.control_admission import admit_clarification
-from agent.plan_intent import review_plan_intent, build_plan_checkpoint
+from agent.plan_intent import PlanRequest, review_plan_intent, build_plan_checkpoint
+from agent.m5_first_route import propose_first_route
 from agent.plan_control import (resolve_plan_admission, review_missing_plan_reference,
                                 review_plan_creation_reference, explicit_deferred_plan_request,
                                 review_plan_cancellation, explicit_saved_plan_cancellation)
@@ -89,6 +90,8 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
             # Safe aggregate counters only: no prompts, credentials or arguments.
             response.headers["X-HealthAgent-Model-HTTP-Attempts"] = str(counter["total"])
             response.headers["X-HealthAgent-Shadow-HTTP-Attempts"] = str(counter["shadow"])
+            response.headers["X-HealthAgent-Model-Call-Categories"] = json.dumps(
+                counter.get("by_category", {}), sort_keys=True, separators=(",", ":"))
             return response
         finally:
             model_call_counter.reset(token)
@@ -227,7 +230,9 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                 except (TypeError, ValueError):
                     preturn_checkpoint = None
                 preturn_capture = None
-                if settings.route_shadow_enabled:
+                if settings.route_shadow_enabled or (settings.m5_first_route_enabled
+                        and settings.route_admission_mode == "guarded"
+                        and settings.understanding_strategy == "structured"):
                     preturn_capture = capture_turn(
                         conversation_id=cid, request_id=body.client_request_id,
                         turn_id=turn_id, checkpoint=preturn_checkpoint,
@@ -346,14 +351,52 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
             if (result is None and existing_checkpoint
                     and settings.understanding_strategy == "structured"
                     and agent_decider is None and body.goal_confirmation is None):
-                reviewed_plan_intent = await review_plan_intent(
-                    HTTPUnderstandingModel(
-                        settings.model_provider, settings.model_base_url,
-                        settings.model_api_key, settings.model_timeout_seconds,
-                        settings.model_max_output_tokens),
-                    settings.understanding_strong_model,
-                    body.content, True)
-                if reviewed_plan_intent.intent in {"execute_first", "resume"}:
+                if (settings.m5_first_route_enabled
+                        and settings.route_admission_mode == "guarded"):
+                    confirmed_first = await propose_first_route(
+                        HTTPUnderstandingModel(
+                            settings.model_provider, settings.model_base_url,
+                            settings.model_api_key, settings.model_timeout_seconds,
+                            settings.model_max_output_tokens),
+                        settings.understanding_strong_model, body.content,
+                        preturn_capture, conversation_id=cid,
+                        request_id=body.client_request_id, turn_id=turn_id,
+                        checkpoint=existing_checkpoint)
+                    if confirmed_first is True:
+                        reviewed_plan_intent = PlanRequest(
+                            intent="execute_first", steps=[])
+                    elif confirmed_first is False:
+                        # Explicit FIRST with unbound evidence must fail closed.
+                        result = {"run_id": turn_id, "status": "partial",
+                                  "termination_reason": "m5_primary_scope_unverified",
+                                  "answer": "无法验证本轮第一步执行请求的来源；未执行工具。",
+                                  "trace": [{"step": 0, "type": "m5_primary_fenced"}],
+                                  "steps": 0}
+                    else:
+                        # Other operations retain existing legacy handling.
+                        reviewed_plan_intent = await review_plan_intent(
+                            HTTPUnderstandingModel(
+                                settings.model_provider, settings.model_base_url,
+                                settings.model_api_key, settings.model_timeout_seconds,
+                                settings.model_max_output_tokens),
+                            settings.understanding_strong_model,
+                            body.content, True)
+                        if reviewed_plan_intent.intent == "execute_first":
+                            result = {"run_id": turn_id, "status": "partial",
+                                      "termination_reason": "m5_primary_scope_unverified",
+                                      "answer": "当前轮第一步执行意图未获 M5 语义确认；未执行工具。",
+                                      "trace": [{"step": 0, "type": "m5_primary_fenced"}],
+                                      "steps": 0}
+                else:
+                    reviewed_plan_intent = await review_plan_intent(
+                        HTTPUnderstandingModel(
+                            settings.model_provider, settings.model_base_url,
+                            settings.model_api_key, settings.model_timeout_seconds,
+                            settings.model_max_output_tokens),
+                        settings.understanding_strong_model,
+                        body.content, True)
+                if (reviewed_plan_intent is not None
+                        and reviewed_plan_intent.intent in {"execute_first", "resume"}):
                     pending_plan_execution_intent = reviewed_plan_intent
             # Saved plan edits have their own bounded contract. Apply only a
             # proven single pending-step binding change before generic goal

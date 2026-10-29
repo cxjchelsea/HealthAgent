@@ -3,6 +3,7 @@
 Classification is not authority. Route a missing-checkpoint continuation only
 after a separate semantic confirmation; ordinary tool requests stay in AgentLoop.
 """
+from agent.m5_model_call_metrics import attributed
 import json
 from dataclasses import dataclass
 from typing import Literal
@@ -150,6 +151,7 @@ class PlanCancellationReview(BaseModel):
     cancel_saved_plan: bool
 
 
+@attributed("plan_cancellation")
 async def review_plan_cancellation(provider: HTTPUnderstandingModel, model: str,
                                    message: str) -> bool:
     """Independent current-turn cancellation intent; never grants execution."""

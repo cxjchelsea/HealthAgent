@@ -1,4 +1,5 @@
 """Independent, fail-closed authorization re-review for saved plan continuation."""
+from agent.m5_model_call_metrics import attributed
 import json
 import re
 from pydantic import BaseModel, ConfigDict
@@ -20,6 +21,7 @@ class PlanExecutionReview(BaseModel):
     explicitly_authorizes_pending_steps: bool
 
 
+@attributed("plan_execution_authorization")
 async def review_plan_execution_authorization(
     provider: HTTPUnderstandingModel, model: str, current_message: str,
     checkpoint: dict, intent: str,

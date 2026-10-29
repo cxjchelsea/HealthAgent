@@ -2,6 +2,7 @@
 
 Planning never invokes business tools or creates authorization for later execution.
 """
+from agent.m5_model_call_metrics import attributed
 import json
 from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
@@ -19,6 +20,7 @@ class PlanRequest(BaseModel):
     steps: list[dict] = Field(default_factory=list, max_length=8)
 
 
+@attributed("plan_intent")
 async def review_plan_intent(provider: HTTPUnderstandingModel, model: str,
                              message: str, existing_plan: bool) -> PlanRequest:
     prompt = (
