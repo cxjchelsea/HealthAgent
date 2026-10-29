@@ -1,3 +1,4 @@
+from agent.m5_model_call_metrics import attributed
 """Independent, fail-closed authorization re-review for saved plan continuation."""
 import json
 import re
@@ -20,6 +21,7 @@ class PlanExecutionReview(BaseModel):
     explicitly_authorizes_pending_steps: bool
 
 
+@attributed("plan_execution_authorization")
 async def review_plan_execution_authorization(
     provider: HTTPUnderstandingModel, model: str, current_message: str,
     checkpoint: dict, intent: str,
