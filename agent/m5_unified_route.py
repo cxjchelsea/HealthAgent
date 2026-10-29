@@ -8,6 +8,9 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from agent.plan_intent import PlanRequest
+from agent.route_primary_m5_binding import bind_primary_proposal
+
 from agent.m5_model_call_metrics import attributed
 from agent.route_primary_m5 import PrimarySemanticProposal
 from agent.route_primary_m5_capture import bind_captured_proposal
@@ -91,3 +94,100 @@ async def propose_saved_plan_route(provider, model: str, message: str, capture, 
     except (ValueError, TypeError, ProposalBindingRefused) as exc:
         raise SavedPlanRouteRefused("m5_unified_binding_refused") from exc
     return signal.route
+
+
+class ProposedNewStep(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    goal: str = Field(min_length=1, max_length=400)
+    tool_name: Literal["calculate", "mcp_reference_lookup"]
+    arguments: dict
+    quote: str = Field(min_length=1, max_length=400)
+    start: int = Field(ge=0)
+    end: int = Field(gt=0)
+
+
+class NewPlanRouteSignal(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    route: Literal["plan_create", "other"]
+    quote: str = Field(min_length=1, max_length=400)
+    start: int = Field(ge=0)
+    end: int = Field(gt=0)
+    steps: list[ProposedNewStep] = Field(default_factory=list, max_length=8)
+
+
+@attributed("primary")
+async def propose_new_plan_route(provider, model: str, message: str) -> PlanRequest:
+    """A single route decision for no-saved-plan turns; Host still owns CAS.
+
+    An invalid CREATE proposal fails closed rather than falling back to the
+    old intent classifier or ordinary AgentLoop tool execution.
+    """
+    prompt = (
+        "Decide current user's ONE route: plan_create ONLY if explicitly asking "
+        "to CREATE/SAVE a FUTURE EXECUTABLE plan without running any step now; "
+        "otherwise other (standalone tools, chat, follow-ups, ambiguous or "
+        "requests to execute a missing prior plan). "
+        "Return JSON route, quote, start, end, steps. For plan_create, output "
+        "2 to 8 ordered steps ONLY, with goal, tool_name (calculate or "
+        "mcp_reference_lookup), arguments (calculate: expression; lookup: term), "
+        "quote/start/end of EXACT user substring containing each argument. "
+        "The top-level quote must exactly prove the user's plan-save request. "
+        "All offsets are zero-based Unicode codepoint, end exclusive. "
+        "Never invent arguments, execute tools, or infer authority. "
+        "For other return steps=[] and an exact nonempty user substring."
+    )
+    raw = await provider.complete(
+        model=model, messages=[
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": json.dumps(
+                {"current_request": message, "saved_plan_exists": False},
+                ensure_ascii=False)}],
+        response_schema=NewPlanRouteSignal.model_json_schema())
+    try:
+        signal = NewPlanRouteSignal.model_validate_json(raw)
+    except ValueError as exc:
+        raise UnderstandingError("m5_unified_create_invalid") from exc
+    if message[signal.start:signal.end] != signal.quote:
+        raise SavedPlanRouteRefused("m5_create_source_mismatch")
+    if signal.route == "other":
+        if signal.steps:
+            raise SavedPlanRouteRefused("m5_create_unexpected_steps")
+        return PlanRequest(intent="other", steps=[])
+    if not 2 <= len(signal.steps) <= 8:
+        raise SavedPlanRouteRefused("m5_create_invalid_step_count")
+    proposal_steps = []
+    plan_steps = []
+    for step in signal.steps:
+        if message[step.start:step.end] != step.quote:
+            raise SavedPlanRouteRefused("m5_create_step_source_mismatch")
+        if set(step.arguments) != ({"expression"} if step.tool_name == "calculate"
+                                    else {"term"}):
+            raise SavedPlanRouteRefused("m5_create_invalid_arguments")
+        value = next(iter(step.arguments.values()))
+        if not isinstance(value, str) or value.casefold() not in step.quote.casefold():
+            raise SavedPlanRouteRefused("m5_create_argument_not_in_evidence")
+        proposal_steps.append({
+            "goal": step.goal, "tool_name": step.tool_name,
+            "arguments": step.arguments,
+            "evidence": [{"start": step.start, "end": step.end,
+                          "exact_text": step.quote}],
+        })
+        plan_steps.append({
+            "goal": step.goal, "expected_tool": step.tool_name,
+            "expected_arguments": step.arguments,
+        })
+    try:
+        proposal = PrimarySemanticProposal.model_validate({
+            "schema_version": "s25-m5-primary-v1",
+            "route": "plan_create", "scope": "none",
+            "effect_intent": "mutation_requested", "ambiguity": "clear",
+            "reference": {"kind": "none"},
+            "evidence": [{"start": signal.start, "end": signal.end,
+                          "exact_text": signal.quote}],
+            "operation": {"route": "plan_create", "save_only": True,
+                          "steps": proposal_steps},
+        })
+        bind_primary_proposal(proposal, message)
+    except (ValueError, TypeError, ProposalBindingRefused) as exc:
+        raise SavedPlanRouteRefused("m5_create_binding_refused") from exc
+    return PlanRequest(intent="plan_only", steps=plan_steps)
