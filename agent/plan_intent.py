@@ -1,8 +1,8 @@
-from agent.m5_model_call_metrics import attributed
 """Model-classified plan-only request; host validates plan bindings before persistence.
 
 Planning never invokes business tools or creates authorization for later execution.
 """
+from agent.m5_model_call_metrics import attributed
 import json
 from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
