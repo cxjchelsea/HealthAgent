@@ -122,3 +122,52 @@ def test_guarded_api_cancel_uses_shared_owner_not_second_cancel_classifier(tmp_p
         assert response.json()["termination_reason"] == "plan_cancelled"
         assert not any(t.get("type") == "tool" for t in response.json()["trace"])
         assert events == {"primary": 1, "old_cancel": 0}
+
+
+@pytest.mark.parametrize("selected,expected", [
+    ("plan_revise", "plan_revision_conflict"),
+    ("refused", "m5_unified_binding_refused"),
+])
+def test_unified_failed_binding_or_revision_never_executes_tools(
+        tmp_path, monkeypatch, selected, expected):
+    from agent.plan_revision_review import RevisionProposal
+    settings = Settings(database_url=f"sqlite:///{tmp_path / 'denial.db'}",
+                        model_provider="fake", route_admission_mode="guarded",
+                        understanding_strategy="structured",
+                        m5_unified_route_enabled=True)
+
+    async def primary(*args, **kwargs):
+        if selected == "refused":
+            raise SavedPlanRouteRefused("bad current turn")
+        return selected
+
+    async def inconclusive_revision(*args, **kwargs):
+        return RevisionProposal(intent="other", edit_requested=False)
+
+    async def should_not_classify(*args, **kwargs):
+        raise AssertionError("legacy route classifier should not override M5")
+
+    monkeypatch.setattr("apps.api.main.propose_saved_plan_route", primary)
+    monkeypatch.setattr("apps.api.main.review_plan_revision", inconclusive_revision)
+    monkeypatch.setattr("apps.api.main.review_plan_intent", should_not_classify)
+    with TestClient(create_app(settings)) as client:
+        cid = client.post("/conversations").json()["id"]
+        _, Session = database(settings.database_url)
+        checkpoint = {"revision": 1, "next_step_id": 3, "steps": [
+            {"id": 1, "goal": "计算 3*4", "status": "pending",
+             "expected_tool": "calculate", "expected_arguments": {"expression": "3*4"}},
+            {"id": 2, "goal": "计算 5*6", "status": "pending",
+             "expected_tool": "calculate", "expected_arguments": {"expression": "5*6"}},
+        ]}
+        with Session.begin() as db:
+            db.add(ConversationPlan(conversation_id=cid,
+                                    snapshot=json.dumps(checkpoint, ensure_ascii=False)))
+        response = client.post(f"/conversations/{cid}/agent/messages", json={
+            "content": "把第二步计算5*6改成计算8*8",
+            "client_request_id": "m5-unified-denial-001"})
+        assert response.status_code == 200, response.text
+        assert response.json()["termination_reason"] == expected
+        assert not any(t.get("type") == "tool" for t in response.json()["trace"])
+        with Session() as db:
+            row = db.get(ConversationPlan, cid)
+            assert json.loads(row.snapshot) == checkpoint
