@@ -89,6 +89,8 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
             # Safe aggregate counters only: no prompts, credentials or arguments.
             response.headers["X-HealthAgent-Model-HTTP-Attempts"] = str(counter["total"])
             response.headers["X-HealthAgent-Shadow-HTTP-Attempts"] = str(counter["shadow"])
+            response.headers["X-HealthAgent-Model-Call-Categories"] = json.dumps(
+                counter.get("by_category", {}), sort_keys=True, separators=(",", ":"))
             return response
         finally:
             model_call_counter.reset(token)
