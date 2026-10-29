@@ -83,6 +83,9 @@ def summarize(model, cases):
                       for c in cases for r in c["requests"]
                       if isinstance(r["response"].get("route_shadow"), dict)]
     complete = all(isinstance(x, int) for x in calls)
+    shadow_complete = all(isinstance(x, int) for x in shadows)
+    core_http_attempts = (sum(calls) - sum(shadows)
+                          if complete and shadow_complete else None)
     return {"model": model, "cases": cases,
             "functional_pass": sum(c["functional_pass"] for c in cases),
             "sample_requests": len(elapsed),
@@ -96,8 +99,9 @@ def summarize(model, cases):
                                        "per_request": calls},
             "shadow_http_attempts": {"total": sum(shadows) if all(
                 isinstance(x, int) for x in shadows) else None},
-            "core_model_calls": "NOT_INSTRUMENTED",
-            "measurement_note": "Provider HTTP attempts are real attempted HTTP calls via HTTPUnderstandingModel; other provider adapters may not be counted."}
+            "core_provider_http_attempts": core_http_attempts,
+            "core_model_calls": "LOGICAL_CALLS_NOT_INSTRUMENTED",
+            "measurement_note": "Provider HTTP attempts count attempted outbound calls via supported structured, tool-decision and streaming adapters; retries count separately. Core attempts subtract observed Shadow calls; these are not tokens or logical model-call IDs."}
 
 
 def main():
@@ -122,7 +126,7 @@ def main():
               "limitations": [
                   "Different isolated databases and identical Qwen model settings required.",
                   "HTTP wall time includes queueing and any Shadow diagnostics.",
-                  "Provider HTTP attempt counts are measured via per-request response headers; full adapter coverage is not guaranteed.",
+                  "Supported structured, tool-decision and streaming provider HTTP attempts are counted; logical model invocations, tokens and cost are not measured.",
                   "Small cycle count cannot establish stable performance percentiles.",
                   "External concurrency and exactly-once safety are outside this benchmark."]}
     models = {}
