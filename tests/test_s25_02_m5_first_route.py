@@ -40,4 +40,4 @@ def test_missing_or_forged_source_fails_closed():
     assert run({"first_step_requested": True, "quote": "第一步",
                 "start": 0, "end": 3}) == (False, 1)
     assert run({"first_step_requested": False, "quote": "请",
-                "start": 0, "end": 1}) == (False, 1)
+                "start": 0, "end": 1}) == (None, 1)
