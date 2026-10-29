@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     route_shadow_enabled: bool = False  # M2 opt-in, never affects admission
     route_admission_mode: Literal["legacy", "guarded"] = "legacy"  # M4 explicit opt-in
     m5_first_route_enabled: bool = False  # explicit FIRST-only experiment
+    m5_unified_route_enabled: bool = False  # opt-in shared saved-plan route experiment
     understanding_strategy: str = "direct"  # direct or structured; benchmark before default switch
     model_api_key: str = ""
     model_timeout_seconds: float = Field(default=45, gt=0)

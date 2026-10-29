@@ -32,6 +32,8 @@ from agent.clarification_review import review_read_only_clarification
 from agent.control_admission import admit_clarification
 from agent.plan_intent import PlanRequest, review_plan_intent, build_plan_checkpoint
 from agent.m5_first_route import propose_first_route
+from agent.m5_unified_route import (propose_saved_plan_route, propose_new_plan_route,
+                                    SavedPlanRouteRefused)
 from agent.plan_control import (resolve_plan_admission, review_missing_plan_reference,
                                 review_plan_creation_reference, explicit_deferred_plan_request,
                                 review_plan_cancellation, explicit_saved_plan_cancellation)
@@ -230,7 +232,8 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                 except (TypeError, ValueError):
                     preturn_checkpoint = None
                 preturn_capture = None
-                if settings.route_shadow_enabled or (settings.m5_first_route_enabled
+                if settings.route_shadow_enabled or ((settings.m5_first_route_enabled
+                        or settings.m5_unified_route_enabled)
                         and settings.route_admission_mode == "guarded"
                         and settings.understanding_strategy == "structured"):
                     preturn_capture = capture_turn(
@@ -297,18 +300,78 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                           "trace": [{"step": 0, "type": "goal_confirmation"}], "steps": 0}
             if settings.understanding_strategy not in {"direct", "structured"}:
                 raise UnderstandingError("invalid_understanding_strategy")
+            unified_new_plan_decision = None
+            # Pending tool arguments and open clarifications belong to the
+            # verified preturn origin; they cannot become a fresh plan route.
+            # Preserve the existing pending/clarification Host pipeline.
+            if (result is None and existing_checkpoint is None
+                    and pending_action is None and clarification_id is None
+                    and settings.m5_unified_route_enabled
+                    and settings.route_admission_mode == "guarded"
+                    and settings.understanding_strategy == "structured"
+                    and agent_decider is None and body.goal_confirmation is None):
+                try:
+                    unified_new_plan_decision = await propose_new_plan_route(
+                        HTTPUnderstandingModel(
+                            settings.model_provider, settings.model_base_url,
+                            settings.model_api_key, settings.model_timeout_seconds,
+                            settings.model_max_output_tokens),
+                        settings.understanding_strong_model, body.content)
+                except SavedPlanRouteRefused as exc:
+                    # Only our fixed internal error codes, never model text,
+                    # arguments, quotes, or exception repr, reach diagnostics.
+                    refusal_code = str(exc)
+                    if refusal_code not in {
+                            "m5_quote_not_found", "m5_quote_ambiguous",
+                            "m5_create_unexpected_steps",
+                            "m5_create_invalid_step_count",
+                            "m5_create_invalid_arguments",
+                            "m5_create_argument_not_in_evidence",
+                            "m5_create_binding_refused"}:
+                        refusal_code = "m5_create_unclassified_refusal"
+                    result = {"run_id": turn_id, "status": "partial",
+                              "termination_reason": "m5_unified_create_refused",
+                              "m5_refusal_code": refusal_code,
+                              "answer": "本轮新建计划的来源或参数未验证；未保存或执行工具。",
+                              "trace": [{"step": 0, "type": "m5_unified_fenced"}],
+                              "steps": 0}
+            unified_saved_route = None
+            if (result is None and existing_checkpoint is not None
+                    and pending_action is None and clarification_id is None
+                    and settings.m5_unified_route_enabled
+                    and settings.route_admission_mode == "guarded"
+                    and settings.understanding_strategy == "structured"
+                    and agent_decider is None and body.goal_confirmation is None):
+                try:
+                    unified_saved_route = await propose_saved_plan_route(
+                        HTTPUnderstandingModel(
+                            settings.model_provider, settings.model_base_url,
+                            settings.model_api_key, settings.model_timeout_seconds,
+                            settings.model_max_output_tokens),
+                        settings.understanding_strong_model, body.content,
+                        preturn_capture, conversation_id=cid,
+                        request_id=body.client_request_id, turn_id=turn_id,
+                        checkpoint=existing_checkpoint)
+                except SavedPlanRouteRefused:
+                    result = {"run_id": turn_id, "status": "partial",
+                              "termination_reason": "m5_unified_binding_refused",
+                              "answer": "本轮计划操作来源未通过绑定校验；未修改计划或执行工具。",
+                              "trace": [{"step": 0, "type": "m5_unified_fenced"}],
+                              "steps": 0}
             # A confirmed cancellation is a Host-owned plan mutation, not an
             # AgentLoop tool. The exact pre-turn snapshot is CAS-deleted during
             # terminal Turn commit. No tools or step execution occur here.
             if (result is None and existing_checkpoint is not None
                     and settings.understanding_strategy == "structured"
                     and agent_decider is None and body.goal_confirmation is None
-                    and await review_plan_cancellation(
-                        HTTPUnderstandingModel(
-                            settings.model_provider, settings.model_base_url,
-                            settings.model_api_key, settings.model_timeout_seconds,
-                            settings.model_max_output_tokens),
-                        settings.understanding_strong_model, body.content)):
+                    and (unified_saved_route == "plan_cancel"
+                         if unified_saved_route is not None
+                         else await review_plan_cancellation(
+                             HTTPUnderstandingModel(
+                                 settings.model_provider, settings.model_base_url,
+                                 settings.model_api_key, settings.model_timeout_seconds,
+                                 settings.model_max_output_tokens),
+                             settings.understanding_strong_model, body.content))):
                 if settings.route_admission_mode == "guarded" and not admit_guarded_plan_cancel(
                         message=body.content, conversation_id=cid,
                         request_id=body.client_request_id,
@@ -351,7 +414,19 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
             if (result is None and existing_checkpoint
                     and settings.understanding_strategy == "structured"
                     and agent_decider is None and body.goal_confirmation is None):
-                if (settings.m5_first_route_enabled
+                if unified_saved_route is not None:
+                    # One shared owner has already selected the saved-plan route.
+                    # Typed semantic evidence does not replace Host authorization.
+                    if unified_saved_route == "plan_execute_first":
+                        reviewed_plan_intent = PlanRequest(
+                            intent="execute_first", steps=[])
+                    elif unified_saved_route == "plan_resume":
+                        reviewed_plan_intent = PlanRequest(
+                            intent="resume", steps=[])
+                    else:
+                        # Never run plan execution from a second classifier.
+                        reviewed_plan_intent = PlanRequest(intent="other", steps=[])
+                elif (settings.m5_first_route_enabled
                         and settings.route_admission_mode == "guarded"):
                     confirmed_first = await propose_first_route(
                         HTTPUnderstandingModel(
@@ -402,6 +477,7 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
             # proven single pending-step binding change before generic goal
             # Understanding, which must not rewrite the PlanLedger on its own.
             if (result is None and existing_checkpoint
+                    and (unified_saved_route is None or unified_saved_route == "plan_revise")
                     and not pending_plan_execution_intent
                     and settings.understanding_strategy == "structured"
                     and agent_decider is None and body.goal_confirmation is None):
@@ -414,10 +490,13 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                     body.content, existing_checkpoint)
                 if revision_proposal.intent != "revise":
                     edit_unresolved = revision_proposal.edit_requested
+                    if edit_unresolved is None and unified_saved_route == "plan_revise":
+                        # Primary has already chosen EDIT; uncertainty in its
+                        # parameter binding is a clarification, not a second
+                        # opportunity to classify the user's intent.
+                        edit_unresolved = True
                     if edit_unresolved is None:
-                        # Compatibility for legacy/test proposals. Current
-                        # production schema carries this semantic signal in
-                        # the first revision review, avoiding another call.
+                        # Legacy compatibility only, when no M5 primary choice.
                         edit_unresolved = await check_plan_edit_intent(
                             HTTPUnderstandingModel(
                                 settings.model_provider, settings.model_base_url,
@@ -425,7 +504,9 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                 settings.model_max_output_tokens),
                             settings.understanding_strong_model,
                             body.content, existing_checkpoint)
-                    if edit_unresolved:
+                    if edit_unresolved or unified_saved_route == "plan_revise":
+                        # A chosen revision must not become ordinary tool execution
+                        # merely because targeted argument review was inconclusive.
                         result = {"run_id": turn_id, "status": "partial",
                                   "termination_reason": "plan_revision_conflict",
                                   "answer": "无法确认计划修改目标，请明确步骤编号、原参数及新参数。",
@@ -671,19 +752,22 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
             # the bound checkpoint can authorize later read-only execution.
             if (result is None and parsed_result is not None
                     and not suppress_persistent_routing and agent_decider is None):
-                plan_decision = reviewed_plan_intent or await review_plan_intent(
+                plan_decision = (reviewed_plan_intent or unified_new_plan_decision
+                                 or await review_plan_intent(
                     HTTPUnderstandingModel(settings.model_provider,
                                            settings.model_base_url,
                                            settings.model_api_key,
                                            settings.model_timeout_seconds,
                                            settings.model_max_output_tokens),
                     settings.understanding_strong_model,
-                    body.content, bool(existing_checkpoint))
+                    body.content, bool(existing_checkpoint)))
                 # Produce a single mutually exclusive Host route from model
                 # proposals and independently checked saved-plan references.
-                creation_confirmed = False
+                creation_confirmed = bool(
+                    unified_new_plan_decision is not None
+                    and unified_new_plan_decision.intent == "plan_only")
                 missing_reference = None
-                if plan_decision.intent == "plan_only":
+                if plan_decision.intent == "plan_only" and not creation_confirmed:
                     creation_confirmed = await review_plan_creation_reference(
                         HTTPUnderstandingModel(
                             settings.model_provider, settings.model_base_url,
@@ -765,6 +849,12 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                             settings.understanding_strong_model, body.content,
                             existing_checkpoint, plan_route.kind)
                         if not confirmed_plan_execution:
+                            if unified_saved_route in {"plan_execute_first", "plan_resume"}:
+                                result = {"run_id": turn_id, "status": "partial",
+                                          "termination_reason": "m5_unified_authorization_denied",
+                                          "answer": "本轮计划执行授权未通过独立验证；未执行工具。",
+                                          "trace": [{"step": 0, "type": "m5_unified_fenced"}],
+                                          "steps": 0}
                             plan_route = resolve_plan_admission(
                                 type(plan_decision)(intent="other"),
                                 existing_checkpoint=existing_checkpoint)
@@ -781,7 +871,22 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                     settings.model_api_key, settings.model_timeout_seconds,
                                     settings.model_max_output_tokens),
                                 settings.understanding_strong_model, body.content)
-                            plan_control = "resume" if scope == "all" else "execute_first"
+                            if (unified_saved_route == "plan_resume"
+                                    and scope != "all"):
+                                # The independent scope reviewer can VETO the
+                                # primary's broad RESUME, never silently turn it
+                                # into a first-step execution authorization.
+                                result = {
+                                    "run_id": turn_id, "status": "partial",
+                                    "termination_reason": "m5_unified_scope_unverified",
+                                    "answer": "无法验证继续执行剩余步骤的范围；未调用工具。",
+                                    "trace": [{"step": 0, "type": "m5_unified_fenced"}],
+                                    "steps": 0,
+                                }
+                                plan_control = None
+                            else:
+                                plan_control = ("resume" if scope == "all"
+                                                else "execute_first")
                         else:
                             plan_control = plan_route.kind
                         # A completed checkpoint is terminal: subsequent continuation
@@ -1187,6 +1292,7 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
         return {"provider":settings.model_provider,"model": "fake" if settings.model_provider=="fake" else settings.model_name,
                 "configured":settings.provider_ready,
                 "route_admission_mode": settings.route_admission_mode,
+                "m5_unified_route_enabled": settings.m5_unified_route_enabled,
                 "m4_contract": "guarded-plan-route-priority-v2"}
 
     @app.post("/conversations",status_code=201)
