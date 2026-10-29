@@ -59,6 +59,26 @@ def test_physical_readback_finds_durable_dispatch_and_replay(tmp_path):
         rejected = verify(dbpath, report)
         assert any(x["name"] == "exactly_one_local_checkpointed_dispatch"
                    and x["result"] == "FAIL" for x in rejected["checks"])
+        # The original oracle would accept the wrong Turn and wrong arguments.
+        # Use a valid CREATE Turn id to preserve referential integrity.
+        with Session.begin() as db:
+            entry = db.query(PlanToolDispatch).filter_by(conversation_id=cid).one()
+            entry.status = "checkpointed"
+            entry.turn_id = rows[0]["response"]["turn_id"]
+        wrong_turn = verify(dbpath, report)
+        assert any(x["name"] == "dispatch_first_turn_and_arguments_bound"
+                   and x["result"] == "FAIL" for x in wrong_turn["checks"])
+        with Session.begin() as db:
+            entry = db.query(PlanToolDispatch).filter_by(conversation_id=cid).one()
+            entry.turn_id = rows[1]["response"]["turn_id"]
+            entry.arguments_json = '{"expression":"5*6"}'
+        wrong_arguments = verify(dbpath, report)
+        assert any(x["name"] == "dispatch_first_turn_and_arguments_bound"
+                   and x["result"] == "FAIL" for x in wrong_arguments["checks"])
+        with Session.begin() as db:
+            entry = db.query(PlanToolDispatch).filter_by(conversation_id=cid).one()
+            entry.arguments_json = '{"expression":"3*4"}'
+        assert verify(dbpath, report)["summary"]["FAIL"] == 0
     finally:
         engine.dispose()
 
