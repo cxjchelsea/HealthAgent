@@ -22,8 +22,8 @@ class FirstRouteSignal(BaseModel):
 @attributed("primary")
 async def propose_first_route(provider, model: str, message: str, capture,
                               *, conversation_id: str, request_id: str,
-                              turn_id: str, checkpoint: dict | None) -> bool:
-    """True means only that semantic evidence binds; M4 still authorizes execution."""
+                              turn_id: str, checkpoint: dict | None) -> bool | None:
+    """True: bound FIRST; False: FIRST evidence rejected; None: not a FIRST request."""
     prompt = (
         "Decide whether the CURRENT user explicitly asks to execute ONLY the "
         "FIRST step of an ALREADY SAVED plan. Return JSON: first_step_requested "
@@ -45,7 +45,7 @@ async def propose_first_route(provider, model: str, message: str, capture,
     except ValueError as exc:
         raise UnderstandingError("m5_primary_invalid") from exc
     if not signal.first_step_requested:
-        return False
+        return None
     proposal = PrimarySemanticProposal.model_validate({
         "schema_version": "s25-m5-primary-v1",
         "route": "plan_execute_first",
