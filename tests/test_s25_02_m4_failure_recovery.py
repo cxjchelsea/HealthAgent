@@ -110,12 +110,20 @@ def test_guarded_executor_exception_releases_claim_without_advancing_plan(
             "client_request_id": "m4-failure-execute-002"})
         assert failed.status_code == 503, failed.text
         assert events == ["claim_acquired"]
+        retry = client.post(endpoint, json={
+            "content": "继续执行已保存计划剩余步骤。",
+            "client_request_id": "m4-failure-retry-003"})
+        assert retry.status_code == 200, retry.text
+        assert retry.json()["termination_reason"] == "plan_execution_reconciliation_required"
+        assert retry.json()["steps"] == 0
+        assert events == ["claim_acquired"]
 
     engine, Session = database(settings.database_url)
     with Session() as db:
         turns = list(db.scalars(select(Turn).where(Turn.conversation_id == cid)))
-        assert len(turns) == 2
-        assert turns[-1].state == "provider_error"
+        assert len(turns) == 3
+        assert any(t.state == "provider_error" and
+                   t.failure_code == "plan_execution_outcome_unknown" for t in turns)
         assert db.get(PlanExecutionClaim, cid) is None
         saved = db.get(ConversationPlan, cid)
         assert saved is not None
