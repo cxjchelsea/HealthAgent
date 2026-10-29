@@ -11,6 +11,7 @@ from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from agent.config import Settings
 from agent.understanding import UnderstandingContext, UnderstandingService, HTTPUnderstandingModel, UnderstandingError
+from agent.understanding import model_call_counter
 from agent.execution_policy import decide_execution_policy_detail, reconcile_execution_policy
 from agent.route_shadow import evaluate_shadow, compare_to_legacy
 from agent.route_shadow_host import facts_from_legacy_observation
@@ -78,6 +79,20 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
 
     app=FastAPI(title="HealthAgent Unified Agent", version="0.2.0",lifespan=lifespan)
     app.state.settings=settings
+
+    @app.middleware("http")
+    async def count_model_http_attempts(request: Request, call_next):
+        counter = {"total": 0, "shadow": 0}
+        token = model_call_counter.set(counter)
+        try:
+            response = await call_next(request)
+            # Safe aggregate counters only: no prompts, credentials or arguments.
+            response.headers["X-HealthAgent-Model-HTTP-Attempts"] = str(counter["total"])
+            response.headers["X-HealthAgent-Shadow-HTTP-Attempts"] = str(counter["shadow"])
+            return response
+        finally:
+            model_call_counter.reset(token)
+
 
     def user_id(request:Request):
         tokens=dict(pair.split(":",1) for pair in settings.user_tokens.split(",") if ":" in pair)
@@ -1034,6 +1049,8 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
             # preview failures must never turn an already committed success
             # into an HTTP error or re-dispatch a tool.
             shadow_started = time.monotonic()
+            counter = model_call_counter.get()
+            shadow_calls_before = counter["total"] if counter is not None else None
             try:
                 shadow = await evaluate_shadow(
                     HTTPUnderstandingModel(
@@ -1051,6 +1068,8 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                             turn_id, type(exc).__name__)
                 shadow = {"state": "unavailable", "error_class": "ShadowEvaluationError",
                           "host_admission_complete": False}
+            if counter is not None and shadow_calls_before is not None:
+                counter["shadow"] += counter["total"] - shadow_calls_before
             shadow["diagnostic_elapsed_ms"] = int(
                 (time.monotonic() - shadow_started) * 1000)
             shadow["diagnostic_model_calls"] = 1 + shadow.get("recovery_model_calls", 0)
