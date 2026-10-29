@@ -464,7 +464,9 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                 settings.model_max_output_tokens),
                             settings.understanding_strong_model,
                             body.content, existing_checkpoint)
-                    if edit_unresolved:
+                    if edit_unresolved or unified_saved_route == "plan_revise":
+                        # A chosen revision must not become ordinary tool execution
+                        # merely because targeted argument review was inconclusive.
                         result = {"run_id": turn_id, "status": "partial",
                                   "termination_reason": "plan_revision_conflict",
                                   "answer": "无法确认计划修改目标，请明确步骤编号、原参数及新参数。",
@@ -804,6 +806,12 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                             settings.understanding_strong_model, body.content,
                             existing_checkpoint, plan_route.kind)
                         if not confirmed_plan_execution:
+                            if unified_saved_route in {"plan_execute_first", "plan_resume"}:
+                                result = {"run_id": turn_id, "status": "partial",
+                                          "termination_reason": "m5_unified_authorization_denied",
+                                          "answer": "本轮计划执行授权未通过独立验证；未执行工具。",
+                                          "trace": [{"step": 0, "type": "m5_unified_fenced"}],
+                                          "steps": 0}
                             plan_route = resolve_plan_admission(
                                 type(plan_decision)(intent="other"),
                                 existing_checkpoint=existing_checkpoint)
