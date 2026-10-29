@@ -112,7 +112,10 @@ def test_api_create_uses_primary_without_legacy_intent_or_reference(tmp_path, mo
                         model_provider="ollama_proxy", route_admission_mode="guarded",
                         understanding_strategy="structured",
                         m5_unified_route_enabled=True)
-    with TestClient(create_app(settings)) as client:
+    async def policy(message, interpretation):
+        return "read_only"
+
+    with TestClient(create_app(settings, execution_policy=policy)) as client:
         cid = client.post("/conversations").json()["id"]
         response = client.post(f"/conversations/{cid}/agent/messages", json={
             "content": MESSAGE, "client_request_id": "m5-unified-create-001",
