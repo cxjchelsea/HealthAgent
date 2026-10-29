@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 from sqlalchemy import select
 from agent.planning import PlanLedger
+from services.plan_dispatch import UNRESOLVED_DISPATCH_STATUSES
 from services.db import (ConversationPlan, PlanExecutionClaim, PlanToolDispatch,
                          PlanRecoveryAudit, Turn, Message, database)
 
@@ -62,7 +63,7 @@ def quarantine(*, database_url, conversation_id, turn_id,
                 raise RecoveryRefused("other_unresolved_turn")
             dispatches = list(db.scalars(select(PlanToolDispatch).where(
                 PlanToolDispatch.conversation_id == conversation_id,
-                PlanToolDispatch.status != "checkpointed").with_for_update()))
+                PlanToolDispatch.status.in_(UNRESOLVED_DISPATCH_STATUSES)).with_for_update()))
             if any(row.turn_id != turn_id for row in dispatches):
                 raise RecoveryRefused("other_unresolved_dispatch")
             if not (claim or dispatches or turn.failure_code == "plan_execution_outcome_unknown"):
@@ -138,8 +139,7 @@ def reconcile_verified_receipts(*, database_url, conversation_id, turn_id,
                 raise RecoveryRefused("claim_snapshot_mismatch")
             unresolved = list(db.scalars(select(PlanToolDispatch).where(
                 PlanToolDispatch.conversation_id == conversation_id,
-                PlanToolDispatch.status.in_(
-                    ("dispatch_unknown", "observed", "observed_failure"))
+                PlanToolDispatch.status.in_(UNRESOLVED_DISPATCH_STATUSES)
             ).with_for_update()))
             if not unresolved or any(entry.turn_id != turn_id for entry in unresolved):
                 raise RecoveryRefused("unbound_dispatch")
