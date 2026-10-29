@@ -26,7 +26,9 @@ class Provider:
 
 def invoke(route, message, quote, *, corrupt=False, checkpoint=None):
     checkpoint = checkpoint or {"revision": 1, "steps": [{"id": 1, "status": "pending"}]}
-    index = message.index(quote)
+    index = message.find(quote)
+    if index < 0:
+        index = 0  # Feed fabricated quote to Host, not fail in test helper.
     cap = capture_turn(conversation_id="c", request_id="req", turn_id="t",
                        checkpoint=checkpoint, pending_action=None,
                        clarification_id=None, pending_question=None)
