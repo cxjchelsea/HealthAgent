@@ -109,7 +109,7 @@ def test_reconcile_successful_persisted_calculate_receipt_without_tool_dispatch(
             aud = db.scalar(select(PlanRecoveryAudit).where(
                 PlanRecoveryAudit.conversation_id == cid))
             assert aud.decision == "reconcile_verified_receipts"
-        with pytest.raises(RecoveryRefused, match="turn_not_recoverable"):
+        with pytest.raises(RecoveryRefused, match="plan_snapshot_changed"):
             reconcile_verified_receipts(**args)
     finally:
         engine.dispose()
