@@ -5,7 +5,7 @@ import pytest
 from sqlalchemy import select
 from services.db import (Base, Conversation, ConversationPlan, PlanExecutionClaim,
                          PlanToolDispatch, PlanRecoveryAudit, Message, Turn, database)
-from services.m4_offline_recovery import quarantine, RecoveryRefused
+from services.m4_offline_recovery import (quarantine, reconcile_verified_receipts, RecoveryRefused)
 
 
 def fixture(tmp_path):
@@ -75,5 +75,41 @@ def test_orphan_quarantine_requires_exact_snapshot_and_attestation(tmp_path):
             assert len(audit) == 1 and audit[0].snapshot_sha256 == hash_value
         with pytest.raises(RecoveryRefused, match="plan_missing"):
             quarantine(**args)
+    finally:
+        engine.dispose()
+
+
+def test_reconcile_successful_persisted_calculate_receipt_without_tool_dispatch(tmp_path):
+    engine, Session, url, cid, tid, hash_value, evidence, valid = fixture(tmp_path)
+    args = dict(database_url=url, conversation_id=cid, turn_id=tid,
+                snapshot_sha256=hash_value, evidence_file=evidence,
+                operator_id="local-maintainer")
+    valid["decision"] = "reconcile_verified_receipts"
+    evidence.write_text(json.dumps(valid), encoding="utf-8")
+    try:
+        with pytest.raises(RecoveryRefused, match="receipt_unverified"):
+            reconcile_verified_receipts(**args)
+        with Session.begin() as db:
+            entry = db.scalar(select(PlanToolDispatch).where(
+                PlanToolDispatch.conversation_id == cid))
+            entry.status = "observed"
+            entry.receipt_json = json.dumps({"ok": True, "value": "28", "error": ""})
+        result = reconcile_verified_receipts(**args)
+        assert result["status"] == "receipts_reconciled_without_dispatch"
+        assert result["remaining_steps"] is False
+        with Session() as db:
+            snapshot = json.loads(db.get(ConversationPlan, cid).snapshot)
+            assert snapshot["steps"][0]["status"] == "completed"
+            assert snapshot["steps"][0]["evidence_tool"] == "calculate"
+            assert db.get(PlanExecutionClaim, cid) is None
+            assert db.get(Turn, tid).state == "completed"
+            entry = db.scalar(select(PlanToolDispatch).where(
+                PlanToolDispatch.conversation_id == cid))
+            assert entry.status == "checkpointed"
+            aud = db.scalar(select(PlanRecoveryAudit).where(
+                PlanRecoveryAudit.conversation_id == cid))
+            assert aud.decision == "reconcile_verified_receipts"
+        with pytest.raises(RecoveryRefused, match="turn_not_recoverable"):
+            reconcile_verified_receipts(**args)
     finally:
         engine.dispose()
