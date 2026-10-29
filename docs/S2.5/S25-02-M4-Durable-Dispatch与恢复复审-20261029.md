@@ -134,3 +134,15 @@ The first five-cycle user run was NOT a clean randomized speed comparison: legac
 A request-local `ContextVar` counter records attempted provider HTTP sends in the three known adapter paths: `HTTPUnderstandingModel.complete`, `NativeToolDecision.decide` and streaming providers. HTTP response headers `X-HealthAgent-Model-HTTP-Attempts` and `X-HealthAgent-Shadow-HTTP-Attempts` hold aggregate request counts without including prompts, arguments, keys or model outputs. The benchmark now reports `provider_http_attempts` plus `core_provider_http_attempts` (total minus observable Shadow attempts) and `shadow_http_attempts`. Missing headers are preserved as missing (not zero). Provider retries count as additional attempts; logical model invocations, token usage and cost remain NOT INSTRUMENTED. Endpoint settings, shadow enabled/disabled, and machine resource sharing must be kept comparable.
 
 No new Qwen benchmark evidence exists yet for the corrected script; the earlier JSON cannot be reinterpreted as if it had measured these counters or alternated order. CI tests validate software behavior only. M4 remains VERIFYING/HOLD; no merge to main and no switch from legacy default.
+
+
+## 2026-10-29 M4 paired Qwen benchmark v2 (10 AB/BA cycles)
+
+Evidence: user-supplied m4-paired-comparison-v2.json, with 10 alternate cycle orders AB/BA, each mode 10 separate three-request plan lifecycles, both running ollama_proxy qwen3:14b, Shadow HTTP attempts zero. Per-mode provider HTTP counts recorded for all 30 requests.
+
+- Guarded: 10/10 functional passes; 30 HTTP requests, 240 provider HTTP attempts, mean 6364.4 ms, P50 7842.5 ms, P95 8402.8 ms.
+- Legacy: 9/10 functional passes; 30 HTTP requests, 235 provider HTTP attempts, mean 6565.2 ms, P50 7834.5 ms, P95 8389.8 ms.
+- Legacy cycle 0: CREATE 14235 ms / 5 provider attempts; FIRST returned goal_clarification and performed no tool call (7221 ms / 7 attempts); REMAINING executed both tools together (3660 ms / 7 attempts). This violates requested first-step-only execution even though both results eventually complete.
+- Normal cycles in both modes use 7/10/7 = 24 provider HTTP attempts per lifecycle. Hence guarded's five additional attempts in aggregate arise entirely from the failed legacy cycle; no extra provider HTTP attempt cost was observed for correct staged lifecycles.
+- Response median and P95 are essentially equal. Guarded average is 3.1% lower, but the legacy first-cycle 14.2s outlier and sample size preclude claiming statistical performance improvement. Counts are HTTP attempts, NOT tokens, full model cost, or logical model-call IDs.
+- Scope: results demonstrate improved staged plan semantics and no observed latency/call regression on this single calculation scenario. They do NOT establish generalized multi-tool correctness, external side-effect exactly-once, or a production-default switch. Prior crash and PostgreSQL tests remain separate evidence. **M4 VERIFYING / HOLD pending final independent code/permission/merge-readiness review**. Default legacy and main unchanged.
