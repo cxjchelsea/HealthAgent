@@ -66,5 +66,6 @@ def test_preserve_phrasing_without_target_does_not_grant_edit():
 def test_completed_target_cannot_be_revised():
     saved = checkpoint()
     saved["steps"][1]["status"] = "completed"
+    saved["steps"][1]["evidence_tool"] = "calculate"
     message = "第二步由计算 5*6 改为计算 7*8，第一步不变。"
     assert apply_plan_revision(saved, message, proposal()) is None
