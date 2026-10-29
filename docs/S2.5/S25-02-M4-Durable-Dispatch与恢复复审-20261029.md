@@ -90,3 +90,14 @@ Implemented tests/test_s25_02_m4_postgres_subprocess_crash.py, explicitly run in
 - CI run 40803054338 at HEAD 68876d85adfbbe8d19f64072dc482f3f72f66e29: SUCCESS; 686 passed / 3 skipped in aggregate; separate PostgreSQL claim-row-lock, crash/recovery, and migration steps each SUCCESS.
 
 Coverage restriction: process termination is a spawned test helper, **not** two independently running FastAPI workers or a crash with a non-idempotent external write tool. This establishes crash durability + controlled recovery for current calculate path; it does not establish general external exactly-once or production multi-worker behavior. Next independent work: full API multi-worker kill/restart E2E with physical traces, guarded/legacy model invocation and latency comparison, then final M4 closure review.
+
+
+## 2026-10-29 M4 多 API 进程与对照验收增量
+
+新增 `tests/test_s25_02_m4_postgres_api_workers.py`，在隔离的 PostgreSQL CI service 上启动两个不同端口的 FastAPI 进程，制造数据库遗留 running Turn，终止一个测试进程，再在另一个进程和重启实例发起 HTTP 请求。目标是验证 PostgreSQL 部分唯一索引对同会话活跃 Turn 的约束、以及恢复状态接口不自动解除占用。它**尚未**覆盖真实模型执行中精确杀 worker 或外部非幂等工具行为。若 409 检查失败，不允许将 provider_error 503 视作通过。
+
+验收基础设施要求：在 PostgreSQL CI 服务全新启动后，**先执行 Alembic `python -m services.migrate`** 再执行任意 `Base.metadata.create_all` 的测试。因为 SQLAlchemy Base 定义并不包含 0005 迁移建立的 `uq_running_turn_per_conversation` PostgreSQL 部分唯一索引；若测试先建表后直接运行 API，将无法得到生产 schema 的跨 worker 约束。已将迁移前移至 pytest 步骤之前。
+
+新增 `evals/s25_02_m4_paired_performance.py`：仅在显式 `RUN_S25_02_M4_PAIRED_LIVE=1` 时对本机两个不同端口的真实 legacy 和 guarded 服务发等价三阶段计划，记录各请求 HTTP 总时延、P50/P95、方案功能 PASS/FAIL 和可观测的 Shadow 额外诊断调用。**此脚本不能从 HTTP 回包得知主链模型准确调用次数，标记为 NOT_INSTRUMENTED；未实际提供双服务运行证据前，不得声称性能对照完成。** 两端需相同实际模型及超时、独立 DB，建议至少 10 次循环且注意 Qwen 本机并发资源竞争；统计数字仅代表运行环境和请求集。
+
+仅当最新精确 HEAD CI、PostgreSQL 专项均 PASS 时，将数据库级多进程状态验证标为 PASS。M4 继续 VERIFYING/HOLD，默认 legacy，不合并 main。
