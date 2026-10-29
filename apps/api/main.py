@@ -776,12 +776,17 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                         settings.understanding_strong_model, body.content)
                 elif (plan_decision.intent in {"execute_first", "resume"}
                       and existing_checkpoint is None):
-                    missing_reference = await review_missing_plan_reference(
+                    # Unified no-plan primary has already classified a
+                    # missing saved-plan reference. Host absence is definitive;
+                    # never seek a competing legacy semantic classifier.
+                    missing_reference = (True if unified_new_plan_decision is not None
+                        and unified_new_plan_decision.intent == "resume"
+                        else await review_missing_plan_reference(
                         HTTPUnderstandingModel(
                             settings.model_provider, settings.model_base_url,
                             settings.model_api_key, settings.model_timeout_seconds,
                             settings.model_max_output_tokens),
-                        settings.understanding_strong_model, body.content)
+                        settings.understanding_strong_model, body.content))
                 plan_route = resolve_plan_admission(
                     plan_decision, existing_checkpoint=existing_checkpoint,
                     creation_confirmed=creation_confirmed,
