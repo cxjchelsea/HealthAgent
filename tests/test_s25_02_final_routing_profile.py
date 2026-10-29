@@ -1,11 +1,13 @@
 """S25-02 Final Step 3: real-model default, explicit rollback and one primary owner."""
 import json
+import asyncio
 
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from agent.config import Settings
+from agent.m5_unified_route import propose_new_plan_route, SavedPlanRouteRefused
 from agent.plan_intent import PlanRequest
 from agent.understanding import HTTPUnderstandingModel
 from apps.api.main import create_app
@@ -108,3 +110,28 @@ def test_missing_saved_plan_uses_single_primary_no_legacy_reclassification(
         assert body["termination_reason"] == "plan_not_found"
         assert body["steps"] == 0
         assert counts == {"primary": 1, "old_plan": 0, "missing_review": 0}
+
+
+def test_missing_plan_primary_is_host_source_bound_and_nonexecuting():
+    class Provider:
+        async def complete(self, **kwargs):
+            return json.dumps({
+                "route": "plan_missing",
+                "quote": "继续执行之前保存的计划",
+                "steps": [],
+            }, ensure_ascii=False)
+
+    message = "请继续执行之前保存的计划"
+    result = asyncio.run(propose_new_plan_route(Provider(), "model", message))
+    assert result.intent == "resume"
+    assert result.steps == []
+
+    class FabricatedProvider:
+        async def complete(self, **kwargs):
+            return json.dumps({
+                "route": "plan_missing", "quote": "请执行不存在的计划",
+                "steps": [],
+            }, ensure_ascii=False)
+
+    with pytest.raises(SavedPlanRouteRefused):
+        asyncio.run(propose_new_plan_route(FabricatedProvider(), "model", message))
