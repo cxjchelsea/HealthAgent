@@ -42,9 +42,10 @@ from agent.context import build_context
 from services.task_store import ConversationTaskStore
 from services.memory_store import MemoryStore
 from services.plan_store import ConversationPlanStore, PlanSnapshotConflict
+from services.plan_dispatch import PlanDispatchJournal
 from services.goal_store import ConversationGoalStore
 from services.db import Conversation, ConversationPlan, Message, Turn, database
-from services.db import PlanExecutionClaim
+from services.db import PlanExecutionClaim, PlanToolDispatch
 
 log=logging.getLogger("healthagent")
 logging.basicConfig(level=logging.INFO,format='%(levelname)s %(message)s')
@@ -826,10 +827,13 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
             if (result is None and settings.route_admission_mode == "guarded"
                     and plan_control in {"execute_first", "resume"}):
                 with Session() as recovery_db:
+                    unresolved_dispatch = recovery_db.scalar(select(PlanToolDispatch.id).where(
+                        PlanToolDispatch.conversation_id == cid,
+                        PlanToolDispatch.status != "checkpointed"))
                     unknown = recovery_db.scalar(select(Turn.id).where(
                         Turn.conversation_id == cid,
                         Turn.failure_code == "plan_execution_outcome_unknown"))
-                if unknown is not None:
+                if unknown is not None or unresolved_dispatch is not None:
                     result = {"run_id": turn_id, "status": "partial",
                               "termination_reason": "plan_execution_reconciliation_required",
                               "answer": "此前计划执行结果尚未核实。已停止后续工具调用，请先人工核对执行记录与当前计划，再决定是否恢复。",
@@ -843,7 +847,10 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                     mcp_client=StdioMCPClient(), skill_strategy=settings.skill_strategy,
                     skill_budget_chars=settings.skill_budget_chars,
                     execution_guard=(saved_plan_execution_guard
-                        if plan_control in {"execute_first", "resume"} else None)).run(
+                        if plan_control in {"execute_first", "resume"} else None),
+                    dispatch_journal=(PlanDispatchJournal(Session, cid, turn_id)
+                        if settings.route_admission_mode == "guarded"
+                        and plan_control in {"execute_first", "resume"} else None)).run(
                                           body.content, history=context,
                                           plan_checkpoint=existing_checkpoint,
                                           understanding_result=interpretation,
@@ -936,6 +943,8 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                             db, expected_raw=preturn_plan_raw,
                             snapshot=result["plan_checkpoint"],
                             owner_turn_id=turn_id if plan_control in {"execute_first", "resume"} else None)
+                        if settings.route_admission_mode == "guarded" and plan_control in {"execute_first", "resume"}:
+                            PlanDispatchJournal(Session, cid, turn_id).checkpoint_in_session(db)
                     except PlanSnapshotConflict:
                         # Never overwrite a newer durable plan. If a tool was
                         # already dispatched, tell the user to verify its effect
@@ -1083,15 +1092,19 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                 Turn.conversation_id == cid,
                 Turn.failure_code == "plan_execution_outcome_unknown")))
             claim = db.get(PlanExecutionClaim, cid)
+            unresolved = list(db.scalars(select(PlanToolDispatch.id).where(
+                PlanToolDispatch.conversation_id == cid,
+                PlanToolDispatch.status != "checkpointed")))
             plan = db.get(ConversationPlan, cid)
             return {
-                "reconciliation_required": bool(uncertain or active or claim),
+                "reconciliation_required": bool(uncertain or active or claim or unresolved),
+                "uncheckpointed_dispatch_count": len(unresolved),
                 "active_turn_count": len(active),
                 "uncertain_turn_count": len(uncertain),
                 "claim_present": claim is not None,
                 "plan_present": plan is not None,
                 "automatic_replay_permitted": False,
-                "next_action": ("manual_investigation" if uncertain or active or claim
+                "next_action": ("manual_investigation" if uncertain or active or claim or unresolved
                                 else "no_recovery_fence_observed"),
             }
 
