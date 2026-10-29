@@ -72,6 +72,9 @@ def main():
         output["model"] = model.json()
         if output["model"].get("provider") == "fake":
             parser.error("Fake model is prohibited in live acceptance")
+        if (output["model"].get("route_admission_mode") != "guarded"
+                or output["model"].get("m4_contract") != "guarded-plan-route-priority-v2"):
+            parser.error("Server is not running the current guarded M4 code; restart API from branch HEAD")
         ready = client.get("/readyz")
         ready.raise_for_status()
         prereq_ok = {}
