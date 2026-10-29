@@ -127,8 +127,9 @@ def main():
         out["model"] = model.json()
         if out["model"].get("provider") in {None, "fake"}:
             p.error("Real model required")
-        if out["model"].get("route_admission_mode") != "guarded":
-            p.error("API does not advertise guarded routing")
+        if (out["model"].get("route_admission_mode") != "guarded"
+                or out["model"].get("m5_unified_route_enabled") is not True):
+            p.error("API is not running guarded M5 unified code; restart exact branch HEAD")
         client.get("/readyz").raise_for_status()
         failed_groups = set()
         last_ids = {}
