@@ -64,12 +64,32 @@ def verify(database: Path, report: dict) -> dict:
         ).fetchone()[0]
         check("no_active_claim", claims == 0)
         dispatch = con.execute(
-            "SELECT status,step_id,tool_name FROM plan_tool_dispatches WHERE conversation_id=?",
+            "SELECT status,step_id,tool_name,turn_id,arguments_json FROM plan_tool_dispatches WHERE conversation_id=?",
             (cid,)).fetchall()
         check("exactly_one_local_checkpointed_dispatch",
               len(dispatch) == 1 and dispatch[0]["status"] == "checkpointed"
               and dispatch[0]["tool_name"] == "calculate"
               and dispatch[0]["step_id"] == 1)
+        # Independently bind the durable row to the actual FIRST Turn and
+        # to the exact arguments of the first saved step, not just the tool.
+        # Do not trust response trace alone: use persisted step arguments.
+        dispatch_bound = False
+        if len(dispatch) == 1 and len(plan_rows) == 1:
+            try:
+                saved = json.loads(plan_rows[0]["snapshot"])
+                first_step = saved["steps"][0]
+                arguments = json.loads(dispatch[0]["arguments_json"])
+                dispatch_bound = (
+                    dispatch[0]["turn_id"] == rows[1]["response"]["turn_id"]
+                    and dispatch[0]["step_id"] == first_step["id"] == 1
+                    and dispatch[0]["tool_name"] == first_step["expected_tool"] == "calculate"
+                    and isinstance(arguments, dict)
+                    and arguments == first_step["expected_arguments"]
+                    and arguments == {"expression": "3*4"}
+                )
+            except (KeyError, IndexError, ValueError, TypeError):
+                dispatch_bound = False
+        check("dispatch_first_turn_and_arguments_bound", dispatch_bound)
         check("sqlite_quick_check", con.execute("PRAGMA quick_check").fetchone()[0] == "ok")
     finally:
         con.close()
