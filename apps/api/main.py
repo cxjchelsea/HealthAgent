@@ -226,9 +226,11 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                 raise HTTPException(409, "conversation_turn_in_progress") from exc
             raise
         plan_store = ConversationPlanStore(Session, cid)
+        execution_claim_acquired = False
         goal_store = ConversationGoalStore(Session, cid)
 
         def saved_plan_execution_guard():
+            nonlocal execution_claim_acquired
             # Claim the exact Turn-bound snapshot in a DB transaction before
             # dispatch. Every supported plan writer checks this same claim.
             if preturn_plan_raw is None:
@@ -237,6 +239,7 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                 with Session.begin() as guard_db:
                     plan_store.acquire_execution_claim_in_session(
                         guard_db, turn_id=turn_id, expected_raw=preturn_plan_raw)
+                execution_claim_acquired = True
                 return True
             except (PlanSnapshotConflict, IntegrityError):
                 return False
@@ -819,6 +822,19 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                           "answer": "已识别到只保存、不执行的计划约束，但当前无法可靠保存步骤；请确认计划内容。",
                           "trace": [{"step": 0, "type": "plan_execution_fenced"}],
                           "steps": 0}
+            if (result is None and settings.route_admission_mode == "guarded"
+                    and plan_control in {"execute_first", "resume"}):
+                with Session() as recovery_db:
+                    unknown = recovery_db.scalar(select(Turn.id).where(
+                        Turn.conversation_id == cid,
+                        Turn.failure_code == "plan_execution_outcome_unknown"))
+                if unknown is not None:
+                    result = {"run_id": turn_id, "status": "partial",
+                              "termination_reason": "plan_execution_reconciliation_required",
+                              "answer": "此前计划执行结果尚未核实。已停止后续工具调用，请先人工核对执行记录与当前计划，再决定是否恢复。",
+                              "trace": [{"step": 0, "type": "plan_execution_fenced"}],
+                              "steps": 0, "plan": existing_checkpoint["steps"],
+                              "plan_revision": existing_checkpoint["revision"]}
             if result is None:
                 decider = agent_decider if agent_decider is not None else NativeToolDecision(settings)
                 result = await AgentLoop(decider, task_store=ConversationTaskStore(Session, cid),
@@ -885,7 +901,9 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
         except Exception as exc:
             log.warning("conversation Agent failed turn=%s class=%s", turn_id, type(exc).__name__)
             status, answer = "provider_error", ""
-            failure_code = "agent_exception"
+            failure_code = ("plan_execution_outcome_unknown"
+                            if settings.route_admission_mode == "guarded"
+                            and execution_claim_acquired else "agent_exception")
         # Atomic local DB commit: never expose a successful message separately
         # from its corresponding plan checkpoint and turn terminal state.
         # External tool effects remain outside this transaction.
