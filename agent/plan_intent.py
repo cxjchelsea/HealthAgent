@@ -1,3 +1,4 @@
+from agent.m5_model_call_metrics import attributed
 """Model-classified plan-only request; host validates plan bindings before persistence.
 
 Planning never invokes business tools or creates authorization for later execution.
@@ -19,6 +20,7 @@ class PlanRequest(BaseModel):
     steps: list[dict] = Field(default_factory=list, max_length=8)
 
 
+@attributed("plan_intent")
 async def review_plan_intent(provider: HTTPUnderstandingModel, model: str,
                              message: str, existing_plan: bool) -> PlanRequest:
     prompt = (
