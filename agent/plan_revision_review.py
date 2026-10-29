@@ -64,11 +64,23 @@ def apply_plan_revision(checkpoint: dict, message: str,
             or n < 1 or n > len(steps)):
         return None
     # Step numbering is checked against explicit user wording, not model claims.
-    mentions = re.findall(r"第([一二三四五六七八1-8])步", message)
     ordinals = {"一": 1, "二": 2, "三": 3, "四": 4,
                 "五": 5, "六": 6, "七": 7, "八": 8}
-    if mentions and any(ordinals.get(x, int(x) if x.isdigit() else -1) != n
-                        for x in mentions):
+    mentions = list(re.finditer(r"第([一二三四五六七八1-8])步", message))
+    # An explicit unchanged-step clause is a preserve constraint, not an
+    # alternative revision target. Fail closed for any additional step mention
+    # that is not *immediately* marked unchanged; never reinterpret its intent.
+    target_mentioned = False
+    for mention in mentions:
+        token = mention.group(1)
+        mentioned_n = ordinals[token] if token in ordinals else int(token)
+        if mentioned_n == n:
+            target_mentioned = True
+            continue
+        after = message[mention.end():]
+        if not re.match(r"\\s*(?:(?:保持|维持)\\s*)?(?:不变|原样|无需修改|不修改)(?=$|[，。；,;！!\\s])", after):
+            return None
+    if mentions and not target_mentioned:
         return None
     target = steps[n - 1]
     if (target["status"] != "pending"
