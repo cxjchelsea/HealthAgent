@@ -1,3 +1,4 @@
+from agent.m5_model_call_metrics import attributed
 """Guarded plan revision proposal: validate exact target and prior binding; never execute."""
 import json
 import re
@@ -18,6 +19,7 @@ class RevisionProposal(BaseModel):
     new_argument: str | None = None
 
 
+@attributed("plan_revision")
 async def review_plan_revision(provider: HTTPUnderstandingModel, model: str,
                                message: str, checkpoint: dict) -> RevisionProposal:
     steps = PlanLedger.restore(checkpoint).snapshot()
