@@ -1065,7 +1065,9 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
     @app.get("/model")
     def model_info(uid=Depends(user_id)):
         return {"provider":settings.model_provider,"model": "fake" if settings.model_provider=="fake" else settings.model_name,
-                "configured":settings.provider_ready}
+                "configured":settings.provider_ready,
+                "route_admission_mode": settings.route_admission_mode,
+                "m4_contract": "guarded-plan-route-priority-v2"}
 
     @app.post("/conversations",status_code=201)
     def new_conversation(uid=Depends(user_id)):
