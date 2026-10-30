@@ -440,3 +440,41 @@ def test_same_conversation_api_turns_survive_application_recreation(tmp_path):
         assert next_turn.json()["status"] == "completed"
         history = second.get(f"/conversations/{cid}").json()["messages"]
         assert any(m["content"] == "Explain the next idea" for m in history)
+
+
+def test_topk_execute_allows_task_write_with_host_mode():
+    store = InMemoryTasks()
+    decider = ToolAttempt("create_task", {"title": "S25-04 authorized"})
+    result = asyncio.run(AgentLoop(
+        decider, task_store=store, skill_strategy="semantic_topk"
+    ).run("Create task S25-04 authorized", execution_mode="execute"))
+    assert store.items == ["S25-04 authorized"]
+    assert any(e.get("type") == "tool" and e.get("name") == "create_task"
+               and e.get("ok") is True for e in result["trace"])
+    assert not any(e.get("type") == "topk_selection" for e in result["trace"])
+
+
+def test_topk_execute_memory_requires_explicit_consent():
+    class MemorySpy:
+        def __init__(self):
+            self.written = []
+        def put(self, key, value):
+            self.written.append((key, value))
+            return {"ok": True}
+
+    memory = MemorySpy()
+    def invoke(consent):
+        return asyncio.run(AgentLoop(
+            ToolAttempt("save_memory", {"key": "code", "value": "S25-04"}),
+            memory_store=memory, skill_strategy="semantic_topk"
+        ).run("Remember code S25-04", execution_mode="execute",
+              memory_write_consent=consent))
+
+    denied = invoke(False)
+    assert memory.written == []
+    assert not any(e.get("type") == "tool" and e.get("name") == "save_memory"
+                   and e.get("ok") is True for e in denied["trace"])
+    allowed = invoke(True)
+    assert memory.written == [("code", "S25-04")]
+    assert any(e.get("type") == "tool" and e.get("name") == "save_memory"
+               and e.get("ok") is True for e in allowed["trace"])
