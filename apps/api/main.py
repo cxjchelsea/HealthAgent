@@ -50,6 +50,9 @@ from services.plan_dispatch import PlanDispatchJournal, UNRESOLVED_DISPATCH_STAT
 from services.goal_store import ConversationGoalStore
 from services.db import Conversation, ConversationPlan, Message, Turn, database
 from services.db import PlanExecutionClaim, PlanToolDispatch
+from services.db import AgentAttempt, ConversationPlan
+from services.task_state import AgentTaskStateStore
+from services.s25_03_projection import project_finalized_turn
 
 log=logging.getLogger("healthagent")
 logging.basicConfig(level=logging.INFO,format='%(levelname)s %(message)s')
@@ -1153,6 +1156,19 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                     goal_store.resolve_confirmation_in_session(
                         db, previous_goal, body.expected_goal_version,
                         body.goal_confirmation == "accept")
+                # S25-03 projection ONLY: the actual saved checkpoint and
+                # M4 checkpointed dispatch receipts are the trusted source.
+                # Never re-invoke a tool, infer an effect from a model trace,
+                # or change M4 Host authorization.
+                stored_plan = db.get(ConversationPlan, cid)
+                persisted_checkpoint = (json.loads(stored_plan.snapshot)
+                                        if stored_plan is not None else None)
+                project_finalized_turn(
+                    db, conversation_id=cid, turn_id=turn_id,
+                    result=result, status=status,
+                    checkpoint=persisted_checkpoint,
+                    unknown_execution=(failure_code ==
+                                       "plan_execution_outcome_unknown"))
                 # Release any saved-plan claim in the same transaction that
                 # persists the terminal Turn state, including partial/error paths.
                 plan_store.release_execution_claim_in_session(db, turn_id=turn_id)
@@ -1249,6 +1265,40 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                 response_data["route_shadow"]["m3_checkpoint_snapshot"] = (
                     compare_checkpoint_snapshot(preturn_capture, existing_checkpoint))
         return response_data
+
+    @app.get("/conversations/{cid}/agent/task-state")
+    def s25_task_state(cid: str, uid=Depends(user_id)):
+        with Session() as db:
+            get_owned(db, cid, uid)
+        record = AgentTaskStateStore(cid).load(Session)
+        return record or {"task_id": None, "revision": 0, "plan_revision": 0,
+                          "state": "not_started", "steps": []}
+
+    @app.get("/conversations/{cid}/agent/task-history")
+    def s25_task_history(cid: str, uid=Depends(user_id)):
+        with Session() as db:
+            get_owned(db, cid, uid)
+        return {"conversation_id": cid,
+                "transitions": AgentTaskStateStore(cid).history(Session)}
+
+    @app.get("/conversations/{cid}/turns/{turn_id}/evidence")
+    def s25_turn_evidence(cid: str, turn_id: str, uid=Depends(user_id)):
+        """Owner-only, read-only bounded M4 receipt projections."""
+        with Session() as db:
+            get_owned(db, cid, uid)
+            turn = db.get(Turn, turn_id)
+            if turn is None or turn.conversation_id != cid:
+                raise HTTPException(404, "Turn not found")
+            attempts = db.scalars(select(AgentAttempt).where(
+                AgentAttempt.conversation_id == cid,
+                AgentAttempt.turn_id == turn_id).order_by(
+                AgentAttempt.created_at, AgentAttempt.id).limit(50)).all()
+            return {"turn_id": turn_id, "attempts": [
+                {"attempt_id": a.id, "run_id": a.run_id, "step_id": a.step_id,
+                 "tool": a.tool_name, "status": a.status,
+                 "error_code": a.error_code,
+                 "result": json.loads(a.result_projection or "{}")}
+                for a in attempts]}
 
     @app.get("/conversations/{cid}/turns/{turn_id}/diagnostics")
     def turn_diagnostics(cid: str, turn_id: str, uid=Depends(user_id)):
