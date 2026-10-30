@@ -695,7 +695,7 @@ class AgentLoop:
             "Use tools only where their verified observations are necessary."
             if understanding_result is not None else "")
         initial: AgentState = {"run_id": run_id, "messages": [
-            {"role": "system", "content": PROMPT + "\nSelected skill instructions (" + SKILL_VERSION + "):\n" + (exposure_instructions(selection, max_chars=self.skill_budget_chars) if self.skill_strategy in ("semantic", "semantic_guided") else load_instructions(goal, strategy=self.skill_strategy, max_chars=self.skill_budget_chars)) + (("\n" + SEMANTIC_GUIDANCE) if self.skill_strategy == "semantic_guided" else "") + resume_context + structured_policy},
+            {"role": "system", "content": PROMPT + "\nSelected skill instructions (" + SKILL_VERSION + "):\n" + (exposure_instructions(selection, max_chars=self.skill_budget_chars) if self.skill_strategy in ("semantic", "semantic_guided", "semantic_topk") else load_instructions(goal, strategy=self.skill_strategy, max_chars=self.skill_budget_chars)) + (("\n" + SEMANTIC_GUIDANCE) if self.skill_strategy == "semantic_guided" else "") + resume_context + structured_policy},
             *clean_history, *goal_view, {"role": "user", "content": goal}],
             "traces": [], "tasks": [], "final": "", "status": "running",
             "termination_reason": None, "pending_action": None,
