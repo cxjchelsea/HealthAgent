@@ -9,7 +9,7 @@ import json
 from sqlalchemy import select
 
 from services.db import AgentAttempt, AgentTaskState, PlanToolDispatch
-from services.evidence_store import arguments_digest
+from services.evidence_store import arguments_digest, bounded_projection
 from services.task_state import AgentTaskStateStore
 
 
@@ -56,8 +56,12 @@ def project_finalized_turn(db, *, conversation_id: str, turn_id: str,
             id=dispatch.id, conversation_id=conversation_id, turn_id=turn_id,
             run_id=run_id, step_id=dispatch.step_id, tool_name=dispatch.tool_name,
             arguments_digest=arguments_digest(args), status="succeeded",
-            # Only M4's bounded verified receipt; no raw tool text.
-            result_projection=json.dumps(receipt, ensure_ascii=False),
+            # Never expose the M4 raw receipt in the S25-03 evidence API.
+            # Project from the actual persisted receipt using the same
+            # per-tool field allowlist and size bounds as ordinary tools.
+            result_projection=json.dumps(
+                bounded_projection(dispatch.tool_name, receipt),
+                ensure_ascii=False),
         ))
         refs.append({"attempt_id": dispatch.id, "run_id": run_id,
                      "turn_id": turn_id, "step_id": dispatch.step_id})
