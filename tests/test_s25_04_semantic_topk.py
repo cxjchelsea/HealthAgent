@@ -403,3 +403,40 @@ def test_same_conversation_recovery_uses_new_successful_evidence():
     assert any(e.get("type") == "tool" and e.get("name") == "mcp_reference_lookup"
                and e.get("ok") is True for e in second["trace"])
     assert store.list()["tasks"][0]["title"] == "S25-04 known task"
+
+
+def test_same_conversation_api_turns_survive_application_recreation(tmp_path):
+    """HTTP-level multi-turn continuity with the same persisted conversation ID."""
+    from fastapi.testclient import TestClient
+    from agent.config import Settings
+    from apps.api.main import create_app
+
+    class PlainDecider:
+        async def decide(self, messages, tools):
+            return Decision("Acknowledged.", [])
+
+    settings = Settings(model_provider="fake",
+                        database_url="sqlite:///" + str(tmp_path / "s25-04-turns.sqlite"),
+                        skill_strategy="semantic_topk")
+    with TestClient(create_app(settings, agent_decider=PlainDecider())) as first:
+        created = first.post("/conversations")
+        assert created.status_code == 201
+        cid = created.json()["id"]
+        first_turn = first.post(f"/conversations/{cid}/agent/messages",
+                                json={"content": "Explain the first idea",
+                                      "client_request_id": "s25-04-first-turn"})
+        assert first_turn.status_code == 200
+        assert first_turn.json()["status"] == "completed"
+
+    with TestClient(create_app(settings, agent_decider=PlainDecider())) as second:
+        previous = second.get(f"/conversations/{cid}")
+        assert previous.status_code == 200
+        assert any(m["content"] == "Explain the first idea"
+                   for m in previous.json()["messages"])
+        next_turn = second.post(f"/conversations/{cid}/agent/messages",
+                                json={"content": "Explain the next idea",
+                                      "client_request_id": "s25-04-second-turn"})
+        assert next_turn.status_code == 200
+        assert next_turn.json()["status"] == "completed"
+        history = second.get(f"/conversations/{cid}").json()["messages"]
+        assert any(m["content"] == "Explain the next idea" for m in history)
