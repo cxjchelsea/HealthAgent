@@ -352,7 +352,7 @@ class AgentLoop:
                     unresolved_failures.append(action_key)
                     if name == "calculate":
                         calculation_errors[action_key] = str(result.get("error", ""))
-            if (self.skill_strategy == "semantic"
+            if (self.skill_strategy in ("semantic", "semantic_guided")
                     and name in {"mcp_reference_lookup", "save_memory", "recall_memory"}
                     and result.get("error") in {"mcp_unavailable", "memory_unavailable"}
                     and name not in state["unavailable_tools"]):
@@ -621,7 +621,7 @@ class AgentLoop:
         # Model-derived understanding must not be routed through a second keyword classifier.
         # Tool execution still requires the independent tool authorization and validation.
         tool_strategy = "all" if understanding_result is not None else self.skill_strategy
-        if self.skill_strategy == "semantic":
+        if self.skill_strategy in ("semantic", "semantic_guided"):
             selection = select_tool_exposure(goal, TOOL_SCHEMAS, strategy=self.skill_strategy)
             selected_tools = exposure_schemas(selection, TOOL_SCHEMAS)
         else:
