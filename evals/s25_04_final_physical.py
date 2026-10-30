@@ -26,7 +26,14 @@ def main():
     folder.mkdir(parents=True, exist_ok=True)
     database = folder / ("final-physical-" + uuid.uuid4().hex + ".sqlite")
     url = "sqlite:///" + str(database.resolve()).replace("\\", "/")
+    # Isolate S25-04 tool policy from the separate M5 unified saved-plan gate.
+    # A rejected M5 plan is not evidence that the Top-K AgentLoop executed.
     settings = Settings(**{**base.model_dump(), "skill_strategy": "semantic_topk",
+                           "routing_profile": "legacy",
+                           "route_admission_mode": "legacy",
+                           "understanding_strategy": "direct",
+                           "m5_unified_route_enabled": False,
+                           "m5_first_route_enabled": False,
                            "database_url": url, "skill_budget_chars": 2000})
     engine = create_engine(url)
     records = []
@@ -147,10 +154,12 @@ def main():
 
     report = {"suite": "s25-04-final-physical-v1", "mode": "REAL_PROVIDER",
               "model": settings.model_name, "provider": settings.model_provider,
+              "routing_profile": settings.effective_routing_profile,
               "passed": sum(r["passed"] for r in records), "total": len(records),
               "cases": records,
               "limitations": ["Model-dependent behavior: failures require review, not forced success.",
                               "MCP outage is a controlled transport fault; provider remains real.",
+                              "Legacy routing isolates Top-K; separate M5 unified authorization is not evaluated.",
                               "Report omits prompts, final answer text and memory values.",
                               "Isolated SQLite; does not simulate a force-killed process."]}
     target = folder / "final-physical-v1.json"
