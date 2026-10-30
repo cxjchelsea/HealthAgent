@@ -91,6 +91,7 @@ class AgentLoop:
                     if step.get("status") == "pending" and step.get("expected_tool")
                 ),
                 unavailable_tools=tuple(state["unavailable_tools"]),
+                authorized_write_tools=tuple(state.get("authorized_write_tools", ())),
             )
             eligible = set(selection.tool_names) & set(state["exposure_limit"])
             # request_clarification is a host control tool, not a registered Skill.
@@ -427,7 +428,7 @@ class AgentLoop:
                   understanding_result: dict | None = None,
                   execution_mode: str | None = None,
                   plan_control: str | None = None,
-                  execution_guard=None) -> dict:
+                  execution_guard=None, memory_write_consent: bool = False) -> dict:
         if not goal.strip() or len(goal) > 12000:
             raise ValueError("Goal must contain 1..12000 characters")
         run_id = str(uuid.uuid4())
@@ -625,8 +626,12 @@ class AgentLoop:
         # Model-derived understanding must not be routed through a second keyword classifier.
         # Tool execution still requires the independent tool authorization and validation.
         tool_strategy = "all" if understanding_result is not None else self.skill_strategy
+        authorized_writes = (("create_task", "save_memory") if memory_write_consent
+                             else ("create_task",)) if (self.skill_strategy == "semantic_topk"
+                              and execution_mode == "execute") else ()
         if self.skill_strategy in ("semantic", "semantic_guided", "semantic_topk"):
-            selection = select_tool_exposure(goal, TOOL_SCHEMAS, strategy="semantic" if self.skill_strategy == "semantic_topk" else self.skill_strategy)
+            selection = select_tool_exposure(goal, TOOL_SCHEMAS, strategy="semantic" if self.skill_strategy == "semantic_topk" else self.skill_strategy,
+                                             authorized_write_tools=authorized_writes)
             selected_tools = exposure_schemas(selection, TOOL_SCHEMAS)
         else:
             selected_tools = exposed_tools(goal, TOOL_SCHEMAS, strategy=tool_strategy)
@@ -718,6 +723,7 @@ class AgentLoop:
             "audit_enabled": include_evidence, "audit": [],
             "allowed_tools": selected_tools,
             "exposure_limit": [t["function"]["name"] for t in selected_tools],
+            "authorized_write_tools": authorized_writes,
             "unavailable_tools": [],
             "plan": resumed, "last_success": None,
             "superseded_step_ids": superseded_step_ids,
