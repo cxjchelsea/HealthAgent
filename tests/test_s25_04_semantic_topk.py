@@ -103,3 +103,17 @@ def test_topk_fallback_reports_reason_and_never_loses_read_candidates():
     assert trace["reason"] == "fallback_provider_error"
     assert "calculate" in trace["exposed_tools"]
     assert "create_task" not in trace["exposed_tools"]
+
+
+def test_final_read_only_fence_and_uncertain_fallback():
+    probe = Probe()
+    result = asyncio.run(AgentLoop(
+        probe, skill_strategy="semantic_topk",
+        candidate_selector=Provider({"tools": [], "uncertain": True}),
+        selector_model="test").run("Review the current tasks", execution_mode="read_only"))
+    assert "list_tasks" in probe.seen[0]
+    assert "create_task" not in probe.seen[0]
+    assert "save_memory" not in probe.seen[0]
+    assert any(e.get("type") == "topk_selection" and
+               e.get("reason") == "fallback_invalid_or_uncertain"
+               for e in result["trace"])
