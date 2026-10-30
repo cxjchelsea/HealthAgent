@@ -219,3 +219,18 @@ def test_sqlite_task_survives_store_and_engine_recreation(tmp_path):
     assert [(x["task_id"], x["title"]) for x in stored["tasks"]] == [
         (result["task_id"], "S25-04 persisted task")]
     engine2.dispose()
+
+
+def test_topk_mcp_unavailable_records_failure_without_success_evidence():
+    decider = ToolAttempt("mcp_reference_lookup", {"term": "MCP"})
+    result = asyncio.run(AgentLoop(
+        decider, skill_strategy="semantic_topk",
+        candidate_selector=Provider(
+            {"tools": ["mcp_reference_lookup"], "uncertain": False}),
+        selector_model="test", mcp_client=None
+    ).run("Check MCP in reference catalog", execution_mode="read_only"))
+    errors = [event for event in result["trace"] if
+              event.get("type") == "tool"
+              and event.get("name") == "mcp_reference_lookup"]
+    assert errors and all(event.get("ok") is False for event in errors)
+    assert result["status"] != "completed"
