@@ -1,8 +1,9 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import Field, model_validator
+from pydantic import Field, PrivateAttr, model_validator
 from typing import Literal
 
 class Settings(BaseSettings):
+    _routing_resolution_source: str = PrivateAttr(default="unresolved")
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
     database_url: str = "sqlite:///./healthagent.db"
     model_provider: str = "fake"
@@ -40,8 +41,12 @@ class Settings(BaseSettings):
         target = self.routing_profile
         if target == "auto":
             if not explicit_flags and self.model_provider != "fake":
+                self._routing_resolution_source = "auto_real_provider_default"
                 target = "unified"
             else:
+                self._routing_resolution_source = (
+                    "auto_explicit_routing_overrides" if explicit_flags
+                    else "auto_fake_fixture")
                 # Explicit legacy/M4 compatibility is supported, but a
                 # half-enabled M5 or FIRST-only gate must never silently
                 # degrade to legacy/direct or bypass guarded admission.
@@ -55,6 +60,8 @@ class Settings(BaseSettings):
                         or self.understanding_strategy != "structured"):
                     raise ValueError("inconsistent_first_route_flags")
                 return self
+        if self.routing_profile != "auto":
+            self._routing_resolution_source = "explicit_" + self.routing_profile
         values = {
             "unified": ("guarded", "structured", True, False),
             "legacy": ("legacy", "direct", False, False),
@@ -71,16 +78,8 @@ class Settings(BaseSettings):
 
     @property
     def routing_profile_source(self) -> str:
-        """Describe how the effective routing path was selected, sans secrets."""
-        explicit = {"route_admission_mode", "understanding_strategy",
-                    "m5_unified_route_enabled", "m5_first_route_enabled"}
-        if self.routing_profile == "auto":
-            if explicit & self.model_fields_set:
-                return "auto_explicit_routing_overrides"
-            if self.model_provider == "fake":
-                return "auto_fake_fixture"
-            return "auto_real_provider_default"
-        return "explicit_" + self.routing_profile
+        """Routing provenance is captured before the model fields are mutated."""
+        return self._routing_resolution_source
 
     @property
     def effective_routing_profile(self) -> str:
