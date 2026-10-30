@@ -190,3 +190,32 @@ def test_unapproved_read_only_write_leaves_task_store_unchanged():
     assert store.items == []
     assert not any(e.get("name") == "create_task" and e.get("ok") is True
                    for e in result["trace"] if e.get("type") == "tool")
+
+
+def test_sqlite_task_survives_store_and_engine_recreation(tmp_path):
+    """True file-backed persistence, independent of model tool exposure."""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from services.db import Base, Conversation, ConversationTask
+    from services.task_store import ConversationTaskStore
+
+    filename = tmp_path / "s25-04-durable-task.sqlite"
+    url = "sqlite:///" + str(filename)
+    engine1 = create_engine(url)
+    Base.metadata.create_all(engine1)
+    Session1 = sessionmaker(bind=engine1)
+    with Session1.begin() as db:
+        db.add(Conversation(id="s25-04-test-conv", owner_id="test-owner"))
+    first = ConversationTaskStore(Session1, "s25-04-test-conv")
+    result = first.create("S25-04 persisted task")
+    assert result["ok"] is True
+    engine1.dispose()
+
+    engine2 = create_engine(url)
+    Session2 = sessionmaker(bind=engine2)
+    second = ConversationTaskStore(Session2, "s25-04-test-conv")
+    stored = second.list()
+    assert stored["ok"] is True
+    assert [(x["task_id"], x["title"]) for x in stored["tasks"]] == [
+        (result["task_id"], "S25-04 persisted task")]
+    engine2.dispose()
