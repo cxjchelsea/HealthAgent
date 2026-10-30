@@ -143,6 +143,7 @@ def main():
         if args.require_default_profile and (
                 out["model"].get("routing_profile") != "unified"
                 or out["model"].get("routing_profile_requested") != "auto"
+                or out["model"].get("routing_profile_source") != "auto_real_provider_default"
                 or out["model"].get("understanding_strategy") != "structured"):
             p.error("API does not advertise real-provider AUTO -> UNIFIED profile")
         out["acceptance_mode"] = ("default_auto_unified" if args.require_default_profile
