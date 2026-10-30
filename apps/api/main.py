@@ -1308,6 +1308,7 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                 "understanding_strategy": settings.understanding_strategy,
                 "routing_profile": settings.effective_routing_profile,
                 "routing_profile_requested": settings.routing_profile,
+                "routing_profile_source": settings.routing_profile_source,
                 "m5_unified_route_enabled": settings.m5_unified_route_enabled,
                 "m4_contract": "guarded-plan-route-priority-v2"}
 
