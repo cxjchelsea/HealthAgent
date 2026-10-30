@@ -70,6 +70,19 @@ class Settings(BaseSettings):
         return self
 
     @property
+    def routing_profile_source(self) -> str:
+        """Describe how the effective routing path was selected, sans secrets."""
+        explicit = {"route_admission_mode", "understanding_strategy",
+                    "m5_unified_route_enabled", "m5_first_route_enabled"}
+        if self.routing_profile == "auto":
+            if explicit & self.model_fields_set:
+                return "auto_explicit_routing_overrides"
+            if self.model_provider == "fake":
+                return "auto_fake_fixture"
+            return "auto_real_provider_default"
+        return "explicit_" + self.routing_profile
+
+    @property
     def effective_routing_profile(self) -> str:
         if (self.route_admission_mode == "guarded"
                 and self.understanding_strategy == "structured"
