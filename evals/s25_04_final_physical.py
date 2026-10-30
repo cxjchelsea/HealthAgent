@@ -40,7 +40,11 @@ def main():
                                   "memory_write_consent": consent})
         obj = reply.json()
         trace = obj.get("trace") or []
+        detail = obj.get("detail") if isinstance(obj.get("detail"), dict) else {}
         return {"status": reply.status_code, "agent_status": obj.get("status"),
+                "execution_mode": obj.get("execution_mode"),
+                "trace_types": [e.get("type") for e in trace],
+                "reason_code": detail.get("code"),
                 "termination_reason": obj.get("termination_reason"),
                 "tools": [{"name": e.get("name"), "ok": e.get("ok"),
                            "error_code": e.get("error_code")}
