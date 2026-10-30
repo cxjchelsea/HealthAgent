@@ -72,3 +72,34 @@ def test_topk_never_admits_untrusted_write():
         selector_model="test").run("Create a task", execution_mode="read_only"))
     assert "create_task" not in probe.seen[0]
     assert "save_memory" not in probe.seen[0]
+
+
+def test_topk_observability_exposes_only_names_and_bounded_metrics():
+    probe = Probe()
+    result = asyncio.run(AgentLoop(
+        probe, skill_strategy="semantic_topk",
+        candidate_selector=Provider({"tools": ["calculate"], "uncertain": False}),
+        selector_model="test").run("Verify seven of ten", execution_mode="read_only"))
+    selected = [event for event in result["trace"] if event["type"] == "topk_selection"]
+    assert len(selected) == 1
+    trace = selected[0]
+    assert trace["reason"] == "selected"
+    assert trace["selected_read_tools"] == ["calculate"]
+    assert trace["candidate_count"] >= 1
+    assert trace["selector_duration_ms"] >= 0
+    assert trace["selector_model_calls"] == 1
+    assert trace["exposed_tools"] == ["request_clarification", "calculate"]
+    assert "Verify seven of ten" not in str(trace)
+
+
+def test_topk_fallback_reports_reason_and_never_loses_read_candidates():
+    probe = Probe()
+    result = asyncio.run(AgentLoop(
+        probe, skill_strategy="semantic_topk",
+        candidate_selector=Provider(fail=True), selector_model="test").run(
+            "Need a checked result", execution_mode="read_only"))
+    trace = next(event for event in result["trace"]
+                 if event["type"] == "topk_selection")
+    assert trace["reason"] == "fallback_provider_error"
+    assert "calculate" in trace["exposed_tools"]
+    assert "create_task" not in trace["exposed_tools"]
