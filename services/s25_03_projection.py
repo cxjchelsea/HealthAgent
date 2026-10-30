@@ -61,11 +61,16 @@ def project_finalized_turn(db, *, conversation_id: str, turn_id: str,
         ))
         refs.append({"attempt_id": dispatch.id, "run_id": run_id,
                      "turn_id": turn_id, "step_id": dispatch.step_id})
+    if any(d.status in {"dispatch_unknown", "observed", "observed_failure"}
+           for d in dispatches):
+        unknown_execution = True
     db.flush()
     old = db.get(AgentTaskState, conversation_id)
     if checkpoint is None and old is None:
         return
-    effective_status = "blocked" if unknown_execution else status
+    effective_status = ("blocked" if unknown_execution else
+                        "interrupted" if status not in {"completed", "partial"}
+                        else status)
     AgentTaskStateStore(conversation_id).save_in_session(
         db, checkpoint, effective_status,
         old.revision if old is not None else None,
