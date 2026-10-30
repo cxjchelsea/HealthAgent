@@ -512,7 +512,20 @@ async def evaluate_shadow(provider: HTTPUnderstandingModel, model_name: str,
                 raise
             original_route = candidate.get("primary_route")
             original_target = candidate.get("route_target")
-            if not isinstance(original_route, str) or not isinstance(original_target, str):
+            # Only the two observed, non-authoritative diagnostic schema
+            # mismatches are eligible. Other illegal combinations retain the
+            # original one-shot fail-closed behavior.
+            eligible = (
+                original_route == "plan_revise"
+                and original_target == "saved_plan"
+                and candidate.get("execution_scope") != "none"
+                and candidate.get("effect_intent") == "mutation_requested"
+            ) or (
+                original_route == "clarify"
+                and candidate.get("execution_scope") == "none"
+                and candidate.get("effect_intent") != "none"
+            )
+            if not eligible:
                 raise
             retry_raw = await asyncio.wait_for(provider.complete(
                 model=model_name, response_schema=ShadowRoute.model_json_schema(),
