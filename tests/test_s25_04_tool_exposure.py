@@ -123,7 +123,8 @@ def test_unavailable_mcp_causes_next_decision_exposure_change():
     probe = Probe()
     loop = AgentLoop(probe, skill_strategy="semantic", mcp_client=None)
     output = asyncio.run(loop.run("Please find a reference for an engineering term"))
-    assert output["status"] == "completed"
+    # S25-02 tracks unresolved tool failure as partial, not falsely completed.
+    assert output["status"] == "partial"
     assert "mcp_reference_lookup" in probe.visible[0]
     assert "mcp_reference_lookup" not in probe.visible[1]
     assert len([x for x in output["trace"] if x["type"] == "tool_exposure"]) == 2
