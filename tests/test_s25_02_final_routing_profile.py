@@ -158,3 +158,18 @@ def test_profile_source_legacy_and_fake_fixture_are_distinct():
                         routing_profile="legacy")
     assert fake.routing_profile_source == "auto_fake_fixture"
     assert explicit.routing_profile_source == "explicit_legacy"
+
+
+def test_model_info_reports_optional_shadow_diagnostic_switch(tmp_path):
+    # A negative Shadow live result must not be misreported as a fixed
+    # diagnostic when the real API was launched with Shadow disabled.
+    for enabled in (False, True):
+        settings = Settings(
+            _env_file=None,
+            database_url=f"sqlite:///{tmp_path / ('shadow-on.db' if enabled else 'shadow-off.db')}",
+            model_provider="fake", routing_profile="unified",
+            route_shadow_enabled=enabled)
+        with TestClient(create_app(settings)) as client:
+            response = client.get("/model")
+            assert response.status_code == 200
+            assert response.json()["route_shadow_enabled"] is enabled
