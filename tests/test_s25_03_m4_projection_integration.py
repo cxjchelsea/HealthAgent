@@ -109,3 +109,30 @@ def test_no_tool_trace_cannot_create_execution_evidence(tmp_path):
     assert any(t["reason_code"] == "legacy_completion_unlinked"
                and t["attempt_id"] is None for t in transitions)
     engine.dispose()
+
+
+def test_m4_receipt_projection_drops_unallowlisted_fields(tmp_path):
+    engine, Session = setup(tmp_path)
+    with Session.begin() as db:
+        entry = PlanToolDispatch(
+            id="d-sensitive", conversation_id="c1", turn_id="t1",
+            step_id=1, tool_name="calculate",
+            arguments_json=json.dumps({"expression": "8*8"}),
+            status="checkpointed",
+            receipt_json=json.dumps({
+                "ok": True, "value": "64",
+                "raw_response": "PRIVATE-DO-NOT-PERSIST",
+                "access_token": "SECRET-DO-NOT-PERSIST",
+            }))
+        db.add(entry)
+        db.flush()
+        project_finalized_turn(
+            db, conversation_id="c1", turn_id="t1",
+            result={"run_id": "r1"}, status="completed",
+            checkpoint=checkpoint())
+    with Session() as db:
+        attempt = db.get(AgentAttempt, "d-sensitive")
+        assert json.loads(attempt.result_projection) == {"ok": True, "value": "64"}
+        assert "PRIVATE-DO-NOT-PERSIST" not in attempt.result_projection
+        assert "SECRET-DO-NOT-PERSIST" not in attempt.result_projection
+    engine.dispose()
