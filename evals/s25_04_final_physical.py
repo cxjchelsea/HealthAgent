@@ -67,25 +67,33 @@ def main():
             check("authorized_task_write", task_saved and any(
                 t["name"] == "create_task" and t["ok"] for t in write["tools"]),
                 {"http_status": write["status"], "agent_status": write["agent_status"],
-                 "tool_events": write["tools"], "persisted": task_saved})
+                 "tool_events": write["tools"], "persisted": task_saved,
+                 "execution_mode": write["execution_mode"], "trace_types": write["trace_types"],
+                 "termination_reason": write["termination_reason"]})
             read = send(client, cid, "请查询这个会话的待办并告诉我任务标题。")
             check("same_conversation_read", task_title in read["answer"] and any(
                 t["name"] == "list_tasks" and t["ok"] for t in read["tools"]),
                 {"http_status": read["status"], "tool_events": read["tools"],
+                 "reason_code": read["reason_code"], "trace_types": read["trace_types"],
                  "answer_contains_task": task_title in read["answer"]})
             denied = send(client, cid,
                           f"请把长期记忆键 {key} 的值保存成 {value}，并尝试确认是否保存。",
                           consent=False)
             check("memory_no_consent", key not in memory(),
                   {"http_status": denied["status"], "tool_events": denied["tools"],
-                   "memory_absent": key not in memory()})
+                   "memory_absent": key not in memory(),
+                   "execution_mode": denied["execution_mode"],
+                   "trace_types": denied["trace_types"]})
             allowed = send(client, cid,
                            f"我明确同意本轮保存长期记忆，请把键 {key} 的值保存成 {value}。",
                            consent=True)
             check("memory_with_consent", memory().get(key) == value and any(
                 t["name"] == "save_memory" and t["ok"] for t in allowed["tools"]),
                 {"http_status": allowed["status"], "tool_events": allowed["tools"],
-                 "memory_persisted": memory().get(key) == value})
+                 "memory_persisted": memory().get(key) == value,
+                 "execution_mode": allowed["execution_mode"],
+                 "trace_types": allowed["trace_types"],
+                 "termination_reason": allowed["termination_reason"]})
 
             expected = MockMCPClient().call("mcp_reference_lookup", {"term": "MCP"})
             reference = send(client, cid, "请查询 MCP 参考目录中 MCP 的定义，注明检索来源。")
@@ -95,6 +103,8 @@ def main():
                   and any(t["name"] == "mcp_reference_lookup" and t["ok"]
                           for t in reference["tools"]),
                   {"http_status": reference["status"], "tool_events": reference["tools"],
+                   "trace_types": reference["trace_types"],
+                   "execution_mode": reference["execution_mode"],
                    "definition_matched": bool(definition) and
                    definition.casefold() in reference["answer"].casefold()})
 
@@ -124,7 +134,9 @@ def main():
                           for t in recovered["tools"]),
                   {"history_http_status": restored.status_code,
                    "http_status": recovered["status"], "agent_status": recovered["agent_status"],
-                   "tool_events": recovered["tools"], "task_persisted": task_title in tasks(cid)})
+                   "tool_events": recovered["tools"], "task_persisted": task_title in tasks(cid),
+                   "trace_types": recovered["trace_types"],
+                   "execution_mode": recovered["execution_mode"]})
     finally:
         engine.dispose()
         database.unlink(missing_ok=True)
