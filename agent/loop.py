@@ -20,6 +20,7 @@ PROMPT_VERSION = "s2a-core-v1"
 PROMPT = (Path(__file__).parent / "prompts" / "s2a_core_v1.md").read_text(encoding="utf-8")
 
 class AgentState(TypedDict):
+    run_id: str
     messages: list[dict]
     traces: list[dict]
     tasks: list[str]
@@ -639,7 +640,7 @@ class AgentLoop:
             "or retry a rejected tool action without a meaningful correction. "
             "Use tools only where their verified observations are necessary."
             if understanding_result is not None else "")
-        initial: AgentState = {"messages": [
+        initial: AgentState = {"run_id": run_id, "messages": [
             {"role": "system", "content": PROMPT + "\nSelected skill instructions (" + SKILL_VERSION + "):\n" + load_instructions(goal, strategy=self.skill_strategy, max_chars=self.skill_budget_chars) + resume_context + structured_policy},
             *clean_history, *goal_view, {"role": "user", "content": goal}],
             "traces": [], "tasks": [], "final": "", "status": "running",
