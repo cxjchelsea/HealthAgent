@@ -135,3 +135,26 @@ def test_missing_plan_primary_is_host_source_bound_and_nonexecuting():
 
     with pytest.raises(SavedPlanRouteRefused):
         asyncio.run(propose_new_plan_route(FabricatedProvider(), "model", message))
+
+
+def test_routing_source_attests_auto_real_default_after_field_resolution():
+    s = Settings(_env_file=None, model_provider="ollama_proxy")
+    assert s.routing_profile_source == "auto_real_provider_default"
+    assert s.routing_profile == "auto"
+    assert s.effective_routing_profile == "unified"
+
+
+def test_routing_source_does_not_mislabel_explicit_m5_as_default():
+    s = Settings(_env_file=None, model_provider="ollama_proxy",
+        route_admission_mode="guarded", understanding_strategy="structured",
+        m5_unified_route_enabled=True)
+    assert s.effective_routing_profile == "unified"
+    assert s.routing_profile_source == "auto_explicit_routing_overrides"
+
+
+def test_profile_source_legacy_and_fake_fixture_are_distinct():
+    fake = Settings(_env_file=None)
+    explicit = Settings(_env_file=None, model_provider="ollama_proxy",
+                        routing_profile="legacy")
+    assert fake.routing_profile_source == "auto_fake_fixture"
+    assert explicit.routing_profile_source == "explicit_legacy"
