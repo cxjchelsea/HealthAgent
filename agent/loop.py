@@ -9,6 +9,7 @@ from agent.decision import NativeToolDecision
 from agent.tools import TOOL_SCHEMAS, execute_tool
 from agent.skills import exposed_tools, load_instructions, SKILL_VERSION
 from agent.planning import PlanLedger
+from services.evidence_store import make_attempt
 from agent.arithmetic_recovery import arithmetic_equivalent
 from agent.plan_recovery import candidate_for_failure
 from agent.tools import SCHEMAS
@@ -49,7 +50,8 @@ class AgentState(TypedDict):
     user_request: str
 
 class AgentLoop:
-    def __init__(self, decider: Any, max_steps: int = 6, clock=None, task_store=None, memory_store=None, mcp_client=None, skill_strategy='dynamic', skill_budget_chars=600, execution_guard=None, dispatch_journal=None):
+    def __init__(self, decider: Any, max_steps: int = 6, clock=None, task_store=None, memory_store=None, mcp_client=None, skill_strategy='dynamic', skill_budget_chars=600, execution_guard=None, dispatch_journal=None,
+                 ordinary_attempt_journal=None, ordinary_attempt_session_factory=None):
         if max_steps < 1 or max_steps > 20:
             raise ValueError("max_steps must be 1..20")
         self.decider = decider
@@ -62,6 +64,8 @@ class AgentLoop:
         self.skill_budget_chars = skill_budget_chars
         self.execution_guard = execution_guard
         self.dispatch_journal = dispatch_journal
+        self.ordinary_attempt_journal = ordinary_attempt_journal
+        self.ordinary_attempt_session_factory = ordinary_attempt_session_factory
         flow = StateGraph(AgentState)
         flow.add_node("decide", self._decide)
         flow.add_node("tools", self._tools)
@@ -255,9 +259,36 @@ class AgentLoop:
                     result = {"ok": False, "error": "invalid_arguments",
                               "plan_revision": state["plan"].revision}
             else:
-                result = execute_tool(name, function.get("arguments"), tasks, self.clock,
-                                      task_store=self.task_store, memory_store=self.memory_store,
-                                      mcp_client=self.mcp_client)
+                # Ordinary tools have a separate executor observation journal.
+                # Saved-plan tools use M4 dispatch exclusively (see run()).
+                journal = self.ordinary_attempt_journal
+                sessions = self.ordinary_attempt_session_factory
+                if (journal is not None and sessions is not None and name in
+                        {"create_task", "save_memory"} and
+                        journal.has_unresolved_writes(sessions)):
+                    result = {"ok": False,
+                              "error": "unresolved_write_requires_reconciliation"}
+                else:
+                    evidence = None
+                    if journal is not None and sessions is not None:
+                        evidence = make_attempt(state["run_id"], name, arguments,
+                                                {"ok": False, "error": "prepared"})
+                        # This commit occurs BEFORE any external effect. On a
+                        # process crash the prepared record remains unknown.
+                        journal.begin(sessions, evidence)
+                    result = execute_tool(name, function.get("arguments"), tasks,
+                                          self.clock, task_store=self.task_store,
+                                          memory_store=self.memory_store,
+                                          mcp_client=self.mcp_client)
+                    if evidence is not None:
+                        # Projection only; never writes model-generated claims.
+                        from services.evidence_store import bounded_projection
+                        evidence["status"] = ("succeeded" if result.get("ok") is True
+                                              else "failed")
+                        evidence["error_code"] = (None if result.get("ok") is True
+                                                  else str(result.get("error", "unknown"))[:80])
+                        evidence["result_projection"] = bounded_projection(name, result)
+                        journal.finish(sessions, evidence)
             if (not result["ok"] and result.get("error") in
                     {"invalid_arguments", "division_by_zero", "unsupported_expression",
                      "calculation_limit_exceeded", "reference_not_found", "tool_not_exposed",
