@@ -154,3 +154,39 @@ def test_respond_only_rejects_model_requested_read_tool():
                 if e.get("type") == "tool" and e.get("name") == "calculate"]
     assert rejected and all(e.get("ok") is False for e in rejected)
     assert not any(e.get("type") == "topk_selection" for e in result["trace"])
+
+
+class InMemoryTasks:
+    def __init__(self):
+        self.items = []
+    def create(self, title):
+        self.items.append(title)
+        return {"ok": True, "title": title, "task_id": str(len(self.items))}
+    def list(self):
+        return {"ok": True, "tasks": [
+            {"title": title, "task_id": str(i + 1)}
+            for i, title in enumerate(self.items)]}
+
+
+def test_authorized_execute_task_remains_persistent_across_turns():
+    store = InMemoryTasks()
+    decider = ToolAttempt("create_task", {"title": "S25-04 approved test task"})
+    result = asyncio.run(AgentLoop(
+        decider, task_store=store, skill_strategy="semantic_topk"
+    ).run("Create a task: S25-04 approved test task", execution_mode="execute"))
+    assert store.items == ["S25-04 approved test task"]
+    assert any(e.get("name") == "create_task" and e.get("ok") is True
+               for e in result["trace"] if e.get("type") == "tool")
+    assert store.list()["tasks"][0]["title"] == "S25-04 approved test task"
+
+
+def test_unapproved_read_only_write_leaves_task_store_unchanged():
+    store = InMemoryTasks()
+    decider = ToolAttempt("create_task", {"title": "unapproved test task"})
+    result = asyncio.run(AgentLoop(
+        decider, task_store=store, skill_strategy="semantic_topk",
+        candidate_selector=Provider({"tools": ["list_tasks"], "uncertain": False}),
+        selector_model="test").run("Look up tasks", execution_mode="read_only"))
+    assert store.items == []
+    assert not any(e.get("name") == "create_task" and e.get("ok") is True
+                   for e in result["trace"] if e.get("type") == "tool")
