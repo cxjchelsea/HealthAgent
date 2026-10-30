@@ -51,12 +51,19 @@ def main():
         return {"status": reply.status_code, "agent_status": obj.get("status"),
                 "execution_mode": obj.get("execution_mode"),
                 "trace_types": [e.get("type") for e in trace],
-                "reason_code": detail.get("code"),
+                "reason_code": error_code,
                 "termination_reason": obj.get("termination_reason"),
                 "tools": [{"name": e.get("name"), "ok": e.get("ok"),
                            "error_code": e.get("error_code")}
                           for e in trace if e.get("type") == "tool"],
                 "answer": obj.get("answer", "")}
+
+    def diagnostic(row):
+        return {"http_status": row["status"], "reason_code": row["reason_code"],
+                "execution_mode": row["execution_mode"],
+                "agent_status": row["agent_status"],
+                "termination_reason": row["termination_reason"],
+                "trace_types": row["trace_types"], "tool_events": row["tools"]}
 
     def tasks(cid):
         with Session(engine) as db:
@@ -152,7 +159,7 @@ def main():
         engine.dispose()
         database.unlink(missing_ok=True)
 
-    report = {"suite": "s25-04-final-physical-v1", "mode": "REAL_PROVIDER",
+    report = {"suite": "s25-04-final-physical-v2", "mode": "REAL_PROVIDER",
               "model": settings.model_name, "provider": settings.model_provider,
               "routing_profile": settings.effective_routing_profile,
               "passed": sum(r["passed"] for r in records), "total": len(records),
@@ -162,7 +169,7 @@ def main():
                               "Legacy routing isolates Top-K; separate M5 unified authorization is not evaluated.",
                               "Report omits prompts, final answer text and memory values.",
                               "Isolated SQLite; does not simulate a force-killed process."]}
-    target = folder / "final-physical-v1.json"
+    target = folder / "final-physical-v2.json"
     target.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps({"passed": report["passed"], "total": report["total"],
                       "cases": [{"scenario": x["scenario"], "passed": x["passed"]}
