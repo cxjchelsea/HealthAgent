@@ -93,10 +93,20 @@ def main():
     p.add_argument("--endpoint", default="http://127.0.0.1:8012")
     p.add_argument("--output", default="m5-unified-live.json")
     p.add_argument("--timeout", type=float, default=240)
+    p.add_argument("--require-default-profile", action="store_true",
+                   help="Verify the real-provider auto unified default without legacy routing overrides")
     args = p.parse_args()
     if os.getenv("RUN_S25_02_M5_UNIFIED_LIVE") != "1":
         p.error("Explicitly set RUN_S25_02_M5_UNIFIED_LIVE=1")
-    if (os.getenv("ROUTE_ADMISSION_MODE") != "guarded"
+    if args.require_default_profile:
+        # A default-mode acceptance must not secretly be an M5 opt-in run.
+        for name in ("ROUTE_ADMISSION_MODE", "UNDERSTANDING_STRATEGY",
+                     "M5_UNIFIED_ROUTE_ENABLED", "M5_FIRST_ROUTE_ENABLED"):
+            if os.getenv(name) is not None:
+                p.error(name + " must be unset in default-profile acceptance")
+        if os.getenv("ROUTING_PROFILE", "auto").lower() != "auto":
+            p.error("ROUTING_PROFILE must be auto or unset for default acceptance")
+    elif (os.getenv("ROUTE_ADMISSION_MODE") != "guarded"
             or os.getenv("M5_UNIFIED_ROUTE_ENABLED", "").lower() != "true"
             or os.getenv("UNDERSTANDING_STRATEGY") != "structured"):
         p.error("Guarded, structured and M5_UNIFIED_ROUTE_ENABLED=true required in both shells")
@@ -130,6 +140,13 @@ def main():
         if (out["model"].get("route_admission_mode") != "guarded"
                 or out["model"].get("m5_unified_route_enabled") is not True):
             p.error("API is not running guarded M5 unified code; restart exact branch HEAD")
+        if args.require_default_profile and (
+                out["model"].get("routing_profile") != "unified"
+                or out["model"].get("routing_profile_requested") != "auto"
+                or out["model"].get("understanding_strategy") != "structured"):
+            p.error("API does not advertise real-provider AUTO -> UNIFIED profile")
+        out["acceptance_mode"] = ("default_auto_unified" if args.require_default_profile
+                                  else "explicit_unified")
         client.get("/readyz").raise_for_status()
         failed_groups = set()
         last_ids = {}
