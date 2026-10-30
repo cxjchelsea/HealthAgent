@@ -1036,7 +1036,15 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                     ordinary_attempt_journal=(AttemptEvidenceStore(cid, turn_id)
                         if plan_control not in {"execute_first", "resume"} else None),
                     ordinary_attempt_session_factory=(Session
-                        if plan_control not in {"execute_first", "resume"} else None)).run(
+                        if plan_control not in {"execute_first", "resume"} else None),
+                    candidate_selector=(HTTPUnderstandingModel(
+                        settings.model_provider, settings.model_base_url,
+                        settings.model_api_key, settings.model_timeout_seconds,
+                        settings.model_max_output_tokens)
+                        if settings.skill_strategy == "semantic_topk" and agent_decider is None
+                        else None),
+                    selector_model=(settings.understanding_strong_model
+                        if settings.skill_strategy == "semantic_topk" else None)).run(
                                           body.content, history=context,
                                           plan_checkpoint=existing_checkpoint,
                                           understanding_result=interpretation,
