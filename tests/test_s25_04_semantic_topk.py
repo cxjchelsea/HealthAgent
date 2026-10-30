@@ -172,7 +172,7 @@ def test_authorized_execute_task_remains_persistent_across_turns():
     store = InMemoryTasks()
     decider = ToolAttempt("create_task", {"title": "S25-04 approved test task"})
     result = asyncio.run(AgentLoop(
-        decider, task_store=store, skill_strategy="semantic_topk"
+        decider, task_store=store, skill_strategy="dynamic"
     ).run("Create a task: S25-04 approved test task", execution_mode="execute"))
     assert store.items == ["S25-04 approved test task"]
     assert any(e.get("name") == "create_task" and e.get("ok") is True
