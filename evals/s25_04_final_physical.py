@@ -90,7 +90,8 @@ def main():
                 {"http_status": write["status"], "agent_status": write["agent_status"],
                  "tool_events": write["tools"], "persisted": task_saved,
                  "execution_mode": write["execution_mode"], "trace_types": write["trace_types"],
-                 "termination_reason": write["termination_reason"]})
+                 "termination_reason": write["termination_reason"],
+                 "reason_code": write["reason_code"]})
             read = send(client, cid, "请查询这个会话的待办并告诉我任务标题。")
             check("same_conversation_read", task_title in read["answer"] and any(
                 t["name"] == "list_tasks" and t["ok"] for t in read["tools"]),
@@ -101,7 +102,8 @@ def main():
                           f"请把长期记忆键 {key} 的值保存成 {value}，并尝试确认是否保存。",
                           consent=False)
             check("memory_no_consent", key not in memory(),
-                  {"http_status": denied["status"], "tool_events": denied["tools"],
+                  {"http_status": denied["status"], "reason_code": denied["reason_code"],
+                   "tool_events": denied["tools"],
                    "memory_absent": key not in memory(),
                    "execution_mode": denied["execution_mode"],
                    "trace_types": denied["trace_types"]})
@@ -114,7 +116,8 @@ def main():
                  "memory_persisted": memory().get(key) == value,
                  "execution_mode": allowed["execution_mode"],
                  "trace_types": allowed["trace_types"],
-                 "termination_reason": allowed["termination_reason"]})
+                 "termination_reason": allowed["termination_reason"],
+                 "reason_code": allowed["reason_code"]})
 
             expected = MockMCPClient().call("mcp_reference_lookup", {"term": "MCP"})
             reference = send(client, cid, "请查询 MCP 参考目录中 MCP 的定义，注明检索来源。")
@@ -157,7 +160,8 @@ def main():
                    "http_status": recovered["status"], "agent_status": recovered["agent_status"],
                    "tool_events": recovered["tools"], "task_persisted": task_title in tasks(cid),
                    "trace_types": recovered["trace_types"],
-                   "execution_mode": recovered["execution_mode"]})
+                   "execution_mode": recovered["execution_mode"],
+                   "reason_code": recovered["reason_code"]})
     finally:
         engine.dispose()
         database.unlink(missing_ok=True)
