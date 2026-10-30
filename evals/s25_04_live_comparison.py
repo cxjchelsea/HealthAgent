@@ -34,9 +34,15 @@ def evaluate(repeats=2):
     base = Settings()
     if base.model_provider == "fake":
         raise RuntimeError("REAL_PROVIDER required: model_provider=fake is not valid")
+    selected_ids = {x.strip() for x in os.getenv("S25_04_CASE_IDS", "").split(",") if x.strip()}
+    unknown = selected_ids - {row[0] for row in CASES}
+    if unknown:
+        raise ValueError("Unknown S25_04_CASE_IDS values: " + ",".join(sorted(unknown)))
     results = []
     for strategy in STRATEGIES:
         for case_id, goal, expected in CASES:
+            if selected_ids and case_id not in selected_ids:
+                continue
             for repetition in range(repeats):
                 database_url = "sqlite:///" + str(
                     Path("evals/results/s25-04") / f"trial-{uuid.uuid4().hex}.db"
@@ -111,6 +117,7 @@ def evaluate(repeats=2):
         "provider": base.model_provider,
         "model": base.model_name,
         "repeats": repeats,
+        "selected_case_ids": sorted(selected_ids) if selected_ids else "all",
         "summary": summary,
         "cases": results,
         "limitations": [
