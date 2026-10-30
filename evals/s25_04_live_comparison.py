@@ -23,7 +23,7 @@ CASES = (
     ("utc_now", "请核实此刻 UTC 时间。", {"utc_time"}),
     ("no_tool", "用自己的话简要解释行动和目标的区别。", set()),
 )
-STRATEGIES = ("dynamic", "all", "semantic", "semantic_guided")
+STRATEGIES = ("dynamic", "all", "semantic", "semantic_guided", "semantic_topk")
 
 
 def evaluate(repeats=2):
@@ -79,7 +79,7 @@ def evaluate(repeats=2):
                 # Legacy modes expose fixed tools but currently do not record
                 # tool_exposure trace. Do not infer their recall from this field.
                 recall = (expected <= set(first_tools)
-                          if strategy in ("semantic", "semantic_guided") else None)
+                          if strategy in ("semantic", "semantic_guided", "semantic_topk") else None)
                 results.append({
                     "case_id": case_id,
                     "strategy": strategy,
