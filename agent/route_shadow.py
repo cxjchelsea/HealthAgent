@@ -480,6 +480,7 @@ async def evaluate_shadow(provider: HTTPUnderstandingModel, model_name: str,
     import asyncio
     began = time.perf_counter()
     stage = "provider"
+    schema_retry_model_calls = 0
     try:
         raw = await asyncio.wait_for(provider.complete(
             model=model_name, response_schema=ShadowRoute.model_json_schema(),
@@ -527,6 +528,7 @@ async def evaluate_shadow(provider: HTTPUnderstandingModel, model_name: str,
             )
             if not eligible:
                 raise
+            schema_retry_model_calls = 1
             retry_raw = await asyncio.wait_for(provider.complete(
                 model=model_name, response_schema=ShadowRoute.model_json_schema(),
                 messages=[
@@ -639,6 +641,7 @@ async def evaluate_shadow(provider: HTTPUnderstandingModel, model_name: str,
                 "host_admission_complete":False,
                 "evidence_spans":len(result.source_evidence),
                  "recovery_model_calls": recovery_calls,
+                "schema_retry_model_calls": schema_retry_model_calls,
                 **({"m3c_admission":m3c_preview} if m3c_preview is not None else {}),
                 **({"host_preview":host_preview} if host_preview is not None else {}),
                 **({"pending_field_state":pending_field_state}
@@ -691,6 +694,7 @@ async def evaluate_shadow(provider: HTTPUnderstandingModel, model_name: str,
                                  if err["type"] == "value_error" else "")}
                        for err in exc.errors(include_url=False)[:8]]
         return {"state":"unavailable","error_class":"ValidationError",
+                "schema_retry_model_calls": schema_retry_model_calls,
                 "validation_errors":diagnostics,
                 **({"combination_diagnostic": combination} if combination else {}),
                 "elapsed_ms":int((time.perf_counter()-began)*1000)}
@@ -711,6 +715,7 @@ async def evaluate_shadow(provider: HTTPUnderstandingModel, model_name: str,
                 "shadow_pending_field_conflict", "shadow_revision_step_out_of_range"}
         code = str(exc) if str(exc) in safe else "other_value_error"
         return {"state":"unavailable","error_class":"ValueError",
+                "schema_retry_model_calls": schema_retry_model_calls,
                 "semantic_proposal": semantic if stage == "source_provenance" else None,
                 "semantic_schema_valid": stage == "source_provenance",
                 "semantic_route_comparison_only": (
@@ -725,6 +730,7 @@ async def evaluate_shadow(provider: HTTPUnderstandingModel, model_name: str,
                 "elapsed_ms":int((time.perf_counter()-began)*1000)}
     except Exception as exc:
         return {"state":"unavailable","error_class":type(exc).__name__,
+                "schema_retry_model_calls": schema_retry_model_calls,
                 "elapsed_ms":int((time.perf_counter()-began)*1000)}
 
 
