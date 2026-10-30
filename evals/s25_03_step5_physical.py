@@ -120,11 +120,12 @@ def verify(db_path: Path, report: dict) -> dict:
         check("sqlite_integrity", db.execute("PRAGMA integrity_check").fetchone()[0] == "ok")
     finally:
         db.close()
+    prior_pass = prior["summary"]["FAIL"] == 0
     all_ok = all(x["result"] == "PASS" for x in checks)
     return {
         "schema": "s25-03-step5-physical-v1",
-        "baseline_m5_verdict": prior["verdict"],
-        "verdict": "PASS" if all_ok and prior["verdict"] == "PASS" else "FAIL",
+        "baseline_m5_verdict": "PASS" if prior_pass else "FAIL",
+        "verdict": "PASS" if all_ok and prior_pass else "FAIL",
         "summary": {"PASS": sum(x["result"] == "PASS" for x in checks),
                     "FAIL": sum(x["result"] == "FAIL" for x in checks)},
         "checks": checks,
