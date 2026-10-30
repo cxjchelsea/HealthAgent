@@ -70,6 +70,7 @@ def evaluate(repeats=2):
                     payload = response.json()
                 trace = payload.get("trace") or []
                 tool_events = [e for e in trace if e.get("type") == "tool"]
+                topk_event = next((e for e in trace if e.get("type") == "topk_selection"), None)
                 actual = {e.get("name") for e in tool_events if e.get("ok")}
                 first_tools = next(
                     (e.get("tool_names", []) for e in trace
@@ -90,7 +91,13 @@ def evaluate(repeats=2):
                     "termination_reason": payload.get("termination_reason"),
                     "execution_mode": payload.get("execution_mode"),
                     "trace_types": [e.get("type") for e in trace],
-                    "first_exposed_tools": first_tools if strategy in ("semantic", "semantic_guided") else None,
+                    "first_exposed_tools": (topk_event.get("exposed_tools") if topk_event is not None
+                                             else first_tools if strategy in ("semantic", "semantic_guided") else None),
+                    "topk_reason": topk_event.get("reason") if topk_event else None,
+                    "topk_candidate_count": topk_event.get("candidate_count") if topk_event else None,
+                    "topk_selected_read_tools": topk_event.get("selected_read_tools") if topk_event else None,
+                    "topk_selector_duration_ms": topk_event.get("selector_duration_ms") if topk_event else None,
+                    "topk_selector_model_calls": topk_event.get("selector_model_calls") if topk_event else None,
                     "duration_ms": duration_ms,
                     "tools_called": [e.get("name") for e in tool_events],
                     "success_tools": sorted(str(t) for t in actual),
@@ -117,6 +124,12 @@ def evaluate(repeats=2):
             "median_duration_ms": statistics.median(x["duration_ms"] for x in rows),
             "candidate_recall_measured": sum(x["candidate_recall"] is not None
                                              for x in rows),
+            "topk_selection_observed": sum(x["topk_reason"] is not None for x in rows),
+            "topk_fallbacks": sum(str(x["topk_reason"]).startswith("fallback_") for x in rows),
+            "topk_selector_model_calls": sum(x["topk_selector_model_calls"] or 0 for x in rows),
+            "median_topk_selector_ms": (statistics.median(x["topk_selector_duration_ms"]
+                                              for x in rows if x["topk_selector_duration_ms"] is not None)
+                                        if any(x["topk_selector_duration_ms"] is not None for x in rows) else None),
         }
     return {
         "suite": "s25-04-live-comparison-v1",
