@@ -237,7 +237,7 @@ def extract_revision_target_step(message: str) -> tuple[str, int] | None:
     ordinal = rf"第{numeral}步"
     patterns = (
         # "第二步由计算 5*6 改为计算 7*8，第一步不变"
-        rf"({ordinal})(?:由[^，。；;]{{1,80}})?(?:改为|改成|修改为|调整为|替换为)",
+        rf"({ordinal})(?:由[^，。；;]{{1,80}}|也|再|都)?(?:改为|改成|修改为|调整为|替换为)",
         # "修改第二步为..." (independent from following unchanged steps)
         rf"(?:修改|调整|更改|替换)({ordinal})",
     )
