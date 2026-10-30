@@ -1049,6 +1049,7 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                           plan_checkpoint=existing_checkpoint,
                                           understanding_result=interpretation,
                                           execution_mode=execution_mode,
+                                          memory_write_consent=body.memory_write_consent,
                                           plan_control=plan_control)
             if result["status"] in {"completed", "partial"}:
                 answer, status = result["answer"], result["status"]
