@@ -1,5 +1,6 @@
 """LangGraph S2-A execution loop, bounded and observable."""
 import json
+import time
 import re
 import uuid
 from pathlib import Path
@@ -650,6 +651,7 @@ class AgentLoop:
                           "recall_memory", "mcp_reference_lookup"}
             selected_tools = [tool for tool in selected_tools
                               if tool["function"]["name"] in read_tools]
+        topk_trace = None
         # S25-04 opt-in: model-mediated shortlist is a reduction ONLY of the
         # already Host-admitted read-only tools; keep plan/control and writes
         # governed by the existing authorization and execution boundaries.
@@ -657,16 +659,27 @@ class AgentLoop:
             ranked = [t for t in selected_tools if t["function"]["name"] in {
                 "calculate", "utc_time", "list_tasks", "recall_memory",
                 "mcp_reference_lookup"}]
+            selector_start = time.monotonic()
             if self.candidate_selector is None or not self.selector_model:
                 topk_names = {t["function"]["name"] for t in ranked}
+                topk_reason = "fallback_not_configured"
             else:
-                topk_names, _ = await select_read_tools(
+                topk_names, topk_reason = await select_read_tools(
                     self.candidate_selector, self.selector_model, goal, ranked)
+            selector_ms = round((time.monotonic() - selector_start) * 1000)
             selected_tools = [t for t in selected_tools
                               if t["function"]["name"] not in {
                                   "calculate", "utc_time", "list_tasks",
                                   "recall_memory", "mcp_reference_lookup"}
                               or t["function"]["name"] in topk_names]
+            topk_trace = {"step": 0, "type": "topk_selection",
+                          "strategy": "semantic_topk", "reason": topk_reason,
+                          "selector_duration_ms": selector_ms,
+                          "selector_model_calls": int(topk_reason != "fallback_not_configured"
+                                                      and topk_reason != "empty"),
+                          "candidate_count": len(ranked),
+                          "selected_read_tools": sorted(topk_names),
+                          "exposed_tools": [t["function"]["name"] for t in selected_tools]}
         resume_context = ("\nTrusted checkpoint: revision " + str(resumed.revision) +
                           "; steps: " + json.dumps(resumed.snapshot(), ensure_ascii=False)
                           if resumed.revision else "")
@@ -697,7 +710,7 @@ class AgentLoop:
         initial: AgentState = {"run_id": run_id, "messages": [
             {"role": "system", "content": PROMPT + "\nSelected skill instructions (" + SKILL_VERSION + "):\n" + (exposure_instructions(selection, max_chars=self.skill_budget_chars) if self.skill_strategy in ("semantic", "semantic_guided", "semantic_topk") else load_instructions(goal, strategy=self.skill_strategy, max_chars=self.skill_budget_chars)) + (("\n" + SEMANTIC_GUIDANCE) if self.skill_strategy == "semantic_guided" else "") + resume_context + structured_policy},
             *clean_history, *goal_view, {"role": "user", "content": goal}],
-            "traces": [], "tasks": [], "final": "", "status": "running",
+            "traces": [topk_trace] if topk_trace is not None else [], "tasks": [], "final": "", "status": "running",
             "termination_reason": None, "pending_action": None,
             "rejected_action_keys": [],
             "unresolved_tool_failures": [],
