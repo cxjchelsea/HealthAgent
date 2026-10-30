@@ -14,6 +14,9 @@ from fastapi.testclient import TestClient
 
 from agent.config import Settings
 from apps.api.main import create_app
+from services.db import ConversationTask
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session
 
 # Fixed, non-write tasks with ground-truth observable tool requirements.
 CASES = (
@@ -57,10 +60,23 @@ def evaluate(repeats=2):
                     **{**base.model_dump(), "skill_strategy": strategy,
                        "database_url": database_url, "skill_budget_chars": 2000}
                 )
+                seeded_title = "S25-04-验收待办-校验专用"
                 with TestClient(create_app(settings)) as client:
                     conv = client.post("/conversations")
                     conv.raise_for_status()
                     cid = conv.json()["id"]
+                    # Seed a task directly in the isolated test database, never
+                    # through the Agent, so retrieval is independently testable.
+                    if case_id == "implicit_tasks":
+                        engine = create_engine(database_url)
+                        try:
+                            with Session(engine) as db:
+                                db.add(ConversationTask(
+                                    id=str(uuid.uuid4()), conversation_id=cid,
+                                    title=seeded_title))
+                                db.commit()
+                        finally:
+                            engine.dispose()
                     started = time.monotonic()
                     response = client.post(
                         f"/conversations/{cid}/agent/messages",
@@ -81,6 +97,13 @@ def evaluate(repeats=2):
                 # tool_exposure trace. Do not infer their recall from this field.
                 recall = (expected <= set(first_tools)
                           if strategy in ("semantic", "semantic_guided", "semantic_topk") else None)
+                answer = payload.get("answer", "") if isinstance(payload, dict) else ""
+                seeded_task_answer_matched = (seeded_title in answer if case_id == "implicit_tasks" else None)
+                # Explicitly verify the numeric result rather than only a tool event.
+                # Manual review remains required for natural-language variants.
+                calculation_answer_observable = (any(token in answer for token in
+                    ("71.4", "71.42", "71.43", "71.428", "71%", "百分之七十一"))
+                    if case_id == "implicit_calculation" else None)
                 results.append({
                     "case_id": case_id,
                     "strategy": strategy,
@@ -104,6 +127,8 @@ def evaluate(repeats=2):
                     "candidate_recall": recall,
                     "tool_evidence_matched": (expected <= actual if expected else not tool_events),
                     "no_tool_violations": (len(tool_events) if not expected else 0),
+                    "seeded_task_answer_matched": seeded_task_answer_matched,
+                    "calculation_answer_observable": calculation_answer_observable,
                     "reason_code": (payload.get("detail", {}).get("code")
                                     if isinstance(payload.get("detail"), dict) else None),
                 })
@@ -125,6 +150,8 @@ def evaluate(repeats=2):
             "candidate_recall_measured": sum(x["candidate_recall"] is not None
                                              for x in rows),
             "topk_selection_observed": sum(x["topk_reason"] is not None for x in rows),
+            "seeded_task_answer_matched": sum(x["seeded_task_answer_matched"] is True for x in rows),
+            "calculation_answer_observable": sum(x["calculation_answer_observable"] is True for x in rows),
             "topk_fallbacks": sum(str(x["topk_reason"]).startswith("fallback_") for x in rows),
             "topk_selector_model_calls": sum(x["topk_selector_model_calls"] or 0 for x in rows),
             "median_topk_selector_ms": (statistics.median(x["topk_selector_duration_ms"]
@@ -147,7 +174,8 @@ def evaluate(repeats=2):
             "One-case conversations do not measure long-horizon multi-turn planning.",
             "Legacy strategies have no candidate exposure trace; recall not inferred.",
             "Host routing may terminate before AgentLoop; trace and termination distinguish it.",
-            "No preseeded tasks; task lookup outcome may reflect absent records.",
+            "Task lookup uses one synthetic directly seeded title in isolated database.",
+            "Calculation lexical answer check is supplemental; manual meaning check still required.",
             "SQLite isolated per run, no external production data or write operations.",
             "Live execution requires user environment with configured provider access.",
         ],
