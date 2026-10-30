@@ -8,7 +8,7 @@ from langgraph.graph import END, StateGraph
 from agent.decision import NativeToolDecision
 from agent.tools import TOOL_SCHEMAS, execute_tool
 from agent.skills import (exposed_tools, load_instructions, SKILL_VERSION,
-                          select_tool_exposure, exposure_schemas, exposure_instructions)
+                          select_tool_exposure, exposure_schemas, exposure_instructions, SEMANTIC_GUIDANCE)
 from agent.planning import PlanLedger
 from services.evidence_store import make_attempt
 from agent.arithmetic_recovery import arithmetic_equivalent
@@ -79,9 +79,9 @@ class AgentLoop:
         self.graph = flow.compile()
 
     async def _decide(self, state: AgentState) -> dict:
-        if self.skill_strategy == "semantic":
+        if self.skill_strategy in ("semantic", "semantic_guided"):
             selection = select_tool_exposure(
-                state["user_request"], TOOL_SCHEMAS, strategy="semantic",
+                state["user_request"], TOOL_SCHEMAS, strategy=self.skill_strategy,
                 active_step_tools=tuple(
                     step.get("expected_tool") for step in state["plan"].snapshot()
                     if step.get("status") == "pending" and step.get("expected_tool")
@@ -622,7 +622,7 @@ class AgentLoop:
         # Tool execution still requires the independent tool authorization and validation.
         tool_strategy = "all" if understanding_result is not None else self.skill_strategy
         if self.skill_strategy == "semantic":
-            selection = select_tool_exposure(goal, TOOL_SCHEMAS, strategy="semantic")
+            selection = select_tool_exposure(goal, TOOL_SCHEMAS, strategy=self.skill_strategy)
             selected_tools = exposure_schemas(selection, TOOL_SCHEMAS)
         else:
             selected_tools = exposed_tools(goal, TOOL_SCHEMAS, strategy=tool_strategy)
@@ -675,7 +675,7 @@ class AgentLoop:
             "Use tools only where their verified observations are necessary."
             if understanding_result is not None else "")
         initial: AgentState = {"run_id": run_id, "messages": [
-            {"role": "system", "content": PROMPT + "\nSelected skill instructions (" + SKILL_VERSION + "):\n" + (exposure_instructions(selection, max_chars=self.skill_budget_chars) if self.skill_strategy == "semantic" else load_instructions(goal, strategy=self.skill_strategy, max_chars=self.skill_budget_chars)) + resume_context + structured_policy},
+            {"role": "system", "content": PROMPT + "\nSelected skill instructions (" + SKILL_VERSION + "):\n" + (exposure_instructions(selection, max_chars=self.skill_budget_chars) if self.skill_strategy in ("semantic", "semantic_guided") else load_instructions(goal, strategy=self.skill_strategy, max_chars=self.skill_budget_chars)) + (("\n" + SEMANTIC_GUIDANCE) if self.skill_strategy == "semantic_guided" else "") + resume_context + structured_policy},
             *clean_history, *goal_view, {"role": "user", "content": goal}],
             "traces": [], "tasks": [], "final": "", "status": "running",
             "termination_reason": None, "pending_action": None,
