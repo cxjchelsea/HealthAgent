@@ -352,11 +352,22 @@ uncertain_intent (NEVER "none"), and supply a nonempty question.
 Never provide a non-none clarification reason when required=false.
 For a clear request set ambiguity="clear". For uncertain requests choose
 primary_route="clarify" and provide a matching clarification object.
-Route combinations: respond/cancel => scope none and effect none;
-plan_cancel => target saved_plan, scope none and effect mutation_requested;
-agent_loop => scope single_tool or none; plan_create/plan_revise => scope none,
-effect mutation_requested; plan_execute_first => scope first_step;
-plan_resume => scope remaining_steps or all_steps. No other combination.
+MANDATORY exact route tuple examples (the schema rejects any mismatch):
+- plan_revise: route_target="saved_plan", execution_scope="none",
+  effect_intent="mutation_requested". Revising stored plan ARGUMENTS is a
+  mutation even when the user explicitly says "do not execute the steps".
+- clarify: execution_scope="none", effect_intent="none". Asking a question
+  NEVER has read_only/mutation_requested effect, even if a tool is mentioned.
+- plan_cancel: target saved_plan, scope none, effect mutation_requested.
+- plan_create: target none or saved_plan, scope none, effect mutation_requested.
+- agent_loop read-only tool: target tool_action or pending_clarification,
+  scope single_tool, effect read_only.
+- plan_execute_first: target saved_plan, scope first_step, effect read_only.
+- plan_resume: target saved_plan, scope remaining_steps or all_steps, effect read_only.
+- respond/cancel: scope none and effect none.
+Any mismatching tuple MUST be corrected in your ORIGINAL JSON before return.
+Do not reinterpret "do not execute" as "do not modify the requested plan".
+No other combination.
 If there is NO saved plan, a reference to continuing one is still a
 plan_resume semantic proposal: lack of checkpoint is a HOST denial, not an
 excuse to invent steps.
@@ -481,7 +492,52 @@ async def evaluate_shadow(provider: HTTPUnderstandingModel, model_name: str,
                            "index_guide":_index_guide(message)
                        },ensure_ascii=False)}]), timeout=timeout_s)
         stage = "schema"
-        result = ShadowRoute.model_validate_json(raw)
+        try:
+            result = ShadowRoute.model_validate_json(raw)
+        except ValidationError as first_error:
+            # A single diagnostic-only retry for validly shaped JSON with a
+            # cross-field route combination error. Never silently repair model
+            # data, never bypass Pydantic, and never retry forged quotations.
+            mismatch = any(
+                err["type"] == "value_error"
+                and "invalid_shadow_route_combination" in str(
+                    err.get("ctx", {}).get("error", ""))
+                for err in first_error.errors(include_url=False))
+            candidate = None
+            try:
+                candidate = json.loads(raw)
+            except (ValueError, TypeError):
+                pass
+            if not mismatch or not isinstance(candidate, dict):
+                raise
+            original_route = candidate.get("primary_route")
+            original_target = candidate.get("route_target")
+            if not isinstance(original_route, str) or not isinstance(original_target, str):
+                raise
+            retry_raw = await asyncio.wait_for(provider.complete(
+                model=model_name, response_schema=ShadowRoute.model_json_schema(),
+                messages=[
+                    {"role": "system", "content":
+                     PROMPT + "\nThis is a ONE-TIME diagnostic correction. "
+                     "Keep primary_route and route_target unchanged. "
+                     "Ensure execution_scope and effect_intent match the "
+                     "mandatory tuple for this route, and preserve any "
+                     "literal quotation exactly. Do not infer authorization."},
+                    {"role": "user", "content": json.dumps({
+                        "message": message, "has_saved_plan": has_plan,
+                        "has_pending_action": pending_action is not None,
+                        "pending_action_tool": pending_action,
+                        "pending_action_field": pending_field,
+                        "prior_candidate": candidate,
+                        "failure_code": "invalid_shadow_route_combination",
+                    }, ensure_ascii=False)},
+                ]), timeout=timeout_s)
+            # A second invalid proposal MUST stay unavailable, not be
+            # normalized or reclassified by the Host.
+            result = ShadowRoute.model_validate_json(retry_raw)
+            if (result.primary_route != original_route
+                    or result.route_target != original_target):
+                raise ValueError("shadow_retry_route_changed")
         # Preserve bounded typed semantics even if provenance fails.
         semantic = {"route": result.primary_route, "route_target": result.route_target,
                     "scope": result.execution_scope, "effect": result.effect_intent,
