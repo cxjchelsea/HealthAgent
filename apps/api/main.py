@@ -52,6 +52,7 @@ from services.db import Conversation, ConversationPlan, Message, Turn, database
 from services.db import PlanExecutionClaim, PlanToolDispatch
 from services.db import AgentAttempt, ConversationPlan
 from services.task_state import AgentTaskStateStore
+from services.evidence_store import AttemptEvidenceStore
 from services.s25_03_projection import project_finalized_turn
 
 log=logging.getLogger("healthagent")
@@ -1029,7 +1030,11 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                         if plan_control in {"execute_first", "resume"} else None),
                     dispatch_journal=(PlanDispatchJournal(Session, cid, turn_id)
                         if settings.route_admission_mode == "guarded"
-                        and plan_control in {"execute_first", "resume"} else None)).run(
+                        and plan_control in {"execute_first", "resume"} else None),
+                    ordinary_attempt_journal=(AttemptEvidenceStore(cid, turn_id)
+                        if plan_control not in {"execute_first", "resume"} else None),
+                    ordinary_attempt_session_factory=(Session
+                        if plan_control not in {"execute_first", "resume"} else None)).run(
                                           body.content, history=context,
                                           plan_checkpoint=existing_checkpoint,
                                           understanding_result=interpretation,
