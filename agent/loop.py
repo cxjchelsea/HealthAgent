@@ -356,7 +356,7 @@ class AgentLoop:
                     unresolved_failures.append(action_key)
                     if name == "calculate":
                         calculation_errors[action_key] = str(result.get("error", ""))
-            if (self.skill_strategy in ("semantic", "semantic_guided")
+            if (self.skill_strategy in ("semantic", "semantic_guided", "semantic_topk")
                     and name in {"mcp_reference_lookup", "save_memory", "recall_memory"}
                     and result.get("error") in {"mcp_unavailable", "memory_unavailable"}
                     and name not in state["unavailable_tools"]):
