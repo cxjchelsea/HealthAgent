@@ -291,3 +291,66 @@ def test_mcp_failure_removes_unavailable_capability_on_next_decision():
     assert len(decider.exposed) >= 2
     assert "mcp_reference_lookup" not in decider.exposed[1]
     assert result["status"] != "completed"
+
+
+def test_mcp_reference_observation_is_available_to_final_decision():
+    """Evidence provenance: model sees the exact trusted tool observation."""
+    class Catalog:
+        def call(self, name, arguments):
+            assert name == "mcp_reference_lookup"
+            assert arguments == {"term": "MCP"}
+            return {"ok": True, "term": "MCP",
+                    "definition": "Model Context Protocol",
+                    "source": "S25-04-fixture-catalog"}
+
+    class EvidenceDecider:
+        def __init__(self):
+            self.calls = 0
+            self.observed = False
+
+        async def decide(self, messages, tools):
+            self.calls += 1
+            if self.calls == 1:
+                return Decision("", [{"id": "ref1", "name": "mcp_reference_lookup",
+                                      "arguments": {"term": "MCP"}}])
+            observations = [json.loads(m["content"]) for m in messages
+                            if m.get("role") == "tool" and m.get("tool_name") == "mcp_reference_lookup"]
+            self.observed = bool(observations and observations[-1].get("ok") is True
+                                 and observations[-1].get("source") == "S25-04-fixture-catalog")
+            return Decision("MCP: Model Context Protocol (S25-04-fixture-catalog).", [])
+
+    decider = EvidenceDecider()
+    result = asyncio.run(AgentLoop(
+        decider, skill_strategy="semantic_topk", mcp_client=Catalog(),
+        candidate_selector=Provider(
+            {"tools": ["mcp_reference_lookup"], "uncertain": False}),
+        selector_model="test").run("Verify MCP with reference source",
+                                  execution_mode="read_only"))
+    assert decider.observed
+    assert result["status"] == "completed"
+    assert "S25-04-fixture-catalog" in result["answer"]
+    assert any(e.get("type") == "tool" and e.get("ok") is True
+               and e.get("name") == "mcp_reference_lookup" for e in result["trace"])
+
+
+def test_mcp_outage_cannot_be_reported_as_completed_across_repeated_turns():
+    class UnavailableCatalog:
+        def call(self, name, arguments):
+            return {"ok": False, "error": "mcp_unavailable"}
+
+    results = []
+    for _ in range(2):
+        decider = ToolAttempt("mcp_reference_lookup", {"term": "MCP"})
+        result = asyncio.run(AgentLoop(
+            decider, skill_strategy="semantic_topk",
+            mcp_client=UnavailableCatalog(),
+            candidate_selector=Provider(
+                {"tools": ["mcp_reference_lookup"], "uncertain": False}),
+            selector_model="test").run("Verify the MCP source",
+                                      execution_mode="read_only"))
+        results.append(result)
+    assert all(x["status"] == "partial"
+               and x["termination_reason"] == "unresolved_tool_failure"
+               for x in results)
+    assert all(not any(e.get("type") == "tool" and e.get("ok")
+                       for e in x["trace"]) for x in results)
