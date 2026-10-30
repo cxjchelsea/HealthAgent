@@ -8,7 +8,7 @@ from langgraph.graph import END, StateGraph
 from agent.decision import NativeToolDecision
 from agent.tools import TOOL_SCHEMAS, execute_tool
 from agent.skills import (exposed_tools, load_instructions, SKILL_VERSION,
-                          select_tool_exposure, exposure_schemas)
+                          select_tool_exposure, exposure_schemas, exposure_instructions)
 from agent.planning import PlanLedger
 from services.evidence_store import make_attempt
 from agent.arithmetic_recovery import arithmetic_equivalent
@@ -675,7 +675,7 @@ class AgentLoop:
             "Use tools only where their verified observations are necessary."
             if understanding_result is not None else "")
         initial: AgentState = {"run_id": run_id, "messages": [
-            {"role": "system", "content": PROMPT + "\nSelected skill instructions (" + SKILL_VERSION + "):\n" + load_instructions(goal, strategy=self.skill_strategy, max_chars=self.skill_budget_chars) + resume_context + structured_policy},
+            {"role": "system", "content": PROMPT + "\nSelected skill instructions (" + SKILL_VERSION + "):\n" + (exposure_instructions(selection, max_chars=self.skill_budget_chars) if self.skill_strategy == "semantic" else load_instructions(goal, strategy=self.skill_strategy, max_chars=self.skill_budget_chars)) + resume_context + structured_policy},
             *clean_history, *goal_view, {"role": "user", "content": goal}],
             "traces": [], "tasks": [], "final": "", "status": "running",
             "termination_reason": None, "pending_action": None,
