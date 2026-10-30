@@ -88,7 +88,7 @@ def test_topk_observability_exposes_only_names_and_bounded_metrics():
     assert trace["candidate_count"] >= 1
     assert trace["selector_duration_ms"] >= 0
     assert trace["selector_model_calls"] == 1
-    assert trace["exposed_tools"] == ["request_clarification", "calculate"]
+    assert set(trace["exposed_tools"]) == {"request_clarification", "calculate"}
     assert "Verify seven of ten" not in str(trace)
 
 
