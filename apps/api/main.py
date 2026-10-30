@@ -1233,7 +1233,9 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                 counter["shadow"] += counter["total"] - shadow_calls_before
             shadow["diagnostic_elapsed_ms"] = int(
                 (time.monotonic() - shadow_started) * 1000)
-            shadow["diagnostic_model_calls"] = 1 + shadow.get("recovery_model_calls", 0)
+            shadow["diagnostic_model_calls"] = (1
+                + shadow.get("recovery_model_calls", 0)
+                + shadow.get("schema_retry_model_calls", 0))
             shadow["execution_authorized"] = False
         response_data = {**result, "conversation_id": cid,
                          "message_id": assistant_id, "turn_id": turn_id}
