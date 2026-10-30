@@ -48,6 +48,9 @@ def main():
         obj = reply.json()
         trace = obj.get("trace") or []
         detail = obj.get("detail") if isinstance(obj.get("detail"), dict) else {}
+        error_code = detail.get("code") or obj.get("failure_code") or obj.get("termination_reason")
+        if not error_code and reply.status_code >= 400:
+            error_code = "unclassified_http_error"
         return {"status": reply.status_code, "agent_status": obj.get("status"),
                 "execution_mode": obj.get("execution_mode"),
                 "trace_types": [e.get("type") for e in trace],
