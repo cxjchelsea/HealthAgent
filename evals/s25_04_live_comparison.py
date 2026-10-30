@@ -74,6 +74,7 @@ def evaluate(repeats=2):
                     "strategy": strategy,
                     "repeat": repetition + 1,
                     "http_status": response.status_code,
+                    "agent_terminal_success": (response.status_code == 200 and payload.get("status") == "completed"),
                     "agent_status": payload.get("status"),
                     "termination_reason": payload.get("termination_reason"),
                     "execution_mode": payload.get("execution_mode"),
@@ -96,6 +97,8 @@ def evaluate(repeats=2):
         summary[strategy] = {
             "cases": len(rows),
             "http_200": sum(x["http_status"] == 200 for x in rows),
+            "agent_completed": sum(x["agent_terminal_success"] for x in rows),
+            "partial": sum(x["agent_status"] == "partial" for x in rows),
             "tool_evidence_matched": sum(x["tool_evidence_matched"] for x in rows),
             "no_tool_violations": sum(x["no_tool_violations"] for x in rows),
             "median_duration_ms": statistics.median(x["duration_ms"] for x in rows),
@@ -131,7 +134,8 @@ def main():
     target.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(report["summary"], ensure_ascii=False, indent=2))
     print("Evidence:", target)
-    if any(x["http_status"] != 200 for x in report["cases"]):
+    if any(x["http_status"] != 200 or not x["agent_terminal_success"]
+           or not x["tool_evidence_matched"] for x in report["cases"]):
         raise SystemExit(1)
 
 
