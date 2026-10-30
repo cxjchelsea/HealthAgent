@@ -9,6 +9,7 @@ from agent.decision import NativeToolDecision
 from agent.tools import TOOL_SCHEMAS, execute_tool
 from agent.skills import (exposed_tools, load_instructions, SKILL_VERSION,
                           select_tool_exposure, exposure_schemas, exposure_instructions, SEMANTIC_GUIDANCE)
+from agent.semantic_topk import select_read_tools
 from agent.planning import PlanLedger
 from services.evidence_store import make_attempt
 from agent.arithmetic_recovery import arithmetic_equivalent
@@ -55,10 +56,12 @@ class AgentState(TypedDict):
 
 class AgentLoop:
     def __init__(self, decider: Any, max_steps: int = 6, clock=None, task_store=None, memory_store=None, mcp_client=None, skill_strategy='dynamic', skill_budget_chars=600, execution_guard=None, dispatch_journal=None,
-                 ordinary_attempt_journal=None, ordinary_attempt_session_factory=None):
+                 ordinary_attempt_journal=None, ordinary_attempt_session_factory=None, candidate_selector=None, selector_model=None):
         if max_steps < 1 or max_steps > 20:
             raise ValueError("max_steps must be 1..20")
         self.decider = decider
+        self.candidate_selector = candidate_selector
+        self.selector_model = selector_model
         self.max_steps = max_steps
         self.clock = clock
         self.task_store = task_store
@@ -79,9 +82,9 @@ class AgentLoop:
         self.graph = flow.compile()
 
     async def _decide(self, state: AgentState) -> dict:
-        if self.skill_strategy in ("semantic", "semantic_guided"):
+        if self.skill_strategy in ("semantic", "semantic_guided", "semantic_topk"):
             selection = select_tool_exposure(
-                state["user_request"], TOOL_SCHEMAS, strategy=self.skill_strategy,
+                state["user_request"], TOOL_SCHEMAS, strategy="semantic" if self.skill_strategy == "semantic_topk" else self.skill_strategy,
                 active_step_tools=tuple(
                     step.get("expected_tool") for step in state["plan"].snapshot()
                     if step.get("status") == "pending" and step.get("expected_tool")
@@ -622,7 +625,7 @@ class AgentLoop:
         # Tool execution still requires the independent tool authorization and validation.
         tool_strategy = "all" if understanding_result is not None else self.skill_strategy
         if self.skill_strategy in ("semantic", "semantic_guided"):
-            selection = select_tool_exposure(goal, TOOL_SCHEMAS, strategy=self.skill_strategy)
+            selection = select_tool_exposure(goal, TOOL_SCHEMAS, strategy="semantic" if self.skill_strategy == "semantic_topk" else self.skill_strategy)
             selected_tools = exposure_schemas(selection, TOOL_SCHEMAS)
         else:
             selected_tools = exposed_tools(goal, TOOL_SCHEMAS, strategy=tool_strategy)
@@ -647,6 +650,23 @@ class AgentLoop:
                           "recall_memory", "mcp_reference_lookup"}
             selected_tools = [tool for tool in selected_tools
                               if tool["function"]["name"] in read_tools]
+        # S25-04 opt-in: model-mediated shortlist is a reduction ONLY of the
+        # already Host-admitted read-only tools; keep plan/control and writes
+        # governed by the existing authorization and execution boundaries.
+        if self.skill_strategy == "semantic_topk" and mode == "read_only":
+            ranked = [t for t in selected_tools if t["function"]["name"] in {
+                "calculate", "utc_time", "list_tasks", "recall_memory",
+                "mcp_reference_lookup"}]
+            if self.candidate_selector is None or not self.selector_model:
+                topk_names = {t["function"]["name"] for t in ranked}
+            else:
+                topk_names, _ = await select_read_tools(
+                    self.candidate_selector, self.selector_model, goal, ranked)
+            selected_tools = [t for t in selected_tools
+                              if t["function"]["name"] not in {
+                                  "calculate", "utc_time", "list_tasks",
+                                  "recall_memory", "mcp_reference_lookup"}
+                              or t["function"]["name"] in topk_names]
         resume_context = ("\nTrusted checkpoint: revision " + str(resumed.revision) +
                           "; steps: " + json.dumps(resumed.snapshot(), ensure_ascii=False)
                           if resumed.revision else "")
