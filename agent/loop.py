@@ -7,7 +7,8 @@ from typing import Any, TypedDict
 from langgraph.graph import END, StateGraph
 from agent.decision import NativeToolDecision
 from agent.tools import TOOL_SCHEMAS, execute_tool
-from agent.skills import exposed_tools, load_instructions, SKILL_VERSION
+from agent.skills import (exposed_tools, load_instructions, SKILL_VERSION,
+                          select_tool_exposure, exposure_schemas)
 from agent.planning import PlanLedger
 from services.evidence_store import make_attempt
 from agent.arithmetic_recovery import arithmetic_equivalent
@@ -35,6 +36,8 @@ class AgentState(TypedDict):
     audit_enabled: bool
     audit: list[dict]
     allowed_tools: list[dict]
+    exposure_limit: list[str]
+    unavailable_tools: list[str]
     plan: PlanLedger
     last_success: dict | None
     superseded_step_ids: list[int]
@@ -76,6 +79,28 @@ class AgentLoop:
         self.graph = flow.compile()
 
     async def _decide(self, state: AgentState) -> dict:
+        if self.skill_strategy == "semantic":
+            selection = select_tool_exposure(
+                state["user_request"], TOOL_SCHEMAS, strategy="semantic",
+                active_step_tools=tuple(
+                    step.get("expected_tool") for step in state["plan"].snapshot()
+                    if step.get("status") == "pending" and step.get("expected_tool")
+                ),
+                unavailable_tools=tuple(state["unavailable_tools"]),
+            )
+            eligible = set(selection.tool_names) & set(state["exposure_limit"])
+            # request_clarification is a host control tool, not a registered Skill.
+            eligible |= set(state["exposure_limit"]) & {"request_clarification"}
+            state["allowed_tools"] = [
+                tool for tool in TOOL_SCHEMAS
+                if tool["function"]["name"] in eligible
+            ]
+            state["traces"].append({
+                "step": state["iterations"] + 1, "type": "tool_exposure",
+                "strategy": selection.mode, "version": selection.version,
+                "tool_names": [tool["function"]["name"]
+                               for tool in state["allowed_tools"]],
+            })
         decision = await self.decider.decide(state["messages"], state["allowed_tools"])
         iteration = state["iterations"] + 1
         if not decision.tool_calls:
@@ -327,6 +352,11 @@ class AgentLoop:
                     unresolved_failures.append(action_key)
                     if name == "calculate":
                         calculation_errors[action_key] = str(result.get("error", ""))
+            if (self.skill_strategy == "semantic"
+                    and name in {"mcp_reference_lookup", "save_memory", "recall_memory"}
+                    and result.get("error") in {"mcp_unavailable", "memory_unavailable"}
+                    and name not in state["unavailable_tools"]):
+                state["unavailable_tools"].append(name)
             if name == "recall_memory":
                 state["memory_recall_observed"] = True
             if name not in {"propose_plan", "revise_plan", "complete_plan_step"}:
@@ -591,7 +621,11 @@ class AgentLoop:
         # Model-derived understanding must not be routed through a second keyword classifier.
         # Tool execution still requires the independent tool authorization and validation.
         tool_strategy = "all" if understanding_result is not None else self.skill_strategy
-        selected_tools = exposed_tools(goal, TOOL_SCHEMAS, strategy=tool_strategy)
+        if self.skill_strategy == "semantic":
+            selection = select_tool_exposure(goal, TOOL_SCHEMAS, strategy="semantic")
+            selected_tools = exposure_schemas(selection, TOOL_SCHEMAS)
+        else:
+            selected_tools = exposed_tools(goal, TOOL_SCHEMAS, strategy=tool_strategy)
         selected_tools += [t for t in TOOL_SCHEMAS
                            if t["function"]["name"] == "request_clarification"]
         if resumed.revision:
@@ -650,6 +684,8 @@ class AgentLoop:
             "unresolved_calculation_errors": {}, "iterations": 0,
             "audit_enabled": include_evidence, "audit": [],
             "allowed_tools": selected_tools,
+            "exposure_limit": [t["function"]["name"] for t in selected_tools],
+            "unavailable_tools": [],
             "plan": resumed, "last_success": None,
             "superseded_step_ids": superseded_step_ids,
             "superseded_expression": superseded_expression,
