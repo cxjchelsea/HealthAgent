@@ -267,3 +267,27 @@ def test_api_recreation_preserves_conversation_and_seeded_task(tmp_path):
         assert rows[0]["task_id"] == written["task_id"]
         assert rows[0]["title"] == "S25-04 API durable test"
         engine.dispose()
+
+
+def test_mcp_failure_removes_unavailable_capability_on_next_decision():
+    class TwoStep:
+        def __init__(self):
+            self.exposed = []
+        async def decide(self, messages, tools):
+            self.exposed.append({t["function"]["name"] for t in tools})
+            if len(self.exposed) == 1:
+                return Decision("", [{"id": "missing-mcp", "name": "mcp_reference_lookup",
+                                      "arguments": {"term": "MCP"}}])
+            return Decision("Reference service is unavailable; not verified.", [])
+
+    decider = TwoStep()
+    result = asyncio.run(AgentLoop(
+        decider, skill_strategy="semantic_topk",
+        candidate_selector=Provider(
+            {"tools": ["mcp_reference_lookup"], "uncertain": False}),
+        selector_model="test", mcp_client=None
+    ).run("Verify MCP using the reference service", execution_mode="read_only"))
+    assert "mcp_reference_lookup" in decider.exposed[0]
+    assert len(decider.exposed) >= 2
+    assert "mcp_reference_lookup" not in decider.exposed[1]
+    assert result["status"] != "completed"
