@@ -223,6 +223,36 @@ def extract_unique_step_ordinal(message: str) -> tuple[str, int] | None:
     return match.group(0), number
 
 
+def extract_revision_target_step(message: str) -> tuple[str, int] | None:
+    """Find the single explicitly edited step, excluding 'unchanged' references.
+
+    This is a Shadow-only textual binding hint, not an execution decision.
+    Both multiple edited targets and missing edit verbs abstain; the existing
+    unique-reference rule is retained for single-step requests.
+    """
+    unique = extract_unique_step_ordinal(message)
+    if unique is not None:
+        return unique
+    numeral = r"([一二三四五六七八1-8])"
+    ordinal = rf"第{numeral}步"
+    patterns = (
+        # "第二步由计算 5*6 改为计算 7*8，第一步不变"
+        rf"({ordinal})(?:由[^，。；;]{{1,80}})?(?:改为|改成|修改为|调整为|替换为)",
+        # "修改第二步为..." (independent from following unchanged steps)
+        rf"(?:修改|调整|更改|替换)({ordinal})",
+    )
+    numbers = {"一": 1, "二": 2, "三": 3, "四": 4,
+               "五": 5, "六": 6, "七": 7, "八": 8}
+    targets = []
+    for pattern in patterns:
+        for match in re.finditer(pattern, message):
+            raw = match.group(1)
+            token = match.group(2)
+            targets.append((raw, numbers.get(token, int(token) if token.isdigit() else 0)))
+    # Repeated evidence or multiple edit targets is deliberately not resolved.
+    return targets[0] if len(targets) == 1 else None
+
+
 def bind_explicit_revision_step(route: ShadowRoute, message: str,
                                 host_facts: Any | None) -> ShadowRoute:
     """Bind one uniquely written ordinal against a trusted checkpoint."""
@@ -232,7 +262,7 @@ def bind_explicit_revision_step(route: ShadowRoute, message: str,
     if not (getattr(host_facts, "has_plan", False)
             and getattr(host_facts, "revision_valid", False) and states):
         return route
-    found = extract_unique_step_ordinal(message)
+    found = extract_revision_target_step(message)
     if found is None:
         return route
     _, number = found
