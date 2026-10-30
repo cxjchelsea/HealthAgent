@@ -117,3 +117,40 @@ def test_final_read_only_fence_and_uncertain_fallback():
     assert any(e.get("type") == "topk_selection" and
                e.get("reason") == "fallback_invalid_or_uncertain"
                for e in result["trace"])
+
+
+class ToolAttempt:
+    def __init__(self, name, arguments):
+        self.name = name
+        self.arguments = arguments
+        self.calls = 0
+
+    async def decide(self, messages, tools):
+        self.calls += 1
+        if self.calls == 1:
+            return Decision("", [{"id": "probe1", "name": self.name,
+                                  "arguments": self.arguments}])
+        return Decision("Reviewed the observation", [])
+
+
+def test_readonly_rejects_model_requested_write_at_executor_boundary():
+    decider = ToolAttempt("create_task", {"title": "must never be created"})
+    result = asyncio.run(AgentLoop(
+        decider, skill_strategy="semantic_topk",
+        candidate_selector=Provider({"tools": ["list_tasks"], "uncertain": False}),
+        selector_model="test").run("Check current tasks", execution_mode="read_only"))
+    rejected = [e for e in result["trace"]
+                if e.get("type") == "tool" and e.get("name") == "create_task"]
+    assert rejected and all(e.get("ok") is False for e in rejected)
+
+
+def test_respond_only_rejects_model_requested_read_tool():
+    decider = ToolAttempt("calculate", {"expression": "5/7*100"})
+    result = asyncio.run(AgentLoop(
+        decider, skill_strategy="semantic_topk",
+        candidate_selector=Provider(fail=True), selector_model="test"
+    ).run("Explain goals", execution_mode="respond_only"))
+    rejected = [e for e in result["trace"]
+                if e.get("type") == "tool" and e.get("name") == "calculate"]
+    assert rejected and all(e.get("ok") is False for e in rejected)
+    assert not any(e.get("type") == "topk_selection" for e in result["trace"])
