@@ -624,7 +624,7 @@ class AgentLoop:
         # Model-derived understanding must not be routed through a second keyword classifier.
         # Tool execution still requires the independent tool authorization and validation.
         tool_strategy = "all" if understanding_result is not None else self.skill_strategy
-        if self.skill_strategy in ("semantic", "semantic_guided"):
+        if self.skill_strategy in ("semantic", "semantic_guided", "semantic_topk"):
             selection = select_tool_exposure(goal, TOOL_SCHEMAS, strategy="semantic" if self.skill_strategy == "semantic_topk" else self.skill_strategy)
             selected_tools = exposure_schemas(selection, TOOL_SCHEMAS)
         else:
