@@ -105,3 +105,50 @@ def test_invalid_reference_never_retried_or_repaired():
         pending_action=None))
     assert provider.calls == 1
     assert result["state"] == "unavailable"
+
+
+def test_revision_target_excludes_explicit_unchanged_step():
+    from agent.route_shadow import extract_revision_target_step, bind_explicit_revision_step
+    from agent.route_shadow_host import ShadowHostFacts
+    message = "将已保存计划的第二步由计算 5*6 改为计算 7*8，第一步不变，不要执行。"
+    assert extract_revision_target_step(message) == ("第二步", 2)
+    proposal = revised("none")
+    proposal["reference"] = {"kind": "none"}
+    from agent.route_shadow import ShadowRoute
+    route = ShadowRoute.model_validate(proposal)
+    bound = bind_explicit_revision_step(
+        route, message, ShadowHostFacts(
+            has_plan=True, plan_states=("pending", "pending"),
+            revision_valid=True))
+    assert bound.reference.kind == "saved_step"
+    assert bound.reference.step_number == 2
+
+
+@pytest.mark.parametrize("message", [
+    "第二步改为计算7*8，第一步也改为计算9*9",
+    "第二步和第一步都修改一下",
+    "将第二步改为计算7*8，并把第二步再改成计算9*9",
+    "第一步不变，第二步也不变",
+])
+def test_revision_target_abstains_on_multiple_or_non_changes(message):
+    from agent.route_shadow import extract_revision_target_step
+    assert extract_revision_target_step(message) is None
+
+
+def test_revision_target_preserves_unambiguous_single_reference():
+    from agent.route_shadow import extract_revision_target_step
+    assert extract_revision_target_step("请修改第二步，不要执行") == ("第二步", 2)
+
+
+def test_revision_target_does_not_promote_missing_checkpoint():
+    from agent.route_shadow import ShadowRoute, bind_explicit_revision_step
+    from agent.route_shadow_host import ShadowHostFacts
+    request = revised("none")
+    request["reference"] = {"kind": "none"}
+    route = ShadowRoute.model_validate(request)
+    msg = "将第二步由计算5*6改为计算7*8，第一步不变"
+    result = bind_explicit_revision_step(
+        route, msg, ShadowHostFacts(
+            has_plan=False, plan_states=("pending", "pending"),
+            revision_valid=True))
+    assert result.reference.kind == "none"
