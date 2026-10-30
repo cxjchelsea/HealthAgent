@@ -93,10 +93,22 @@ def main():
     p.add_argument("--endpoint", default="http://127.0.0.1:8012")
     p.add_argument("--output", default="m5-unified-live.json")
     p.add_argument("--timeout", type=float, default=240)
+    p.add_argument("--require-default-profile", action="store_true",
+                   help="Verify the real-provider auto unified default without legacy routing overrides")
+    p.add_argument("--shadow-regression-only", action="store_true",
+                   help="Run only CREATE_B, REVISE and PENDING for post-fix Shadow diagnostics")
     args = p.parse_args()
     if os.getenv("RUN_S25_02_M5_UNIFIED_LIVE") != "1":
         p.error("Explicitly set RUN_S25_02_M5_UNIFIED_LIVE=1")
-    if (os.getenv("ROUTE_ADMISSION_MODE") != "guarded"
+    if args.require_default_profile:
+        # A default-mode acceptance must not secretly be an M5 opt-in run.
+        for name in ("ROUTE_ADMISSION_MODE", "UNDERSTANDING_STRATEGY",
+                     "M5_UNIFIED_ROUTE_ENABLED", "M5_FIRST_ROUTE_ENABLED"):
+            if os.getenv(name) is not None:
+                p.error(name + " must be unset in default-profile acceptance")
+        if os.getenv("ROUTING_PROFILE", "auto").lower() != "auto":
+            p.error("ROUTING_PROFILE must be auto or unset for default acceptance")
+    elif (os.getenv("ROUTE_ADMISSION_MODE") != "guarded"
             or os.getenv("M5_UNIFIED_ROUTE_ENABLED", "").lower() != "true"
             or os.getenv("UNDERSTANDING_STRATEGY") != "structured"):
         p.error("Guarded, structured and M5_UNIFIED_ROUTE_ENABLED=true required in both shells")
@@ -115,6 +127,9 @@ def main():
         ("PENDING", "pending", PENDING),
         ("PENDING_ANSWER", "pending", PENDING_ANSWER),
     ]
+    if args.shadow_regression_only:
+        cases = [item for item in cases
+                 if item[0] in {"CREATE_B", "REVISE", "PENDING"}]
     out = {
         "schema": "s25-m5-unified-live-v1",
         "run_id": uuid.uuid4().hex[:12],
@@ -130,6 +145,18 @@ def main():
         if (out["model"].get("route_admission_mode") != "guarded"
                 or out["model"].get("m5_unified_route_enabled") is not True):
             p.error("API is not running guarded M5 unified code; restart exact branch HEAD")
+        if args.require_default_profile and (
+                out["model"].get("routing_profile") != "unified"
+                or out["model"].get("routing_profile_requested") != "auto"
+                or out["model"].get("routing_profile_source") != "auto_real_provider_default"
+                or out["model"].get("understanding_strategy") != "structured"):
+            p.error("API does not advertise real-provider AUTO -> UNIFIED profile")
+        out["acceptance_mode"] = ("default_auto_unified" if args.require_default_profile
+                                  else "explicit_unified")
+        if args.shadow_regression_only:
+            if out["model"].get("route_shadow_enabled") is not True:
+                p.error("Shadow regression requires server ROUTE_SHADOW_ENABLED=true")
+            out["acceptance_mode"] += "_shadow_regression"
         client.get("/readyz").raise_for_status()
         failed_groups = set()
         last_ids = {}
@@ -160,6 +187,16 @@ def main():
                 except (ValueError, TypeError):
                     categories = None
                 ok = expected(case, response.status_code, payload, categories)
+                shadow = payload.get("route_shadow")
+                if args.shadow_regression_only:
+                    expected_shadow_route = ("plan_revise" if case == "REVISE"
+                                             else "clarify" if case == "PENDING"
+                                             else "plan_create")
+                    ok = (ok and isinstance(shadow, dict)
+                          and shadow.get("state") == "valid"
+                          and shadow.get("route") == expected_shadow_route
+                          and shadow.get("host_admission_complete") is False
+                          and shadow.get("execution_authorized") is False)
                 record = {
                     "case": case, "group": group, "conversation_id": cid,
                     "client_request_id": rid, "http": response.status_code,
@@ -167,6 +204,10 @@ def main():
                     "model_http_attempts":
                         response.headers.get("x-healthagent-model-http-attempts"),
                     "model_call_categories": categories,
+                    "shadow_state": shadow.get("state") if isinstance(shadow, dict) else None,
+                    "shadow_route": shadow.get("route") if isinstance(shadow, dict) else None,
+                    "shadow_retry_calls": (shadow.get("schema_retry_model_calls")
+                                            if isinstance(shadow, dict) else None),
                     "response": payload, "verdict": "PASS" if ok else "FAIL",
                 }
             except (httpx.HTTPError, ValueError) as exc:

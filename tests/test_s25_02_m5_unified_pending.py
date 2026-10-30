@@ -43,7 +43,7 @@ def test_pending_origin_is_not_sent_to_fresh_plan_primary(
         return "answer"
 
     async def old_plan(*args, **kwargs):
-        return PlanRequest(intent="other", steps=[])
+        raise AssertionError("unified pending continuation cannot invoke legacy plan intent")
 
     async def policy(message, interpretation):
         return "read_only"
@@ -51,6 +51,8 @@ def test_pending_origin_is_not_sent_to_fresh_plan_primary(
     monkeypatch.setattr("apps.api.main.propose_saved_plan_route", forbidden)
     monkeypatch.setattr("apps.api.main.propose_new_plan_route", forbidden)
     monkeypatch.setattr("apps.api.main.review_plan_intent", old_plan)
+    monkeypatch.setattr("apps.api.main.review_plan_cancellation", old_plan)
+    monkeypatch.setattr("apps.api.main.review_plan_revision", old_plan)
     monkeypatch.setattr("apps.api.main.classify_pending_reply", pending_answer)
     monkeypatch.setattr(HTTPUnderstandingModel, "complete", fake_complete)
     monkeypatch.setattr("apps.api.main.execute_tool",

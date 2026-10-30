@@ -364,6 +364,8 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
             if (result is None and existing_checkpoint is not None
                     and settings.understanding_strategy == "structured"
                     and agent_decider is None and body.goal_confirmation is None
+                    and (settings.effective_routing_profile != "unified"
+                         or (pending_action is None and clarification_id is None))
                     and (unified_saved_route == "plan_cancel"
                          if unified_saved_route is not None
                          else await review_plan_cancellation(
@@ -413,7 +415,9 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
             reviewed_plan_intent = None
             if (result is None and existing_checkpoint
                     and settings.understanding_strategy == "structured"
-                    and agent_decider is None and body.goal_confirmation is None):
+                    and agent_decider is None and body.goal_confirmation is None
+                    and (settings.effective_routing_profile != "unified"
+                         or (pending_action is None and clarification_id is None))):
                 if unified_saved_route is not None:
                     # One shared owner has already selected the saved-plan route.
                     # Typed semantic evidence does not replace Host authorization.
@@ -478,6 +482,8 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
             # Understanding, which must not rewrite the PlanLedger on its own.
             if (result is None and existing_checkpoint
                     and (unified_saved_route is None or unified_saved_route == "plan_revise")
+                    and (settings.effective_routing_profile != "unified"
+                         or (pending_action is None and clarification_id is None))
                     and not pending_plan_execution_intent
                     and settings.understanding_strategy == "structured"
                     and agent_decider is None and body.goal_confirmation is None):
@@ -751,7 +757,9 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
             # Separate authoring a future plan from executing its steps. Only
             # the bound checkpoint can authorize later read-only execution.
             if (result is None and parsed_result is not None
-                    and not suppress_persistent_routing and agent_decider is None):
+                    and not suppress_persistent_routing and agent_decider is None
+                    and (settings.effective_routing_profile != "unified"
+                         or (pending_action is None and clarification_id is None))):
                 plan_decision = (reviewed_plan_intent or unified_new_plan_decision
                                  or await review_plan_intent(
                     HTTPUnderstandingModel(settings.model_provider,
@@ -776,12 +784,17 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                         settings.understanding_strong_model, body.content)
                 elif (plan_decision.intent in {"execute_first", "resume"}
                       and existing_checkpoint is None):
-                    missing_reference = await review_missing_plan_reference(
+                    # Unified no-plan primary has already classified a
+                    # missing saved-plan reference. Host absence is definitive;
+                    # never seek a competing legacy semantic classifier.
+                    missing_reference = (True if unified_new_plan_decision is not None
+                        and unified_new_plan_decision.intent == "resume"
+                        else await review_missing_plan_reference(
                         HTTPUnderstandingModel(
                             settings.model_provider, settings.model_base_url,
                             settings.model_api_key, settings.model_timeout_seconds,
                             settings.model_max_output_tokens),
-                        settings.understanding_strong_model, body.content)
+                        settings.understanding_strong_model, body.content))
                 plan_route = resolve_plan_admission(
                     plan_decision, existing_checkpoint=existing_checkpoint,
                     creation_confirmed=creation_confirmed,
@@ -1220,7 +1233,9 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                 counter["shadow"] += counter["total"] - shadow_calls_before
             shadow["diagnostic_elapsed_ms"] = int(
                 (time.monotonic() - shadow_started) * 1000)
-            shadow["diagnostic_model_calls"] = 1 + shadow.get("recovery_model_calls", 0)
+            shadow["diagnostic_model_calls"] = (1
+                + shadow.get("recovery_model_calls", 0)
+                + shadow.get("schema_retry_model_calls", 0))
             shadow["execution_authorized"] = False
         response_data = {**result, "conversation_id": cid,
                          "message_id": assistant_id, "turn_id": turn_id}
@@ -1292,7 +1307,12 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
         return {"provider":settings.model_provider,"model": "fake" if settings.model_provider=="fake" else settings.model_name,
                 "configured":settings.provider_ready,
                 "route_admission_mode": settings.route_admission_mode,
+                "understanding_strategy": settings.understanding_strategy,
+                "routing_profile": settings.effective_routing_profile,
+                "routing_profile_requested": settings.routing_profile,
+                "routing_profile_source": settings.routing_profile_source,
                 "m5_unified_route_enabled": settings.m5_unified_route_enabled,
+                "route_shadow_enabled": settings.route_shadow_enabled,
                 "m4_contract": "guarded-plan-route-priority-v2"}
 
     @app.post("/conversations",status_code=201)

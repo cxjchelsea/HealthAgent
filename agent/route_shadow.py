@@ -223,6 +223,36 @@ def extract_unique_step_ordinal(message: str) -> tuple[str, int] | None:
     return match.group(0), number
 
 
+def extract_revision_target_step(message: str) -> tuple[str, int] | None:
+    """Find the single explicitly edited step, excluding 'unchanged' references.
+
+    This is a Shadow-only textual binding hint, not an execution decision.
+    Both multiple edited targets and missing edit verbs abstain; the existing
+    unique-reference rule is retained for single-step requests.
+    """
+    unique = extract_unique_step_ordinal(message)
+    if unique is not None:
+        return unique
+    numeral = r"([一二三四五六七八1-8])"
+    ordinal = rf"第{numeral}步"
+    patterns = (
+        # "第二步由计算 5*6 改为计算 7*8，第一步不变"
+        rf"({ordinal})(?:由[^，。；;]{{1,80}}|也|再|都)?(?:改为|改成|修改为|调整为|替换为)",
+        # "修改第二步为..." (independent from following unchanged steps)
+        rf"(?:修改|调整|更改|替换)({ordinal})",
+    )
+    numbers = {"一": 1, "二": 2, "三": 3, "四": 4,
+               "五": 5, "六": 6, "七": 7, "八": 8}
+    targets = []
+    for pattern in patterns:
+        for match in re.finditer(pattern, message):
+            raw = match.group(1)
+            token = match.group(2)
+            targets.append((raw, numbers.get(token, int(token) if token.isdigit() else 0)))
+    # Repeated evidence or multiple edit targets is deliberately not resolved.
+    return targets[0] if len(targets) == 1 else None
+
+
 def bind_explicit_revision_step(route: ShadowRoute, message: str,
                                 host_facts: Any | None) -> ShadowRoute:
     """Bind one uniquely written ordinal against a trusted checkpoint."""
@@ -232,7 +262,7 @@ def bind_explicit_revision_step(route: ShadowRoute, message: str,
     if not (getattr(host_facts, "has_plan", False)
             and getattr(host_facts, "revision_valid", False) and states):
         return route
-    found = extract_unique_step_ordinal(message)
+    found = extract_revision_target_step(message)
     if found is None:
         return route
     _, number = found
@@ -352,11 +382,22 @@ uncertain_intent (NEVER "none"), and supply a nonempty question.
 Never provide a non-none clarification reason when required=false.
 For a clear request set ambiguity="clear". For uncertain requests choose
 primary_route="clarify" and provide a matching clarification object.
-Route combinations: respond/cancel => scope none and effect none;
-plan_cancel => target saved_plan, scope none and effect mutation_requested;
-agent_loop => scope single_tool or none; plan_create/plan_revise => scope none,
-effect mutation_requested; plan_execute_first => scope first_step;
-plan_resume => scope remaining_steps or all_steps. No other combination.
+MANDATORY exact route tuple examples (the schema rejects any mismatch):
+- plan_revise: route_target="saved_plan", execution_scope="none",
+  effect_intent="mutation_requested". Revising stored plan ARGUMENTS is a
+  mutation even when the user explicitly says "do not execute the steps".
+- clarify: execution_scope="none", effect_intent="none". Asking a question
+  NEVER has read_only/mutation_requested effect, even if a tool is mentioned.
+- plan_cancel: target saved_plan, scope none, effect mutation_requested.
+- plan_create: target none or saved_plan, scope none, effect mutation_requested.
+- agent_loop read-only tool: target tool_action or pending_clarification,
+  scope single_tool, effect read_only.
+- plan_execute_first: target saved_plan, scope first_step, effect read_only.
+- plan_resume: target saved_plan, scope remaining_steps or all_steps, effect read_only.
+- respond/cancel: scope none and effect none.
+Any mismatching tuple MUST be corrected in your ORIGINAL JSON before return.
+Do not reinterpret "do not execute" as "do not modify the requested plan".
+No other combination.
 If there is NO saved plan, a reference to continuing one is still a
 plan_resume semantic proposal: lack of checkpoint is a HOST denial, not an
 excuse to invent steps.
@@ -469,6 +510,7 @@ async def evaluate_shadow(provider: HTTPUnderstandingModel, model_name: str,
     import asyncio
     began = time.perf_counter()
     stage = "provider"
+    schema_retry_model_calls = 0
     try:
         raw = await asyncio.wait_for(provider.complete(
             model=model_name, response_schema=ShadowRoute.model_json_schema(),
@@ -481,7 +523,66 @@ async def evaluate_shadow(provider: HTTPUnderstandingModel, model_name: str,
                            "index_guide":_index_guide(message)
                        },ensure_ascii=False)}]), timeout=timeout_s)
         stage = "schema"
-        result = ShadowRoute.model_validate_json(raw)
+        try:
+            result = ShadowRoute.model_validate_json(raw)
+        except ValidationError as first_error:
+            # A single diagnostic-only retry for validly shaped JSON with a
+            # cross-field route combination error. Never silently repair model
+            # data, never bypass Pydantic, and never retry forged quotations.
+            mismatch = any(
+                err["type"] == "value_error"
+                and "invalid_shadow_route_combination" in str(
+                    err.get("ctx", {}).get("error", ""))
+                for err in first_error.errors(include_url=False))
+            candidate = None
+            try:
+                candidate = json.loads(raw)
+            except (ValueError, TypeError):
+                pass
+            if not mismatch or not isinstance(candidate, dict):
+                raise
+            original_route = candidate.get("primary_route")
+            original_target = candidate.get("route_target")
+            # Only the two observed, non-authoritative diagnostic schema
+            # mismatches are eligible. Other illegal combinations retain the
+            # original one-shot fail-closed behavior.
+            eligible = (
+                original_route == "plan_revise"
+                and original_target == "saved_plan"
+                and candidate.get("execution_scope") != "none"
+                and candidate.get("effect_intent") == "mutation_requested"
+            ) or (
+                original_route == "clarify"
+                and candidate.get("execution_scope") == "none"
+                and candidate.get("effect_intent") != "none"
+            )
+            if not eligible:
+                raise
+            schema_retry_model_calls = 1
+            retry_raw = await asyncio.wait_for(provider.complete(
+                model=model_name, response_schema=ShadowRoute.model_json_schema(),
+                messages=[
+                    {"role": "system", "content":
+                     PROMPT + "\nThis is a ONE-TIME diagnostic correction. "
+                     "Keep primary_route and route_target unchanged. "
+                     "Ensure execution_scope and effect_intent match the "
+                     "mandatory tuple for this route, and preserve any "
+                     "literal quotation exactly. Do not infer authorization."},
+                    {"role": "user", "content": json.dumps({
+                        "message": message, "has_saved_plan": has_plan,
+                        "has_pending_action": pending_action is not None,
+                        "pending_action_tool": pending_action,
+                        "pending_action_field": pending_field,
+                        "prior_candidate": candidate,
+                        "failure_code": "invalid_shadow_route_combination",
+                    }, ensure_ascii=False)},
+                ]), timeout=timeout_s)
+            # A second invalid proposal MUST stay unavailable, not be
+            # normalized or reclassified by the Host.
+            result = ShadowRoute.model_validate_json(retry_raw)
+            if (result.primary_route != original_route
+                    or result.route_target != original_target):
+                raise ValueError("shadow_retry_route_changed")
         # Preserve bounded typed semantics even if provenance fails.
         semantic = {"route": result.primary_route, "route_target": result.route_target,
                     "scope": result.execution_scope, "effect": result.effect_intent,
@@ -570,6 +671,7 @@ async def evaluate_shadow(provider: HTTPUnderstandingModel, model_name: str,
                 "host_admission_complete":False,
                 "evidence_spans":len(result.source_evidence),
                  "recovery_model_calls": recovery_calls,
+                "schema_retry_model_calls": schema_retry_model_calls,
                 **({"m3c_admission":m3c_preview} if m3c_preview is not None else {}),
                 **({"host_preview":host_preview} if host_preview is not None else {}),
                 **({"pending_field_state":pending_field_state}
@@ -622,6 +724,7 @@ async def evaluate_shadow(provider: HTTPUnderstandingModel, model_name: str,
                                  if err["type"] == "value_error" else "")}
                        for err in exc.errors(include_url=False)[:8]]
         return {"state":"unavailable","error_class":"ValidationError",
+                "schema_retry_model_calls": schema_retry_model_calls,
                 "validation_errors":diagnostics,
                 **({"combination_diagnostic": combination} if combination else {}),
                 "elapsed_ms":int((time.perf_counter()-began)*1000)}
@@ -642,6 +745,7 @@ async def evaluate_shadow(provider: HTTPUnderstandingModel, model_name: str,
                 "shadow_pending_field_conflict", "shadow_revision_step_out_of_range"}
         code = str(exc) if str(exc) in safe else "other_value_error"
         return {"state":"unavailable","error_class":"ValueError",
+                "schema_retry_model_calls": schema_retry_model_calls,
                 "semantic_proposal": semantic if stage == "source_provenance" else None,
                 "semantic_schema_valid": stage == "source_provenance",
                 "semantic_route_comparison_only": (
@@ -656,6 +760,7 @@ async def evaluate_shadow(provider: HTTPUnderstandingModel, model_name: str,
                 "elapsed_ms":int((time.perf_counter()-began)*1000)}
     except Exception as exc:
         return {"state":"unavailable","error_class":type(exc).__name__,
+                "schema_retry_model_calls": schema_retry_model_calls,
                 "elapsed_ms":int((time.perf_counter()-began)*1000)}
 
 

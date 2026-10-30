@@ -1,8 +1,9 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import Field
+from pydantic import Field, PrivateAttr, model_validator
 from typing import Literal
 
 class Settings(BaseSettings):
+    _routing_resolution_source: str = PrivateAttr(default="unresolved")
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
     database_url: str = "sqlite:///./healthagent.db"
     model_provider: str = "fake"
@@ -11,6 +12,7 @@ class Settings(BaseSettings):
     understanding_light_model: str = "qwen3:4b"
     understanding_strong_model: str = "qwen3:14b"
     run_s25_01_live: bool = False
+    routing_profile: Literal["auto", "unified", "legacy"] = "auto"
     route_shadow_enabled: bool = False  # M2 opt-in, never affects admission
     route_admission_mode: Literal["legacy", "guarded"] = "legacy"  # M4 explicit opt-in
     m5_first_route_enabled: bool = False  # explicit FIRST-only experiment
@@ -28,6 +30,71 @@ class Settings(BaseSettings):
     # Not an authentication system: development-only bearer tokens map to identities.
     user_tokens: str = ""
     allow_demo_identity: bool = True
+    @model_validator(mode="after")
+    def resolve_routing_profile(self):
+        # Auto selects the new default only for a real provider without an
+        # explicit legacy/experimental routing override. Fake model fixtures
+        # and existing explicit settings remain backward-compatible.
+        fields = {"route_admission_mode", "understanding_strategy",
+                  "m5_unified_route_enabled", "m5_first_route_enabled"}
+        explicit_flags = fields & self.model_fields_set
+        target = self.routing_profile
+        if target == "auto":
+            if not explicit_flags and self.model_provider != "fake":
+                self._routing_resolution_source = "auto_real_provider_default"
+                target = "unified"
+            else:
+                self._routing_resolution_source = (
+                    "auto_explicit_routing_overrides" if explicit_flags
+                    else "auto_fake_fixture")
+                # Explicit legacy/M4 compatibility is supported, but a
+                # half-enabled M5 or FIRST-only gate must never silently
+                # degrade to legacy/direct or bypass guarded admission.
+                if self.m5_unified_route_enabled and (
+                        self.route_admission_mode != "guarded"
+                        or self.understanding_strategy != "structured"
+                        or self.m5_first_route_enabled):
+                    raise ValueError("inconsistent_unified_route_flags")
+                if self.m5_first_route_enabled and (
+                        self.route_admission_mode != "guarded"
+                        or self.understanding_strategy != "structured"):
+                    raise ValueError("inconsistent_first_route_flags")
+                return self
+        if self.routing_profile != "auto":
+            self._routing_resolution_source = "explicit_" + self.routing_profile
+        values = {
+            "unified": ("guarded", "structured", True, False),
+            "legacy": ("legacy", "direct", False, False),
+        }
+        wanted = dict(zip(("route_admission_mode", "understanding_strategy",
+                           "m5_unified_route_enabled", "m5_first_route_enabled"),
+                          values[target]))
+        for key in explicit_flags:
+            if getattr(self, key) != wanted[key]:
+                raise ValueError("routing_profile_conflicts_with_" + key)
+        for key, value in wanted.items():
+            setattr(self, key, value)
+        return self
+
+    @property
+    def routing_profile_source(self) -> str:
+        """Routing provenance is captured before the model fields are mutated."""
+        return self._routing_resolution_source
+
+    @property
+    def effective_routing_profile(self) -> str:
+        if (self.route_admission_mode == "guarded"
+                and self.understanding_strategy == "structured"
+                and self.m5_unified_route_enabled
+                and not self.m5_first_route_enabled):
+            return "unified"
+        if (self.route_admission_mode == "legacy"
+                and self.understanding_strategy == "direct"
+                and not self.m5_unified_route_enabled
+                and not self.m5_first_route_enabled):
+            return "legacy"
+        return "compatibility"
+
     @property
     def provider_ready(self) -> bool:
         return self.model_provider in ("fake", "ollama_proxy") or bool(self.model_api_key)

@@ -118,7 +118,7 @@ class ProposedNewStep(BaseModel):
 
 class NewPlanRouteSignal(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    route: Literal["plan_create", "other"]
+    route: Literal["plan_create", "plan_missing", "other"]
     quote: str = Field(min_length=1, max_length=400)
     start: int | None = Field(default=None, ge=0)
     end: int | None = Field(default=None, gt=0)
@@ -135,8 +135,9 @@ async def propose_new_plan_route(provider, model: str, message: str) -> PlanRequ
     prompt = (
         "Decide current user's ONE route: plan_create ONLY if explicitly asking "
         "to CREATE/SAVE a FUTURE EXECUTABLE plan without running any step now; "
-        "otherwise other (standalone tools, chat, follow-ups, ambiguous or "
-        "requests to execute a missing prior plan). "
+        "plan_missing ONLY when explicitly asking to execute/resume a PREVIOUSLY "
+        "SAVED plan that is absent from Host state; otherwise other (standalone "
+        "tools, chat, follow-ups, ambiguous). "
         "Return JSON route, quote, steps (omit start/end). For plan_create, output "
         "2 to 8 ordered steps ONLY, with goal, tool_name (calculate or "
         "mcp_reference_lookup), arguments (calculate: expression; lookup: term), "
@@ -162,6 +163,12 @@ async def propose_new_plan_route(provider, model: str, message: str) -> PlanRequ
         if signal.steps:
             raise SavedPlanRouteRefused("m5_create_unexpected_steps")
         return PlanRequest(intent="other", steps=[])
+    if signal.route == "plan_missing":
+        if signal.steps:
+            raise SavedPlanRouteRefused("m5_create_unexpected_steps")
+        # This is a denial signal, never a source of execution authority.
+        # Host must verify the checkpoint is absent before responding.
+        return PlanRequest(intent="resume", steps=[])
     if not 2 <= len(signal.steps) <= 8:
         raise SavedPlanRouteRefused("m5_create_invalid_step_count")
     proposal_steps = []
