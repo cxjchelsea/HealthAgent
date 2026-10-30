@@ -63,9 +63,18 @@ async def main():
     key, value = "key_" + uuid.uuid4().hex[:8], "value_" + uuid.uuid4().hex[:8]
     cases = []
 
+    class ObservedDecider:
+        def __init__(self):
+            self.provider = NativeToolDecision(settings)
+            self.exposures = []
+        async def decide(self, messages, tools):
+            self.exposures.append([item["function"]["name"] for item in tools])
+            return await self.provider.decide(messages, tools)
+
     async def run(name, goal, mode, consent=False, mcp=None):
+        observed = ObservedDecider()
         loop = AgentLoop(
-            NativeToolDecision(settings), task_store=TaskStore(dbfile),
+            observed, task_store=TaskStore(dbfile),
             memory_store=MemoryStore(dbfile, consent),
             mcp_client=mcp or StdioMCPClient(),
             skill_strategy="semantic_topk",
@@ -84,7 +93,9 @@ async def main():
                 "termination_reason": result.get("termination_reason"),
                 "tool_events": events, "mode": mode,
                 "topk_observed": any(x.get("type") == "topk_selection"
-                                     for x in result.get("trace", []))}
+                                     for x in result.get("trace", [])),
+                "first_exposed_tools": observed.exposures[0] if observed.exposures else [],
+                "decision_attempts": len(observed.exposures)}
         cases.append(case)
         return case, result
 
@@ -101,7 +112,7 @@ async def main():
         no, _ = await run("memory_no_consent", f"把键 {key} 的值保存为 {value}", "execute", False)
         with sqlite3.connect(dbfile) as db:
             not_saved = db.execute("SELECT 1 FROM memory WHERE key=?", (key,)).fetchone() is None
-        no["passed"] = not_saved
+        no["passed"] = not_saved and no["status"] in {"completed", "partial"}
         no["memory_absent"] = not_saved
 
         yes, _ = await run("memory_with_consent", f"我明确同意保存：键 {key}，值 {value}", "execute", True)
@@ -129,12 +140,12 @@ async def main():
     finally:
         dbfile.unlink(missing_ok=True)
 
-    output = {"suite": "s25-04-direct-agentloop-v1", "mode": "REAL_PROVIDER",
+    output = {"suite": "s25-04-direct-agentloop-v2", "mode": "REAL_PROVIDER",
               "provider": settings.model_provider, "model": settings.model_name,
               "scope": "explicit trusted AgentLoop modes; excludes unified HTTP routing",
               "passed": sum(bool(x.get("passed")) for x in cases),
               "total": len(cases), "cases": cases}
-    target = folder / "direct-agentloop-v1.json"
+    target = folder / "direct-agentloop-v2.json"
     target.write_text(json.dumps(output, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(output, ensure_ascii=False, indent=2))
     print("Evidence:", target)
