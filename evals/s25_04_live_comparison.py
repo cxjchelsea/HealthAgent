@@ -23,7 +23,7 @@ CASES = (
     ("utc_now", "请核实此刻 UTC 时间。", {"utc_time"}),
     ("no_tool", "用自己的话简要解释行动和目标的区别。", set()),
 )
-STRATEGIES = ("dynamic", "all", "semantic")
+STRATEGIES = ("dynamic", "all", "semantic", "semantic_guided")
 
 
 def evaluate(repeats=2):
@@ -35,11 +35,16 @@ def evaluate(repeats=2):
     if base.model_provider == "fake":
         raise RuntimeError("REAL_PROVIDER required: model_provider=fake is not valid")
     selected_ids = {x.strip() for x in os.getenv("S25_04_CASE_IDS", "").split(",") if x.strip()}
+    selected_strategies = {x.strip() for x in os.getenv("S25_04_STRATEGIES", "").split(",") if x.strip()}
+    if selected_strategies - set(STRATEGIES):
+        raise ValueError("Unknown S25_04_STRATEGIES")
     unknown = selected_ids - {row[0] for row in CASES}
     if unknown:
         raise ValueError("Unknown S25_04_CASE_IDS values: " + ",".join(sorted(unknown)))
     results = []
     for strategy in STRATEGIES:
+        if selected_strategies and strategy not in selected_strategies:
+            continue
         for case_id, goal, expected in CASES:
             if selected_ids and case_id not in selected_ids:
                 continue
@@ -74,7 +79,7 @@ def evaluate(repeats=2):
                 # Legacy modes expose fixed tools but currently do not record
                 # tool_exposure trace. Do not infer their recall from this field.
                 recall = (expected <= set(first_tools)
-                          if strategy == "semantic" else None)
+                          if strategy in ("semantic", "semantic_guided") else None)
                 results.append({
                     "case_id": case_id,
                     "strategy": strategy,
@@ -85,7 +90,7 @@ def evaluate(repeats=2):
                     "termination_reason": payload.get("termination_reason"),
                     "execution_mode": payload.get("execution_mode"),
                     "trace_types": [e.get("type") for e in trace],
-                    "first_exposed_tools": first_tools if strategy == "semantic" else None,
+                    "first_exposed_tools": first_tools if strategy in ("semantic", "semantic_guided") else None,
                     "duration_ms": duration_ms,
                     "tools_called": [e.get("name") for e in tool_events],
                     "success_tools": sorted(str(t) for t in actual),
@@ -99,6 +104,8 @@ def evaluate(repeats=2):
                 Path(database_url.removeprefix("sqlite:///")).unlink(missing_ok=True)
     summary = {}
     for strategy in STRATEGIES:
+        if selected_strategies and strategy not in selected_strategies:
+            continue
         rows = [x for x in results if x["strategy"] == strategy]
         summary[strategy] = {
             "cases": len(rows),
@@ -118,6 +125,7 @@ def evaluate(repeats=2):
         "model": base.model_name,
         "repeats": repeats,
         "selected_case_ids": sorted(selected_ids) if selected_ids else "all",
+        "selected_strategies": sorted(selected_strategies) if selected_strategies else "all",
         "summary": summary,
         "cases": results,
         "limitations": [
