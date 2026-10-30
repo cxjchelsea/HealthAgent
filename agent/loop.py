@@ -39,6 +39,7 @@ class AgentState(TypedDict):
     audit: list[dict]
     allowed_tools: list[dict]
     exposure_limit: list[str]
+    authorized_write_tools: tuple[str, ...]
     unavailable_tools: list[str]
     plan: PlanLedger
     last_success: dict | None
