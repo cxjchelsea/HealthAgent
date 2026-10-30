@@ -27,7 +27,7 @@ def test_owner_scoped_evidence_is_durable_and_no_duplicate_on_read(tmp_path):
         owner = {"Authorization": "Bearer alpha"}
         outsider = {"Authorization": "Bearer beta"}
         created = client.post("/conversations", headers=owner)
-        assert created.status_code == 200
+        assert created.status_code == 201
         cid = created.json()["id"]
         r = client.post(f"/conversations/{cid}/agent/messages", headers=owner,
                         json={"content": "Compute 7*6",
