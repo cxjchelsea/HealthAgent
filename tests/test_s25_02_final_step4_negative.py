@@ -148,3 +148,28 @@ def test_invalid_profile_cannot_be_constructed_from_environment(monkeypatch):
     monkeypatch.setenv("ROUTE_ADMISSION_MODE", "legacy")
     with pytest.raises(ValidationError, match="routing_profile_conflicts"):
         Settings(_env_file=None, model_provider="ollama_proxy")
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"m5_unified_route_enabled": True},
+    {"m5_unified_route_enabled": True, "route_admission_mode": "guarded"},
+    {"m5_unified_route_enabled": True, "understanding_strategy": "structured"},
+    {"m5_first_route_enabled": True},
+    {"m5_first_route_enabled": True, "route_admission_mode": "guarded"},
+    {"m5_unified_route_enabled": True, "m5_first_route_enabled": True,
+     "route_admission_mode": "guarded", "understanding_strategy": "structured"},
+])
+def test_half_enabled_routing_flags_fail_closed_at_startup(kwargs):
+    with pytest.raises(ValidationError, match="inconsistent_"):
+        Settings(_env_file=None, model_provider="ollama_proxy", **kwargs)
+
+
+def test_supported_m4_and_first_only_compatibility_not_broken():
+    m4 = Settings(_env_file=None, model_provider="ollama_proxy",
+        route_admission_mode="guarded", understanding_strategy="structured",
+        m5_unified_route_enabled=False)
+    assert m4.effective_routing_profile == "compatibility"
+    first = Settings(_env_file=None, model_provider="ollama_proxy",
+        route_admission_mode="guarded", understanding_strategy="structured",
+        m5_unified_route_enabled=False, m5_first_route_enabled=True)
+    assert first.effective_routing_profile == "compatibility"
