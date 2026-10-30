@@ -42,6 +42,18 @@ class Settings(BaseSettings):
             if not explicit_flags and self.model_provider != "fake":
                 target = "unified"
             else:
+                # Explicit legacy/M4 compatibility is supported, but a
+                # half-enabled M5 or FIRST-only gate must never silently
+                # degrade to legacy/direct or bypass guarded admission.
+                if self.m5_unified_route_enabled and (
+                        self.route_admission_mode != "guarded"
+                        or self.understanding_strategy != "structured"
+                        or self.m5_first_route_enabled):
+                    raise ValueError("inconsistent_unified_route_flags")
+                if self.m5_first_route_enabled and (
+                        self.route_admission_mode != "guarded"
+                        or self.understanding_strategy != "structured"):
+                    raise ValueError("inconsistent_first_route_flags")
                 return self
         values = {
             "unified": ("guarded", "structured", True, False),
