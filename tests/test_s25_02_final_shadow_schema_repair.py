@@ -87,12 +87,13 @@ def test_unrelated_invalid_schema_not_retried():
         proposal("respond", target="tool_action", scope="single_tool",
                  effect="read_only"),
         proposal("respond", target="none", scope="none", effect="none"))
-    # Route mismatch is also a cross-field tuple and can receive one retry.
+    # Other route-combination failures are not eligible for this narrowly
+    # scoped Shadow-only retry and still fail closed on their first attempt.
     result = asyncio.run(evaluate_shadow(
         provider, "model", "你好", has_plan=False, pending_action=None))
-    assert provider.calls == 2
+    assert provider.calls == 1
     assert result["state"] == "unavailable"
-    assert result["validation_code"] == "other_value_error"
+    assert result["error_class"] == "ValidationError"
 
 
 def test_invalid_reference_never_retried_or_repaired():
