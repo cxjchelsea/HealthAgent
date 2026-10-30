@@ -1,5 +1,6 @@
 """LangGraph S2-A execution loop, bounded and observable."""
 import json
+import time
 import re
 import uuid
 from pathlib import Path
@@ -7,7 +8,9 @@ from typing import Any, TypedDict
 from langgraph.graph import END, StateGraph
 from agent.decision import NativeToolDecision
 from agent.tools import TOOL_SCHEMAS, execute_tool
-from agent.skills import exposed_tools, load_instructions, SKILL_VERSION
+from agent.skills import (exposed_tools, load_instructions, SKILL_VERSION,
+                          select_tool_exposure, exposure_schemas, exposure_instructions, SEMANTIC_GUIDANCE)
+from agent.semantic_topk import select_read_tools
 from agent.planning import PlanLedger
 from services.evidence_store import make_attempt
 from agent.arithmetic_recovery import arithmetic_equivalent
@@ -35,6 +38,9 @@ class AgentState(TypedDict):
     audit_enabled: bool
     audit: list[dict]
     allowed_tools: list[dict]
+    exposure_limit: list[str]
+    authorized_write_tools: tuple[str, ...]
+    unavailable_tools: list[str]
     plan: PlanLedger
     last_success: dict | None
     superseded_step_ids: list[int]
@@ -52,10 +58,12 @@ class AgentState(TypedDict):
 
 class AgentLoop:
     def __init__(self, decider: Any, max_steps: int = 6, clock=None, task_store=None, memory_store=None, mcp_client=None, skill_strategy='dynamic', skill_budget_chars=600, execution_guard=None, dispatch_journal=None,
-                 ordinary_attempt_journal=None, ordinary_attempt_session_factory=None):
+                 ordinary_attempt_journal=None, ordinary_attempt_session_factory=None, candidate_selector=None, selector_model=None):
         if max_steps < 1 or max_steps > 20:
             raise ValueError("max_steps must be 1..20")
         self.decider = decider
+        self.candidate_selector = candidate_selector
+        self.selector_model = selector_model
         self.max_steps = max_steps
         self.clock = clock
         self.task_store = task_store
@@ -76,6 +84,29 @@ class AgentLoop:
         self.graph = flow.compile()
 
     async def _decide(self, state: AgentState) -> dict:
+        if self.skill_strategy in ("semantic", "semantic_guided", "semantic_topk"):
+            selection = select_tool_exposure(
+                state["user_request"], TOOL_SCHEMAS, strategy="semantic" if self.skill_strategy == "semantic_topk" else self.skill_strategy,
+                active_step_tools=tuple(
+                    step.get("expected_tool") for step in state["plan"].snapshot()
+                    if step.get("status") == "pending" and step.get("expected_tool")
+                ),
+                unavailable_tools=tuple(state["unavailable_tools"]),
+                authorized_write_tools=tuple(state.get("authorized_write_tools", ())),
+            )
+            eligible = set(selection.tool_names) & set(state["exposure_limit"])
+            # request_clarification is a host control tool, not a registered Skill.
+            eligible |= set(state["exposure_limit"]) & {"request_clarification"}
+            state["allowed_tools"] = [
+                tool for tool in TOOL_SCHEMAS
+                if tool["function"]["name"] in eligible
+            ]
+            state["traces"].append({
+                "step": state["iterations"] + 1, "type": "tool_exposure",
+                "strategy": selection.mode, "version": selection.version,
+                "tool_names": [tool["function"]["name"]
+                               for tool in state["allowed_tools"]],
+            })
         decision = await self.decider.decide(state["messages"], state["allowed_tools"])
         iteration = state["iterations"] + 1
         if not decision.tool_calls:
@@ -327,6 +358,11 @@ class AgentLoop:
                     unresolved_failures.append(action_key)
                     if name == "calculate":
                         calculation_errors[action_key] = str(result.get("error", ""))
+            if (self.skill_strategy in ("semantic", "semantic_guided", "semantic_topk")
+                    and name in {"mcp_reference_lookup", "save_memory", "recall_memory"}
+                    and result.get("error") in {"mcp_unavailable", "memory_unavailable"}
+                    and name not in state["unavailable_tools"]):
+                state["unavailable_tools"].append(name)
             if name == "recall_memory":
                 state["memory_recall_observed"] = True
             if name not in {"propose_plan", "revise_plan", "complete_plan_step"}:
@@ -393,7 +429,7 @@ class AgentLoop:
                   understanding_result: dict | None = None,
                   execution_mode: str | None = None,
                   plan_control: str | None = None,
-                  execution_guard=None) -> dict:
+                  execution_guard=None, memory_write_consent: bool = False) -> dict:
         if not goal.strip() or len(goal) > 12000:
             raise ValueError("Goal must contain 1..12000 characters")
         run_id = str(uuid.uuid4())
@@ -591,7 +627,15 @@ class AgentLoop:
         # Model-derived understanding must not be routed through a second keyword classifier.
         # Tool execution still requires the independent tool authorization and validation.
         tool_strategy = "all" if understanding_result is not None else self.skill_strategy
-        selected_tools = exposed_tools(goal, TOOL_SCHEMAS, strategy=tool_strategy)
+        authorized_writes = (("create_task", "save_memory") if memory_write_consent
+                             else ("create_task",)) if (self.skill_strategy == "semantic_topk"
+                              and execution_mode == "execute") else ()
+        if self.skill_strategy in ("semantic", "semantic_guided", "semantic_topk"):
+            selection = select_tool_exposure(goal, TOOL_SCHEMAS, strategy="semantic" if self.skill_strategy == "semantic_topk" else self.skill_strategy,
+                                             authorized_write_tools=authorized_writes)
+            selected_tools = exposure_schemas(selection, TOOL_SCHEMAS)
+        else:
+            selected_tools = exposed_tools(goal, TOOL_SCHEMAS, strategy=tool_strategy)
         selected_tools += [t for t in TOOL_SCHEMAS
                            if t["function"]["name"] == "request_clarification"]
         if resumed.revision:
@@ -613,6 +657,35 @@ class AgentLoop:
                           "recall_memory", "mcp_reference_lookup"}
             selected_tools = [tool for tool in selected_tools
                               if tool["function"]["name"] in read_tools]
+        topk_trace = None
+        # S25-04 opt-in: model-mediated shortlist is a reduction ONLY of the
+        # already Host-admitted read-only tools; keep plan/control and writes
+        # governed by the existing authorization and execution boundaries.
+        if self.skill_strategy == "semantic_topk" and mode == "read_only":
+            ranked = [t for t in selected_tools if t["function"]["name"] in {
+                "calculate", "utc_time", "list_tasks", "recall_memory",
+                "mcp_reference_lookup"}]
+            selector_start = time.monotonic()
+            if self.candidate_selector is None or not self.selector_model:
+                topk_names = {t["function"]["name"] for t in ranked}
+                topk_reason = "fallback_not_configured"
+            else:
+                topk_names, topk_reason = await select_read_tools(
+                    self.candidate_selector, self.selector_model, goal, ranked)
+            selector_ms = round((time.monotonic() - selector_start) * 1000)
+            selected_tools = [t for t in selected_tools
+                              if t["function"]["name"] not in {
+                                  "calculate", "utc_time", "list_tasks",
+                                  "recall_memory", "mcp_reference_lookup"}
+                              or t["function"]["name"] in topk_names]
+            topk_trace = {"step": 0, "type": "topk_selection",
+                          "strategy": "semantic_topk", "reason": topk_reason,
+                          "selector_duration_ms": selector_ms,
+                          "selector_model_calls": int(topk_reason != "fallback_not_configured"
+                                                      and topk_reason != "empty"),
+                          "candidate_count": len(ranked),
+                          "selected_read_tools": sorted(topk_names),
+                          "exposed_tools": [t["function"]["name"] for t in selected_tools]}
         resume_context = ("\nTrusted checkpoint: revision " + str(resumed.revision) +
                           "; steps: " + json.dumps(resumed.snapshot(), ensure_ascii=False)
                           if resumed.revision else "")
@@ -641,15 +714,18 @@ class AgentLoop:
             "Use tools only where their verified observations are necessary."
             if understanding_result is not None else "")
         initial: AgentState = {"run_id": run_id, "messages": [
-            {"role": "system", "content": PROMPT + "\nSelected skill instructions (" + SKILL_VERSION + "):\n" + load_instructions(goal, strategy=self.skill_strategy, max_chars=self.skill_budget_chars) + resume_context + structured_policy},
+            {"role": "system", "content": PROMPT + "\nSelected skill instructions (" + SKILL_VERSION + "):\n" + (exposure_instructions(selection, max_chars=self.skill_budget_chars) if self.skill_strategy in ("semantic", "semantic_guided", "semantic_topk") else load_instructions(goal, strategy=self.skill_strategy, max_chars=self.skill_budget_chars)) + (("\n" + SEMANTIC_GUIDANCE) if self.skill_strategy == "semantic_guided" else "") + resume_context + structured_policy},
             *clean_history, *goal_view, {"role": "user", "content": goal}],
-            "traces": [], "tasks": [], "final": "", "status": "running",
+            "traces": [topk_trace] if topk_trace is not None else [], "tasks": [], "final": "", "status": "running",
             "termination_reason": None, "pending_action": None,
             "rejected_action_keys": [],
             "unresolved_tool_failures": [],
             "unresolved_calculation_errors": {}, "iterations": 0,
             "audit_enabled": include_evidence, "audit": [],
             "allowed_tools": selected_tools,
+            "exposure_limit": [t["function"]["name"] for t in selected_tools],
+            "authorized_write_tools": authorized_writes,
+            "unavailable_tools": [],
             "plan": resumed, "last_success": None,
             "superseded_step_ids": superseded_step_ids,
             "superseded_expression": superseded_expression,
