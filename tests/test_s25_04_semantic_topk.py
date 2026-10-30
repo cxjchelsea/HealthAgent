@@ -234,3 +234,36 @@ def test_topk_mcp_unavailable_records_failure_without_success_evidence():
               and event.get("name") == "mcp_reference_lookup"]
     assert errors and all(event.get("ok") is False for event in errors)
     assert result["status"] != "completed"
+
+
+def test_api_recreation_preserves_conversation_and_seeded_task(tmp_path):
+    """Recreate the FastAPI application against the same on-disk database."""
+    from fastapi.testclient import TestClient
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from agent.config import Settings
+    from apps.api.main import create_app
+    from services.task_store import ConversationTaskStore
+
+    url = "sqlite:///" + str(tmp_path / "s25-04-api.sqlite")
+    settings = Settings(model_provider="fake", database_url=url)
+    with TestClient(create_app(settings)) as client:
+        created = client.post("/conversations")
+        assert created.status_code == 201
+        cid = created.json()["id"]
+        engine = create_engine(url)
+        Session = sessionmaker(bind=engine)
+        written = ConversationTaskStore(Session, cid).create("S25-04 API durable test")
+        assert written["ok"] is True
+        engine.dispose()
+
+    with TestClient(create_app(settings)) as restarted:
+        response = restarted.get(f"/conversations/{cid}")
+        assert response.status_code == 200
+        engine = create_engine(url)
+        Session = sessionmaker(bind=engine)
+        rows = ConversationTaskStore(Session, cid).list()["tasks"]
+        assert len(rows) == 1
+        assert rows[0]["task_id"] == written["task_id"]
+        assert rows[0]["title"] == "S25-04 API durable test"
+        engine.dispose()
