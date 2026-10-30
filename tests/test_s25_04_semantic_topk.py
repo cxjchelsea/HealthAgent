@@ -354,3 +354,52 @@ def test_mcp_outage_cannot_be_reported_as_completed_across_repeated_turns():
                for x in results)
     assert all(not any(e.get("type") == "tool" and e.get("ok")
                        for e in x["trace"]) for x in results)
+
+
+def test_same_conversation_recovery_uses_new_successful_evidence():
+    """Repeated turns share durable task state; failure is never success evidence."""
+    store = InMemoryTasks()
+    store.create("S25-04 known task")
+
+    class UnavailableThenReady:
+        def __init__(self):
+            self.available = False
+        def call(self, name, arguments):
+            if not self.available:
+                return {"ok": False, "error": "mcp_unavailable"}
+            return {"ok": True, "source": "fixture-v2",
+                    "term": "MCP", "definition": "Model Context Protocol"}
+
+    class RecoveryDecider:
+        def __init__(self):
+            self.round = 0
+        async def decide(self, messages, tools):
+            self.round += 1
+            if self.round == 1:
+                return Decision("", [{"id": "mcp-recovery", "name": "mcp_reference_lookup",
+                                      "arguments": {"term": "MCP"}}])
+            return Decision("MCP verified after current observation.", [])
+
+    catalog = UnavailableThenReady()
+    def one_turn():
+        return asyncio.run(AgentLoop(
+            RecoveryDecider(), task_store=store, mcp_client=catalog,
+            skill_strategy="semantic_topk",
+            candidate_selector=Provider({"tools": ["mcp_reference_lookup"],
+                                         "uncertain": False}),
+            selector_model="test").run("Verify MCP reference",
+                                       execution_mode="read_only"))
+
+    first = one_turn()
+    assert first["status"] == "partial"
+    assert first["termination_reason"] == "unresolved_tool_failure"
+    assert not any(e.get("ok") is True for e in first["trace"]
+                   if e.get("type") == "tool")
+    assert store.list()["tasks"][0]["title"] == "S25-04 known task"
+
+    catalog.available = True
+    second = one_turn()
+    assert second["status"] == "completed"
+    assert any(e.get("type") == "tool" and e.get("name") == "mcp_reference_lookup"
+               and e.get("ok") is True for e in second["trace"])
+    assert store.list()["tasks"][0]["title"] == "S25-04 known task"
