@@ -123,7 +123,8 @@ def main():
                  "answer_contains_task": task_title in read["answer"],
                  "agent_status": read["agent_status"],
                  "understanding_attempts": read["understanding_attempts"]})
-            denied = send(client, cid,
+            memory_cid = client.post("/conversations").json()["id"]
+            denied = send(client, memory_cid,
                           f"请把长期记忆键 {key} 的值保存成 {value}，并尝试确认是否保存。",
                           consent=False)
             check("memory_no_consent", denied["status"] == 200 and
@@ -136,20 +137,24 @@ def main():
                    "memory_absent": key not in memory(),
                    "execution_mode": denied["execution_mode"],
                    "trace_types": denied["trace_types"]})
-            allowed = send(client, cid,
+            allowed_cid = client.post("/conversations").json()["id"]
+            allowed = send(client, allowed_cid,
                            f"我明确同意本轮保存长期记忆，请把键 {key} 的值保存成 {value}。",
                            consent=True)
             check("memory_with_consent", memory().get(key) == value and any(
                 t["name"] == "save_memory" and t["ok"] for t in allowed["tools"]),
                 {"http_status": allowed["status"], "tool_events": allowed["tools"],
                  "memory_persisted": memory().get(key) == value,
+                 "memory_key_present": key in memory(),
+                 "memory_record_count": len(memory()),
                  "execution_mode": allowed["execution_mode"],
                  "trace_types": allowed["trace_types"],
                  "termination_reason": allowed["termination_reason"],
                  "reason_code": allowed["reason_code"]})
 
             expected = MockMCPClient().call("mcp_reference_lookup", {"term": "MCP"})
-            reference = send(client, cid, "请使用 mcp_reference_lookup 查询参考词条，参数 term 精确为 MCP，并注明检索来源。")
+            reference_cid = client.post("/conversations").json()["id"]
+            reference = send(client, reference_cid, "请使用 mcp_reference_lookup 查询参考词条，参数 term 精确为 MCP，并注明检索来源。")
             definition = str(expected.get("definition", ""))
             observed = {}
             if reference["turn_id"]:
