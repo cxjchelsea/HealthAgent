@@ -123,7 +123,7 @@ def main():
                  "reason_code": allowed["reason_code"]})
 
             expected = MockMCPClient().call("mcp_reference_lookup", {"term": "MCP"})
-            reference = send(client, cid, "请查询 MCP 参考目录中 MCP 的定义，注明检索来源。")
+            reference = send(client, cid, "请使用 mcp_reference_lookup 查询参考词条，参数 term 精确为 MCP，并注明检索来源。")
             definition = str(expected.get("definition", ""))
             check("mcp_source_answer", bool(expected.get("ok")) and bool(definition)
                   and definition.casefold() in reference["answer"].casefold()
