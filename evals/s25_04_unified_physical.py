@@ -29,9 +29,9 @@ def main():
     # Deliberately exercise the full M5 Unified route instead of legacy bypass.
     settings = Settings(**{**base.model_dump(), "skill_strategy": "semantic_topk",
                            "routing_profile": "unified",
-                           "route_admission_mode": "legacy",
-                           "understanding_strategy": "direct",
-                           "m5_unified_route_enabled": False,
+                           "route_admission_mode": "guarded",
+                           "understanding_strategy": "structured",
+                           "m5_unified_route_enabled": True,
                            "m5_first_route_enabled": False,
                            "database_url": url, "skill_budget_chars": 2000})
     engine = create_engine(url)
