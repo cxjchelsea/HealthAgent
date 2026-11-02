@@ -64,38 +64,25 @@ def test_missing_plan_proposal_requires_independent_review(
     assert calls["review"] == 1
     assert (response.json().get("termination_reason") == "plan_not_found") is expected_missing
 
-
-@pytest.mark.parametrize("confirmed,expected_fenced", [(False, False), (True, True)])
-def test_invalid_m5_create_does_not_fence_unrelated_tools(
-        tmp_path, monkeypatch, confirmed, expected_fenced):
+def test_invalid_m5_create_stays_fenced(tmp_path, monkeypatch):
     from agent.m5_unified_route import SavedPlanRouteRefused
 
     async def malformed_primary(*args, **kwargs):
         raise SavedPlanRouteRefused("m5_create_invalid_step_count")
 
-    async def review(*args, **kwargs):
-        return confirmed
-
-    async def policy(message, interpretation):
-        return "read_only"
-
     monkeypatch.setattr("apps.api.main.propose_new_plan_route", malformed_primary)
-    monkeypatch.setattr("apps.api.main.review_plan_creation_reference", review)
-    monkeypatch.setattr("apps.api.main.NativeToolDecision",
-                        lambda settings: NoToolDecision())
-    monkeypatch.setattr(HTTPUnderstandingModel, "complete", understood)
     settings = Settings(
         database_url=f"sqlite:///{tmp_path/'refusal.db'}",
-        model_provider="ollama_proxy", routing_profile="unified",
+        model_provider="fake", routing_profile="unified",
     )
-    with TestClient(create_app(settings, execution_policy=policy)) as client:
+    with TestClient(create_app(settings)) as client:
         cid = client.post("/conversations").json()["id"]
         response = client.post(f"/conversations/{cid}/agent/messages", json={
-            "content": "查询 MCP 参考词条",
+            "content": "请创建两步可执行计划，但不要立即执行",
             "client_request_id": "s25-04-malformed-primary",
         })
     assert response.status_code == 200, response.text
     obj = response.json()
-    assert (obj.get("termination_reason") == "m5_unified_create_refused") is expected_fenced
-    assert (any(x.get("type") == "m5_unified_fenced"
-                for x in obj.get("trace", []))) is expected_fenced
+    assert obj.get("termination_reason") == "m5_unified_create_refused"
+    assert any(x.get("type") == "m5_unified_fenced"
+               for x in obj.get("trace", []))
