@@ -64,13 +64,16 @@ async def main():
         raise ValueError("S25_04_SHADOW_REPEATS must be in [1, 20]")
     cases = []
     for cohort, cohort_cases in (("regression", CASES), ("holdout", HOLDOUT_CASES)):
-      for name, request, saved, expected in cohort_cases:
-        for repeat in range(repeats):
-          prediction = await shadow_classify(
-              provider, settings.understanding_strong_model, request, saved)
-          actual = prediction["label"]
-          cases.append({"cohort": cohort, "case": name, "repeat": repeat + 1, "expected": expected, "predicted": actual,
-                        "reason": prediction["reason"], "matched": actual == expected})
+        for name, request, saved, expected in cohort_cases:
+            for repeat in range(repeats):
+                prediction = await shadow_classify(
+                    provider, settings.understanding_strong_model, request, saved)
+                actual = prediction["label"]
+                cases.append({
+                    "cohort": cohort, "case": name, "repeat": repeat + 1,
+                    "expected": expected, "predicted": actual,
+                    "reason": prediction["reason"], "matched": actual == expected,
+                })
     result = {"suite": "s25-04-route-shadow-v2", "scope": "offline-only",
               "provider": settings.model_provider,
               "model": settings.understanding_strong_model,
