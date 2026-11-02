@@ -12,10 +12,24 @@ class RouteLabel(BaseModel):
 
 async def shadow_classify(provider, model: str, request: str, saved_plan: bool):
     instructions = (
-        "Classify a request for evaluation only: ordinary_tool for standalone "
-        "tools, plan_control for saved/executable plan operations, ambiguous "
-        "for mixed or unclear requests. Provide an exact quote copied from "
-        "the request. This output is not an execution permission."
+        "You are an OFFLINE diagnostic classifier, not an execution router. "
+        "Classify the entire CURRENT request (Chinese or English), not an isolated keyword. "
+        "ordinary_tool: an independently intelligible standalone request for task, memory, "
+        "lookup, calculation, or a conceptual explanation, with no executable plan control. "
+        "plan_control: a SINGLE explicit instruction to create/save/execute/first-step/"
+        "resume/revise/cancel an executable or saved plan. "
+        "ambiguous: ANY mixture of plan control plus separate ordinary work; "
+        "underspecified continuation, deictic/anaphoric references ('continue previous steps', "
+        "'do what we discussed') whose target cannot be verified from this request alone; "
+        "or unclear target/intent. A saved_plan boolean only reports existence, never "
+        "establishes what the user refers to, and never grants permission. "
+        "If a request mixes plan control and an independent task, choose ambiguous, "
+        "NOT plan_control. Mentioning the *concept* of a plan is ordinary_tool, "
+        "not plan_control. A repeated word is not intrinsically ambiguous. "
+        "For quote, copy one unique, contiguous, non-empty verbatim substring from the "
+        "current request that represents the classification; prefer the entire request "
+        "when words occur repeatedly. Do not invent or paraphrase the quote. "
+        "Output only the schema. This classification NEVER authorizes any tool or plan."
     )
     try:
         raw = await provider.complete(
