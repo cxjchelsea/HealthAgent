@@ -318,8 +318,7 @@ class UnderstandingService:
                                      "duration_ms": int((time.monotonic() - start) * 1000),
                                      "outcome": reason, "retry": retry,
                                      "diagnostic": getattr(exc, "detail", None)})
-                    retryable = reason in ("structured_schema_error", "structured_consistency_error")
-                    if not retryable:
+                    if reason not in ("structured_schema_error", "structured_consistency_error"):
                         break
         if (last_missing_goal_raw is not None and attempts
                 and all(a.get("diagnostic") == "missing_goal" for a in attempts)):
