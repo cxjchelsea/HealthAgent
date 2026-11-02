@@ -82,6 +82,28 @@ def main():
     try:
         with TestClient(create_app(settings)) as client:
             cid = client.post("/conversations").json()["id"]
+            # No selected_ordinary_operation: verify genuine Unified routing.
+            calc = send(client, cid, "请计算 (19+23)*4")
+            check("ordinary_calculation_no_selection",
+                  calc["status"] == 200 and calc["agent_status"] == "completed"
+                  and "168" in calc["answer"]
+                  and any(t["name"] == "calculate" and t["ok"] for t in calc["tools"]),
+                  {**diagnostic(calc), "answer_contains_168": "168" in calc["answer"]})
+            # Separate plan scope from ordinary task/memory side effects.
+            plan_cid = client.post("/conversations").json()["id"]
+            plan_create = send(client, plan_cid,
+                "请创建一个两步可执行计划：第一步计算 3+4，第二步计算 8+9。只保存，不执行。")
+            check("saved_plan_still_owned_by_m5",
+                  plan_create["status"] == 200 and
+                  plan_create["termination_reason"] == "plan_created_pending_execution"
+                  and not plan_create["tools"],
+                  diagnostic(plan_create))
+            missing_cid = client.post("/conversations").json()["id"]
+            missing = send(client, missing_cid, "继续执行之前保存计划的剩余步骤")
+            check("missing_plan_does_not_execute",
+                  missing["status"] == 200 and
+                  missing["agent_status"] != "completed" and not missing["tools"],
+                  diagnostic(missing))
             write = send(client, cid, "请创建一个待办任务，标题精确为：" + task_title)
             task_saved = task_title in tasks(cid)
             check("authorized_task_write", task_saved and any(
@@ -181,7 +203,7 @@ def main():
                               "Isolated SQLite; does not simulate a force-killed process."]}
     target = folder / "unified-physical-v1.json"
     report["expected_route"] = "unified"
-    report["head_sha_expected"] = "5cbdbb7f2990bfe904c1c0429b0b023539395477"
+    report["head_sha_expected"] = os.getenv("S25_04_EXPECTED_HEAD_SHA", "not_verified")
     target.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps({"passed": report["passed"], "total": report["total"],
                       "cases": [{"scenario": x["scenario"], "passed": x["passed"]}
