@@ -96,8 +96,8 @@ def main():
                            if e.get("type") == "tool"]
             mixed_plan = mixed_result.get("plan_checkpoint")
             check("mixed_not_dispatched_as_calculation",
-                  not any(e.get("name") == "calculate" and e.get("ok")
-                          for e in mixed_tools) and not mixed_plan,
+                  mixed_result.get("termination_reason") == "explicit_ordinary_admission_denied"
+                  and not mixed_tools and not mixed_plan,
                   http_status=mixed_status,
                   termination=mixed_result.get("termination_reason"),
                   trace_tools=mixed_tools,
@@ -133,7 +133,8 @@ def main():
                                if e.get("type") == "tool" and
                                e.get("name") == "calculate" and e.get("ok")]
                 check("saved_plan_prevents_explicit_bypass",
-                      not guard_tools and not guarded.get("plan_cancellation_requested"),
+                      guarded.get("termination_reason") == "explicit_ordinary_admission_denied"
+                      and not guard_tools and not guarded.get("plan_cancellation_requested"),
                       http_status=guarded_status,
                       termination=guarded.get("termination_reason"),
                       tool_invocations=len(guard_tools))
