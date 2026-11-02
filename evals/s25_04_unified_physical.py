@@ -100,7 +100,11 @@ def main():
             denied = send(client, cid,
                           f"请把长期记忆键 {key} 的值保存成 {value}，并尝试确认是否保存。",
                           consent=False)
-            check("memory_no_consent", denied["status"] == 200 and\n                  denied["agent_status"] in {"completed", "partial"} and\n                  key not in memory() and not any(\n                      t["name"] == "save_memory" and t["ok"]\n                      for t in denied["tools"]),
+            check("memory_no_consent", denied["status"] == 200 and
+                  denied["agent_status"] in {"completed", "partial"} and
+                  key not in memory() and not any(
+                      t["name"] == "save_memory" and t["ok"]
+                      for t in denied["tools"]),
                   {"http_status": denied["status"], "reason_code": denied["reason_code"],
                    "tool_events": denied["tools"],
                    "memory_absent": key not in memory(),
