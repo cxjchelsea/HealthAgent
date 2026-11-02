@@ -22,6 +22,25 @@ from pydantic import ValidationError
 PROMPT_VERSION = "s2a-core-v1"
 PROMPT = (Path(__file__).parent / "prompts" / "s2a_core_v1.md").read_text(encoding="utf-8")
 
+def matching_mcp_failure_keys(unresolved: list[str], verified_term: object) -> list[str]:
+    """Only reconcile a previous attempt explicitly targeting the same term."""
+    if not isinstance(verified_term, str) or not verified_term.strip():
+        return []
+    matched = []
+    for old_key in unresolved:
+        try:
+            old_name, old_args = json.loads(old_key)
+        except (ValueError, TypeError):
+            continue
+        if old_name != "mcp_reference_lookup" or not isinstance(old_args, dict):
+            continue
+        old_term = old_args.get("term")
+        if (isinstance(old_term, str)
+                and old_term.strip().casefold() == verified_term.strip().casefold()):
+            matched.append(old_key)
+    return matched
+
+
 class AgentState(TypedDict):
     run_id: str
     messages: list[dict]
@@ -336,18 +355,7 @@ class AgentLoop:
                     # when the failed arguments identify the same canonical term.
                     if (name == "mcp_reference_lookup" and isinstance(arguments, dict)
                             and result.get("term")):
-                        resolved = []
-                        for old_key in unresolved_failures:
-                            try:
-                                old_name, old_args = json.loads(old_key)
-                            except (TypeError, ValueError):
-                                continue
-                            if old_name != name or not isinstance(old_args, dict):
-                                continue
-                            old_term = old_args.get("term")
-                            if (isinstance(old_term, str)
-                                    and old_term.strip().casefold() == str(result["term"]).strip().casefold()):
-                                resolved.append(old_key)
+                        resolved = matching_mcp_failure_keys(unresolved_failures, result["term"])
                         if resolved:
                             unresolved_failures = [x for x in unresolved_failures if x not in resolved]
                             traces.append({"step": state["iterations"],
