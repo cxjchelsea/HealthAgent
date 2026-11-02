@@ -31,6 +31,8 @@ from agent.capability_review import review_unsupported_capability
 from agent.clarification_review import review_read_only_clarification
 from agent.control_admission import admit_clarification
 from agent.plan_intent import PlanRequest, review_plan_intent, build_plan_checkpoint
+from agent.s25_04_admission_shadow import evaluate_admission_shadow
+from evals.s25_04_route_shadow import shadow_classify
 from agent.m5_first_route import propose_first_route
 from agent.m5_unified_route import (propose_saved_plan_route, propose_new_plan_route,
                                     SavedPlanRouteRefused)
@@ -1269,6 +1271,47 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                 + shadow.get("recovery_model_calls", 0)
                 + shadow.get("schema_retry_model_calls", 0))
             shadow["execution_authorized"] = False
+        # S25-04 diagnostic happens only after durable finalization.
+        # No dispatch, plan mutation, or admission authority is derived here.
+        admission_trace = None
+        if (settings.s25_04_admission_trace_enabled
+                and settings.model_provider != "fake"
+                and agent_decider is None
+                and body.goal_confirmation is None):
+            try:
+                prediction = await shadow_classify(
+                    HTTPUnderstandingModel(
+                        settings.model_provider, settings.model_base_url,
+                        settings.model_api_key, settings.model_timeout_seconds,
+                        settings.model_max_output_tokens),
+                    settings.understanding_strong_model, body.content,
+                    preturn_plan_raw is not None, include_quote=True)
+                review = evaluate_admission_shadow(
+                    classification=prediction["label"],
+                    classifier_reason=prediction["reason"],
+                    request=body.content,
+                    evidence_quote=prediction.get("quote"),
+                    preturn_plan_present=preturn_plan_raw is not None,
+                    checkpoint_trusted=(preturn_plan_raw is None
+                                        or preturn_checkpoint is not None),
+                    mixed_or_plan_intent_excluded=False)
+                admission_trace = {
+                    "label": prediction["label"],
+                    "classification_reason": prediction["reason"],
+                    "advisory": review.advisory,
+                    "admission_reason": review.reason,
+                    "execution_authorized": False,
+                    "trace_only": True,
+                }
+            except Exception as exc:
+                log.warning("s25_04 diagnostic failed turn=%s class=%s",
+                            turn_id, type(exc).__name__)
+                admission_trace = {
+                    "label": "ambiguous", "classification_reason": "invalid",
+                    "advisory": "not_eligible",
+                    "admission_reason": "diagnostic_unavailable",
+                    "execution_authorized": False, "trace_only": True,
+                }
         response_data = {**result, "conversation_id": cid,
                          "message_id": assistant_id, "turn_id": turn_id}
         if shadow is not None:
@@ -1280,6 +1323,8 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                         request_id=body.client_request_id, turn_id=turn_id))
                 response_data["route_shadow"]["m3_checkpoint_snapshot"] = (
                     compare_checkpoint_snapshot(preturn_capture, existing_checkpoint))
+        if admission_trace is not None:
+            response_data["s25_04_admission_shadow"] = admission_trace
         return response_data
 
     @app.get("/conversations/{cid}/agent/task-state")
