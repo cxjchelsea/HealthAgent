@@ -107,3 +107,20 @@ def test_strong_clarification_mismatch_twice_fails_closed():
             UnderstandingContext(current_message="查询参考资料"), use_strong=True))
     assert caught.value.code == "understanding_unavailable"
     assert model.calls == 2
+
+
+def test_mcp_corrected_arguments_reconcile_same_reference_only():
+    from agent.loop import matching_mcp_failure_keys
+    old = json.dumps(["mcp_reference_lookup", {"term": " MCP ", "unexpected": "field"}])
+    different = json.dumps(["mcp_reference_lookup", {"term": "RAG", "unexpected": "field"}])
+    no_term = json.dumps(["mcp_reference_lookup", {"query": "MCP"}])
+    other_tool = json.dumps(["calculate", {"term": "MCP"}])
+    assert matching_mcp_failure_keys([old, different, no_term, other_tool], "mcp") == [old]
+
+
+def test_mcp_failed_request_cannot_be_reconciled_without_matching_term():
+    from agent.loop import matching_mcp_failure_keys
+    bad = json.dumps(["mcp_reference_lookup", {"term": "RAG"}])
+    assert matching_mcp_failure_keys([bad], "MCP") == []
+    assert matching_mcp_failure_keys([bad], None) == []
+    assert matching_mcp_failure_keys(["not-json"], "MCP") == []
