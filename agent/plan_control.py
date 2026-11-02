@@ -72,6 +72,47 @@ def admit_plan_control(
     return None
 
 
+
+class OrdinaryToolRouteReview(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    ordinary_tool_only: bool
+    evidence_quote: str = Field(min_length=1, max_length=400)
+
+
+async def review_ordinary_tool_route(
+    provider: HTTPUnderstandingModel, model: str, message: str,
+) -> bool:
+    """Conservative pre-M5 classification; never confers tool permission.
+
+    A false/invalid/uncertain result leaves M5's fail-closed route intact.
+    This must not be invoked for saved-plan operations.
+    """
+    prompt = (
+        "Classify the CURRENT request. ordinary_tool_only=true ONLY when "
+        "unambiguously requesting a standalone task creation, long-term "
+        "memory save, lookup or other ordinary tool action, NOT creating, "
+        "saving, resuming, changing, executing or cancelling an executable "
+        "multi-step plan. Return false for any plan reference, mixed goal, "
+        "uncertainty, or ambiguity. Provide a verbatim exact evidence_quote "
+        "uniquely occurring in the user's current message. No tool or plan "
+        "permission is granted by this classification."
+    )
+    try:
+        raw = await provider.complete(
+            model=model, messages=[
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": json.dumps(
+                    {"current_request": message}, ensure_ascii=False)},
+            ], response_schema=OrdinaryToolRouteReview.model_json_schema())
+        review = OrdinaryToolRouteReview.model_validate_json(raw)
+        quote = review.evidence_quote
+        if message.count(quote) != 1:
+            return False
+        return review.ordinary_tool_only
+    except (UnderstandingError, ValueError, TypeError):
+        return False
+
+
 class PlanCreationReview(BaseModel):
     model_config = ConfigDict(extra="forbid")
     explicitly_requests_saved_plan: bool
