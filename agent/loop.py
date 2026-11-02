@@ -713,8 +713,26 @@ class AgentLoop:
             "or retry a rejected tool action without a meaningful correction. "
             "Use tools only where their verified observations are necessary."
             if understanding_result is not None else "")
+        # The Host controls memory consent, never the user text or model output.
+        # This is guidance for model decision-making, not a substitute for tool evidence.
+        memory_policy = ""
+        if self.skill_strategy == "semantic_topk":
+            if mode == "execute" and memory_write_consent:
+                memory_policy = (
+                    "\\nThe Host permits save_memory for this turn. If the user's goal is "
+                    "to save a specified key and value as long-term memory, call "
+                    "save_memory with exactly those user-provided arguments before "
+                    "claiming any saving occurred. Do not treat permission itself "
+                    "as evidence of a completed write. For other goals, do not "
+                    "write memory.")
+            else:
+                memory_policy = (
+                    "\\nThe Host has NOT authorized long-term memory writes for "
+                    "this turn. If the user asks to save memory, explain that "
+                    "the operation requires explicit per-turn consent; do not "
+                    "pretend it was saved or substitute a different write tool.")
         initial: AgentState = {"run_id": run_id, "messages": [
-            {"role": "system", "content": PROMPT + "\nSelected skill instructions (" + SKILL_VERSION + "):\n" + (exposure_instructions(selection, max_chars=self.skill_budget_chars) if self.skill_strategy in ("semantic", "semantic_guided", "semantic_topk") else load_instructions(goal, strategy=self.skill_strategy, max_chars=self.skill_budget_chars)) + (("\n" + SEMANTIC_GUIDANCE) if self.skill_strategy == "semantic_guided" else "") + resume_context + structured_policy},
+            {"role": "system", "content": PROMPT + "\nSelected skill instructions (" + SKILL_VERSION + "):\n" + (exposure_instructions(selection, max_chars=self.skill_budget_chars) if self.skill_strategy in ("semantic", "semantic_guided", "semantic_topk") else load_instructions(goal, strategy=self.skill_strategy, max_chars=self.skill_budget_chars)) + (("\n" + SEMANTIC_GUIDANCE) if self.skill_strategy == "semantic_guided" else "") + resume_context + structured_policy + memory_policy},
             *clean_history, *goal_view, {"role": "user", "content": goal}],
             "traces": [topk_trace] if topk_trace is not None else [], "tasks": [], "final": "", "status": "running",
             "termination_reason": None, "pending_action": None,
