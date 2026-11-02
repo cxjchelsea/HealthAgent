@@ -17,35 +17,42 @@ from agent.mcp_stdio_client import StdioMCPClient
 from agent.understanding import HTTPUnderstandingModel
 
 
+def sqlite_call(path, sql, params=(), many=False):
+    """Commit and close. A connection context manager only commits, so Windows keeps the file locked."""
+    connection = sqlite3.connect(path)
+    try:
+        cursor = connection.execute(sql, params)
+        rows = cursor.fetchall() if many else None
+        connection.commit()
+        return rows
+    finally:
+        connection.close()
+
+
 class TaskStore:
     def __init__(self, path):
         self.path = path
-        with sqlite3.connect(path) as db:
-            db.execute("CREATE TABLE IF NOT EXISTS tasks (title TEXT NOT NULL)")
+        sqlite_call(path, "CREATE TABLE IF NOT EXISTS tasks (title TEXT NOT NULL)")
     def create(self, title):
-        with sqlite3.connect(self.path) as db:
-            db.execute("INSERT INTO tasks(title) VALUES (?)", (title,))
+        sqlite_call(self.path, "INSERT INTO tasks(title) VALUES (?)", (title,))
         return {"ok": True, "title": title}
     def list(self):
-        with sqlite3.connect(self.path) as db:
-            rows = db.execute("SELECT title FROM tasks").fetchall()
+        rows = sqlite_call(self.path, "SELECT title FROM tasks", many=True)
         return {"ok": True, "tasks": [{"title": x[0]} for x in rows]}
 
 
 class MemoryStore:
     def __init__(self, path, consent):
         self.path, self.consent = path, consent
-        with sqlite3.connect(path) as db:
-            db.execute("CREATE TABLE IF NOT EXISTS memory (key TEXT PRIMARY KEY, value TEXT)")
+        sqlite_call(path, "CREATE TABLE IF NOT EXISTS memory (key TEXT PRIMARY KEY, value TEXT)")
     def put(self, key, value):
         if not self.consent:
             return {"ok": False, "error": "memory_write_requires_user_consent"}
-        with sqlite3.connect(self.path) as db:
-            db.execute("INSERT OR REPLACE INTO memory(key,value) VALUES (?,?)", (key,value))
+        sqlite_call(self.path, "INSERT OR REPLACE INTO memory(key,value) VALUES (?,?)", (key, value))
         return {"ok": True, "key": key, "saved": True}
     def get(self, key):
-        with sqlite3.connect(self.path) as db:
-            row = db.execute("SELECT value FROM memory WHERE key=?", (key,)).fetchone()
+        rows = sqlite_call(self.path, "SELECT value FROM memory WHERE key=?", (key,), many=True)
+        row = rows[0] if rows else None
         return {"ok": True, "found": row is not None, "key": key,
                 "value": row[0] if row else None}
 
@@ -101,8 +108,7 @@ async def main():
 
     try:
         w, _ = await run("authorized_task_write", "请创建一个待办，标题精确为：" + task, "execute")
-        with sqlite3.connect(dbfile) as db:
-            task_saved = bool(db.execute("SELECT 1 FROM tasks WHERE title=?", (task,)).fetchone())
+        task_saved = bool(sqlite_call(dbfile, "SELECT 1 FROM tasks WHERE title=?", (task,), many=True))
         w["persisted"] = task_saved
         w["passed"] = task_saved and any(e["name"] == "create_task" and e["ok"] for e in w["tool_events"])
 
@@ -110,14 +116,13 @@ async def main():
         rd["passed"] = task in obj["answer"] and any(e["name"] == "list_tasks" and e["ok"] for e in rd["tool_events"])
 
         no, _ = await run("memory_no_consent", f"把键 {key} 的值保存为 {value}", "execute", False)
-        with sqlite3.connect(dbfile) as db:
-            not_saved = db.execute("SELECT 1 FROM memory WHERE key=?", (key,)).fetchone() is None
+        not_saved = not sqlite_call(dbfile, "SELECT 1 FROM memory WHERE key=?", (key,), many=True)
         no["passed"] = not_saved and no["status"] in {"completed", "partial"}
         no["memory_absent"] = not_saved
 
         yes, _ = await run("memory_with_consent", f"我明确同意保存：键 {key}，值 {value}", "execute", True)
-        with sqlite3.connect(dbfile) as db:
-            saved = db.execute("SELECT value FROM memory WHERE key=?", (key,)).fetchone()
+        saved_rows = sqlite_call(dbfile, "SELECT value FROM memory WHERE key=?", (key,), many=True)
+        saved = saved_rows[0] if saved_rows else None
         yes["passed"] = bool(saved and saved[0] == value) and any(
             e["name"] == "save_memory" and e["ok"] for e in yes["tool_events"])
         yes["memory_persisted"] = bool(saved and saved[0] == value)
@@ -138,7 +143,10 @@ async def main():
         recovered["passed"] = any(e["name"] == "mcp_reference_lookup" and e["ok"]
                                   for e in recovered["tool_events"])
     finally:
-        dbfile.unlink(missing_ok=True)
+        try:
+            dbfile.unlink(missing_ok=True)
+        except PermissionError:
+            print("Temporary database still locked:", dbfile)
 
     output = {"suite": "s25-04-direct-agentloop-v2", "mode": "REAL_PROVIDER",
               "provider": settings.model_provider, "model": settings.model_name,

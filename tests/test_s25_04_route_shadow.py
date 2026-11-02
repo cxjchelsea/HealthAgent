@@ -22,16 +22,16 @@ class Stub:
         return json.dumps(self.response)
 
 
-@pytest.mark.parametrize("label,request,saved", [
+@pytest.mark.parametrize("label,user_request,saved", [
     ("ordinary_tool", "请创建一个待办", False),
     ("plan_control", "请只执行已保存计划的第一步", True),
     ("ambiguous", "先保存执行计划，再创建一个待办", False),
     ("ambiguous", "继续之前的步骤", True),
     ("ordinary_tool", "MCP 与 MCP 有什么不同？", False),
 ])
-def test_shadow_schema_binding_and_contract(label, request, saved):
-    stub = Stub({"label": label, "quote": request})
-    result = asyncio.run(shadow_classify(stub, "test", request, saved))
+def test_shadow_schema_binding_and_contract(label, user_request, saved):
+    stub = Stub({"label": label, "quote": user_request})
+    result = asyncio.run(shadow_classify(stub, "test", user_request, saved))
     assert result == {"label": label, "reason": "bound"}
     system = stub.calls[0]["messages"][0]["content"]
     assert "ANY mixture" in system
@@ -40,14 +40,14 @@ def test_shadow_schema_binding_and_contract(label, request, saved):
     assert stub.calls[0]["response_schema"]["additionalProperties"] is False
 
 
-@pytest.mark.parametrize("request,quote", [
+@pytest.mark.parametrize("user_request,quote", [
     ("请创建一个待办", "保存计划"),
     ("MCP 和 MCP 的区别", "MCP"),
     ("查一下信息", ""),
 ])
-def test_shadow_rejects_unbound_quote(request, quote):
+def test_shadow_rejects_unbound_quote(user_request, quote):
     result = asyncio.run(shadow_classify(
-        Stub({"label": "ordinary_tool", "quote": quote}), "test", request, False))
+        Stub({"label": "ordinary_tool", "quote": quote}), "test", user_request, False))
     assert result == {"label": "ambiguous", "reason": "unbound"}
 
 
