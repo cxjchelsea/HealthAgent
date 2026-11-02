@@ -58,7 +58,7 @@ def test_invalid_both_models_fails_closed():
 def test_fabricated_goal_reference_is_not_accepted():
     candidate = payload()
     candidate["change"]["target_goal_id"] = "imaginary-123"
-    stub = StubModel([json.dumps(candidate), json.dumps(candidate)])
+    stub = StubModel([json.dumps(candidate)] * 3)
     with pytest.raises(UnderstandingError):
         asyncio.run(UnderstandingService(stub, "small", "large").understand(
             UnderstandingContext(current_message="改第二项")))
@@ -81,14 +81,14 @@ def test_strong_retry_repairs_one_schema_error():
     assert [x["retry"] for x in result["attempts"]] == [0, 1]
     assert [x["outcome"] for x in result["attempts"]] == ["structured_schema_error", "valid"]
 
-def test_does_not_retry_untrusted_goal_id():
+def test_bounded_retry_still_rejects_untrusted_goal_id():
     candidate = payload()
     candidate["change"]["target_goal_id"] = "untrusted"
-    stub = StubModel([json.dumps(candidate)])
+    stub = StubModel([json.dumps(candidate), json.dumps(candidate)])
     with pytest.raises(UnderstandingError) as caught:
         asyncio.run(UnderstandingService(stub, "small", "large").understand(
             UnderstandingContext(current_message="继续"), use_strong=True))
-    assert stub.calls == ["large"]
+    assert stub.calls == ["large", "large"]
     assert caught.value.attempts[0]["outcome"] == "unverified_goal_reference"
 
 def test_light_nonmutating_understanding_does_not_require_strong_review():

@@ -1,5 +1,6 @@
 """Static, trusted skill manifests; no arbitrary file paths or dynamic imports."""
 from dataclasses import dataclass
+from typing import Any
 
 @dataclass(frozen=True)
 class Skill:
@@ -62,3 +63,80 @@ def load_instructions(goal: str, *, strategy: str = "dynamic",
     if len(result) > max_chars:
         raise ValueError("Selected skill instructions exceed budget")
     return result
+
+# S25-04: one trusted exposure decision supplies both schemas and Skill hints.
+# With the current small catalog, let native model tool calling perform semantic
+# selection instead of suppressing tools with a brittle keyword classifier.
+@dataclass(frozen=True)
+class ToolExposureDecision:
+    tool_names: tuple[str, ...]
+    skill_names: tuple[str, ...]
+    mode: str
+    excluded_names: tuple[str, ...] = ()
+    version: str = "s25-04-exposure-v1"
+
+def select_tool_exposure(
+    goal: str, schemas: list[dict], *, strategy: str = "dynamic",
+    prior_observation: dict[str, Any] | None = None,
+    authorized_write_tools: tuple[str, ...] = (),
+    active_step_tools: tuple[str, ...] = (),
+    unavailable_tools: tuple[str, ...] = (),
+) -> ToolExposureDecision:
+    if strategy not in ("dynamic", "all", "semantic", "semantic_guided"):
+        raise ValueError("Unsupported skill strategy")
+    # Exposure is NOT authorization; execute_tool remains the trusted boundary.
+    registered = {item["function"]["name"] for item in schemas}
+    declared = {name for skill in SKILLS for name in skill.tool_names}
+    eligible = registered & declared
+    # Failing tools remain eligible for model-driven recovery. A model can also
+    # decline to call any tool. Observation never registers arbitrary tool names.
+    if strategy == "dynamic":
+        legacy_names = {name for skill in select_skills(goal) for name in skill.tool_names}
+        eligible &= legacy_names
+    # The semantic trial exposes all currently registered read-only/plan tools
+    # and requires trusted, explicit authorization for write exposure. This is an
+    # experimental baseline, NOT learned semantic preselection.
+    elif strategy in ("semantic", "semantic_guided"):
+        guarded_writes = {"create_task", "save_memory"}
+        eligible -= guarded_writes - (guarded_writes & set(authorized_write_tools))
+    # Only trusted checkpoint bindings can request active-step inclusion.
+    # Never promote writes or names originating from Observation text.
+    if strategy in ("semantic", "semantic_guided"):
+        eligible |= (registered & declared & set(active_step_tools)
+                     - {"create_task", "save_memory"})
+    # Trusted executor reports unavailability; never infer it from freeform
+    # text in external tool results or from a model-generated suggestion.
+    if strategy in ("semantic", "semantic_guided"):
+        eligible -= set(unavailable_tools)
+    selected = tuple(item["function"]["name"] for item in schemas
+                     if item["function"]["name"] in eligible)
+    active = tuple(skill.name for skill in SKILLS
+                   if any(name in selected for name in skill.tool_names))
+    excluded = tuple(sorted(registered - eligible))
+    return ToolExposureDecision(selected, active, strategy, excluded)
+
+def exposure_schemas(selection: ToolExposureDecision, schemas: list[dict]) -> list[dict]:
+    names = set(selection.tool_names)
+    return [schema for schema in schemas if schema["function"]["name"] in names]
+
+def exposure_instructions(selection: ToolExposureDecision, *, max_chars: int = 600) -> str:
+    if not 0 <= max_chars <= 20000:
+        raise ValueError("Invalid skill instruction budget")
+    lines = [f"{name}: {INSTRUCTIONS[name]}" for name in selection.skill_names]
+    content = "\n".join(lines)
+    if len(content) > max_chars:
+        # Preserve the historical hard budget, without silently dropping safety hints.
+        raise ValueError("Selected skill instructions exceed budget")
+    return content
+
+
+# Experiment: different native-tool decision guidance, NOT an authorization rule.
+# The model is still free to answer directly when a tool is unnecessary.
+SEMANTIC_GUIDANCE = (
+    "Tool-use evidence policy: When the user asks to verify a calculation, "
+    "retrieve current time, inspect persisted tasks, or check a reference catalog, "
+    "obtain the corresponding tool observation before claiming verification. "
+    "Do not invent observations or represent mental arithmetic as tool evidence. "
+    "When no observation is needed (e.g., a conceptual explanation), answer "
+    "without a tool. Never use a write tool without current Host authorization."
+)

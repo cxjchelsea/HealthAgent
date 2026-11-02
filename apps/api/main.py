@@ -31,6 +31,9 @@ from agent.capability_review import review_unsupported_capability
 from agent.clarification_review import review_read_only_clarification
 from agent.control_admission import admit_clarification
 from agent.plan_intent import PlanRequest, review_plan_intent, build_plan_checkpoint
+from agent.s25_04_admission_shadow import evaluate_admission_shadow
+from agent.s25_04_explicit_ordinary import admit_explicit_ordinary_calculation
+from evals.s25_04_route_shadow import shadow_classify
 from agent.m5_first_route import propose_first_route
 from agent.m5_unified_route import (propose_saved_plan_route, propose_new_plan_route,
                                     SavedPlanRouteRefused)
@@ -62,6 +65,7 @@ class ChatIn(BaseModel):
     content: str = Field(min_length=1)
     client_request_id: str = Field(min_length=8,max_length=120)
     memory_write_consent: bool = False
+    selected_ordinary_operation: str | None = None  # explicitly selected by client
     goal_confirmation: str | None = None
     expected_goal_version: int | None = None
 
@@ -304,11 +308,28 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                           "trace": [{"step": 0, "type": "goal_confirmation"}], "steps": 0}
             if settings.understanding_strategy not in {"direct", "structured"}:
                 raise UnderstandingError("invalid_understanding_strategy")
+            selected_ordinary_admitted = admit_explicit_ordinary_calculation(
+                selection=body.selected_ordinary_operation,
+                message=body.content,
+                saved_plan_present=preturn_plan_raw is not None,
+                pending_action_present=pending_action is not None,
+                clarification_present=clarification_id is not None)
+            # A caller that explicitly selects an ordinary operation cannot
+            # silently fall back into M5 or AgentLoop when Host rejects it.
+            # Unselected plan requests retain their existing route unchanged.
+            if (result is None and body.selected_ordinary_operation is not None
+                    and not selected_ordinary_admitted):
+                result = {"run_id": turn_id, "status": "partial",
+                          "termination_reason": "explicit_ordinary_admission_denied",
+                          "answer": "本轮显式普通操作未通过 Host 准入；没有执行工具或修改计划。",
+                          "trace": [{"step": 0, "type": "explicit_ordinary_fenced"}],
+                          "steps": 0}
             unified_new_plan_decision = None
             # Pending tool arguments and open clarifications belong to the
             # verified preturn origin; they cannot become a fresh plan route.
             # Preserve the existing pending/clarification Host pipeline.
             if (result is None and existing_checkpoint is None
+                    and not selected_ordinary_admitted
                     and pending_action is None and clarification_id is None
                     and settings.m5_unified_route_enabled
                     and settings.route_admission_mode == "guarded"
@@ -322,8 +343,8 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                             settings.model_max_output_tokens),
                         settings.understanding_strong_model, body.content)
                 except SavedPlanRouteRefused as exc:
-                    # Only our fixed internal error codes, never model text,
-                    # arguments, quotes, or exception repr, reach diagnostics.
+                    # Once M5 selected a plan operation, failed source binding
+                    # must remain terminal; never downgrade to ordinary tools.
                     refusal_code = str(exc)
                     if refusal_code not in {
                             "m5_quote_not_found", "m5_quote_ambiguous",
@@ -791,14 +812,16 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                     # Unified no-plan primary has already classified a
                     # missing saved-plan reference. Host absence is definitive;
                     # never seek a competing legacy semantic classifier.
-                    missing_reference = (True if unified_new_plan_decision is not None
-                        and unified_new_plan_decision.intent == "resume"
-                        else await review_missing_plan_reference(
+                    # M5 plan_missing is a model proposal, not independent
+                    # evidence that this turn refers to a saved plan.
+                    # Review even in unified mode; normal read-only tool
+                    # requests must not be routed to plan_not_found.
+                    missing_reference = await review_missing_plan_reference(
                         HTTPUnderstandingModel(
                             settings.model_provider, settings.model_base_url,
                             settings.model_api_key, settings.model_timeout_seconds,
                             settings.model_max_output_tokens),
-                        settings.understanding_strong_model, body.content))
+                        settings.understanding_strong_model, body.content)
                 plan_route = resolve_plan_admission(
                     plan_decision, existing_checkpoint=existing_checkpoint,
                     creation_confirmed=creation_confirmed,
@@ -1034,11 +1057,20 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                     ordinary_attempt_journal=(AttemptEvidenceStore(cid, turn_id)
                         if plan_control not in {"execute_first", "resume"} else None),
                     ordinary_attempt_session_factory=(Session
-                        if plan_control not in {"execute_first", "resume"} else None)).run(
+                        if plan_control not in {"execute_first", "resume"} else None),
+                    candidate_selector=(HTTPUnderstandingModel(
+                        settings.model_provider, settings.model_base_url,
+                        settings.model_api_key, settings.model_timeout_seconds,
+                        settings.model_max_output_tokens)
+                        if settings.skill_strategy == "semantic_topk" and agent_decider is None
+                        else None),
+                    selector_model=(settings.understanding_strong_model
+                        if settings.skill_strategy == "semantic_topk" else None)).run(
                                           body.content, history=context,
                                           plan_checkpoint=existing_checkpoint,
                                           understanding_result=interpretation,
                                           execution_mode=execution_mode,
+                                          memory_write_consent=body.memory_write_consent,
                                           plan_control=plan_control)
             if result["status"] in {"completed", "partial"}:
                 answer, status = result["answer"], result["status"]
@@ -1258,6 +1290,47 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                 + shadow.get("recovery_model_calls", 0)
                 + shadow.get("schema_retry_model_calls", 0))
             shadow["execution_authorized"] = False
+        # S25-04 diagnostic happens only after durable finalization.
+        # No dispatch, plan mutation, or admission authority is derived here.
+        admission_trace = None
+        if (settings.s25_04_admission_trace_enabled
+                and settings.model_provider != "fake"
+                and agent_decider is None
+                and body.goal_confirmation is None):
+            try:
+                prediction = await shadow_classify(
+                    HTTPUnderstandingModel(
+                        settings.model_provider, settings.model_base_url,
+                        settings.model_api_key, settings.model_timeout_seconds,
+                        settings.model_max_output_tokens),
+                    settings.understanding_strong_model, body.content,
+                    preturn_plan_raw is not None, include_quote=True)
+                review = evaluate_admission_shadow(
+                    classification=prediction["label"],
+                    classifier_reason=prediction["reason"],
+                    request=body.content,
+                    evidence_quote=prediction.get("quote"),
+                    preturn_plan_present=preturn_plan_raw is not None,
+                    checkpoint_trusted=(preturn_plan_raw is None
+                                        or preturn_checkpoint is not None),
+                    mixed_or_plan_intent_excluded=False)
+                admission_trace = {
+                    "label": prediction["label"],
+                    "classification_reason": prediction["reason"],
+                    "advisory": review.advisory,
+                    "admission_reason": review.reason,
+                    "execution_authorized": False,
+                    "trace_only": True,
+                }
+            except Exception as exc:
+                log.warning("s25_04 diagnostic failed turn=%s class=%s",
+                            turn_id, type(exc).__name__)
+                admission_trace = {
+                    "label": "ambiguous", "classification_reason": "invalid",
+                    "advisory": "not_eligible",
+                    "admission_reason": "diagnostic_unavailable",
+                    "execution_authorized": False, "trace_only": True,
+                }
         response_data = {**result, "conversation_id": cid,
                          "message_id": assistant_id, "turn_id": turn_id}
         if shadow is not None:
@@ -1269,6 +1342,8 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                         request_id=body.client_request_id, turn_id=turn_id))
                 response_data["route_shadow"]["m3_checkpoint_snapshot"] = (
                     compare_checkpoint_snapshot(preturn_capture, existing_checkpoint))
+        if admission_trace is not None:
+            response_data["s25_04_admission_shadow"] = admission_trace
         return response_data
 
     @app.get("/conversations/{cid}/agent/task-state")

@@ -1,0 +1,248 @@
+"""S25-04 real-provider Unified HTTP integration gate, with isolated SQLite."""
+import json
+import os
+import uuid
+from pathlib import Path
+from unittest.mock import patch
+
+from fastapi.testclient import TestClient
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import Session
+
+from agent.config import Settings
+from agent.mcp_stdio_client import StdioMCPClient
+from agent.mock_mcp import MockMCPClient
+from evals.s25_04_mcp_facts import mcp_definition_faithful, mcp_definition_facts
+from apps.api.main import create_app
+from services.db import ConversationTask, UserMemory
+
+
+def main():
+    if os.getenv("RUN_S25_04_LIVE") != "1":
+        raise RuntimeError("Set RUN_S25_04_LIVE=1 before making real provider requests")
+    base = Settings()
+    if base.model_provider == "fake":
+        raise RuntimeError("Real provider required")
+    folder = Path("evals/results/s25-04")
+    folder.mkdir(parents=True, exist_ok=True)
+    database = folder / ("unified-physical-" + uuid.uuid4().hex + ".sqlite")
+    url = "sqlite:///" + str(database.resolve()).replace("\\", "/")
+    # Deliberately exercise the full M5 Unified route instead of legacy bypass.
+    settings = Settings(**{**base.model_dump(), "skill_strategy": "semantic_topk",
+                           "routing_profile": "unified",
+                           "route_admission_mode": "guarded",
+                           "understanding_strategy": "structured",
+                           "m5_unified_route_enabled": True,
+                           "m5_first_route_enabled": False,
+                           "database_url": url, "skill_budget_chars": 2000})
+    engine = create_engine(url)
+    records = []
+
+    def check(name, ok, info):
+        records.append({"scenario": name, "passed": bool(ok), **info})
+
+    def send(client, cid, prompt, consent=False):
+        reply = client.post(f"/conversations/{cid}/agent/messages",
+                            json={"content": prompt, "client_request_id": str(uuid.uuid4()),
+                                  "memory_write_consent": consent})
+        obj = reply.json()
+        trace = obj.get("trace") or []
+        detail = obj.get("detail") if isinstance(obj.get("detail"), dict) else {}
+        error_code = detail.get("code") or obj.get("failure_code") or obj.get("termination_reason")
+        if not error_code and reply.status_code >= 400:
+            error_code = "unclassified_http_error"
+        return {"status": reply.status_code, "agent_status": obj.get("status"),
+                "turn_id": obj.get("turn_id") or detail.get("turn_id"),
+                "understanding_attempts": detail.get("understanding_attempts", []),
+                "execution_mode": obj.get("execution_mode"),
+                "trace_types": [e.get("type") for e in trace],
+                "reason_code": error_code,
+                "termination_reason": obj.get("termination_reason"),
+                "tools": [{"name": e.get("name"), "ok": e.get("ok"),
+                           "error_code": e.get("error_code")}
+                          for e in trace if e.get("type") == "tool"],
+                "answer": obj.get("answer", "")}
+
+    def diagnostic(row):
+        return {"http_status": row["status"], "reason_code": row["reason_code"],
+                "execution_mode": row["execution_mode"],
+                "agent_status": row["agent_status"],
+                "termination_reason": row["termination_reason"],
+                "trace_types": row["trace_types"], "tool_events": row["tools"]}
+
+    def tasks(cid):
+        with Session(engine) as db:
+            return [x.title for x in db.scalars(select(ConversationTask).where(
+                ConversationTask.conversation_id == cid)).all()]
+
+    def memory():
+        with Session(engine) as db:
+            return {x.key: x.value for x in db.scalars(select(UserMemory)).all()}
+
+    task_title = "S2504-phys-" + uuid.uuid4().hex[:10]
+    key = "s2504_phys_" + uuid.uuid4().hex[:10]
+    value = "proof_" + uuid.uuid4().hex[:10]
+    try:
+        with TestClient(create_app(settings)) as client:
+            cid = client.post("/conversations").json()["id"]
+            # No selected_ordinary_operation: verify genuine Unified routing.
+            calc = send(client, cid, "请计算 (19+23)*4")
+            check("ordinary_calculation_no_selection",
+                  calc["status"] == 200 and calc["agent_status"] == "completed"
+                  and "168" in calc["answer"]
+                  and any(t["name"] == "calculate" and t["ok"] for t in calc["tools"]),
+                  {**diagnostic(calc), "answer_contains_168": "168" in calc["answer"]})
+            # Separate plan scope from ordinary task/memory side effects.
+            plan_cid = client.post("/conversations").json()["id"]
+            plan_create = send(client, plan_cid,
+                "请创建一个两步可执行计划：第一步计算 3+4，第二步计算 8+9。只保存，不执行。")
+            check("saved_plan_still_owned_by_m5",
+                  plan_create["status"] == 200 and
+                  plan_create["termination_reason"] == "plan_created_pending_execution"
+                  and not plan_create["tools"],
+                  diagnostic(plan_create))
+            missing_cid = client.post("/conversations").json()["id"]
+            missing = send(client, missing_cid, "继续执行之前保存计划的剩余步骤")
+            check("missing_plan_does_not_execute",
+                  missing["status"] == 200 and
+                  missing["agent_status"] != "completed" and not missing["tools"],
+                  diagnostic(missing))
+            write = send(client, cid, "请创建一个待办任务，标题精确为：" + task_title)
+            task_saved = task_title in tasks(cid)
+            check("authorized_task_write", task_saved and any(
+                t["name"] == "create_task" and t["ok"] for t in write["tools"]),
+                {"http_status": write["status"], "agent_status": write["agent_status"],
+                 "tool_events": write["tools"], "persisted": task_saved,
+                 "execution_mode": write["execution_mode"], "trace_types": write["trace_types"],
+                 "termination_reason": write["termination_reason"],
+                 "reason_code": write["reason_code"]})
+            read = send(client, cid, "请查询这个会话的待办并告诉我任务标题。")
+            check("same_conversation_read", task_title in read["answer"] and any(
+                t["name"] == "list_tasks" and t["ok"] for t in read["tools"]),
+                {"http_status": read["status"], "tool_events": read["tools"],
+                 "reason_code": read["reason_code"], "trace_types": read["trace_types"],
+                 "answer_contains_task": task_title in read["answer"],
+                 "agent_status": read["agent_status"],
+                 "understanding_attempts": read["understanding_attempts"]})
+            memory_cid = client.post("/conversations").json()["id"]
+            denied = send(client, memory_cid,
+                          f"请把长期记忆键 {key} 的值保存成 {value}，并尝试确认是否保存。",
+                          consent=False)
+            check("memory_no_consent", denied["status"] == 200 and
+                  denied["agent_status"] in {"completed", "partial"} and
+                  key not in memory() and not any(
+                      t["name"] == "save_memory" and t["ok"]
+                      for t in denied["tools"]),
+                  {"http_status": denied["status"], "reason_code": denied["reason_code"],
+                   "tool_events": denied["tools"],
+                   "memory_absent": key not in memory(),
+                   "execution_mode": denied["execution_mode"],
+                   "trace_types": denied["trace_types"]})
+            allowed_cid = client.post("/conversations").json()["id"]
+            allowed = send(client, allowed_cid,
+                           f"我明确同意本轮保存长期记忆，请把键 {key} 的值保存成 {value}。",
+                           consent=True)
+            check("memory_with_consent", memory().get(key) == value and any(
+                t["name"] == "save_memory" and t["ok"] for t in allowed["tools"]),
+                {"http_status": allowed["status"], "tool_events": allowed["tools"],
+                 "memory_persisted": memory().get(key) == value,
+                 "memory_key_present": key in memory(),
+                 "memory_record_count": len(memory()),
+                 "execution_mode": allowed["execution_mode"],
+                 "trace_types": allowed["trace_types"],
+                 "termination_reason": allowed["termination_reason"],
+                 "reason_code": allowed["reason_code"]})
+
+            expected = MockMCPClient().call("mcp_reference_lookup", {"term": "MCP"})
+            reference_cid = client.post("/conversations").json()["id"]
+            reference = send(client, reference_cid, "请使用 mcp_reference_lookup 查询参考词条，参数 term 精确为 MCP，并注明检索来源。")
+            definition = str(expected.get("definition", ""))
+            observed = {}
+            if reference["turn_id"]:
+                evidence = client.get(
+                    f"/conversations/{reference_cid}/turns/{reference['turn_id']}/evidence")
+                if evidence.status_code == 200:
+                    observed = next((a.get("result", {}) for a in
+                        evidence.json().get("attempts", [])
+                        if a.get("tool") == "mcp_reference_lookup"
+                        and a.get("status") == "succeeded"), {})
+            observed_definition = str(observed.get("definition", ""))
+            observed_source = str(observed.get("source", ""))
+            check("mcp_source_answer", bool(expected.get("ok")) and bool(definition)
+                  and mcp_definition_faithful(reference["answer"], definition, observed_source)
+                  and observed_definition == definition
+                  and any(t["name"] == "mcp_reference_lookup" and t["ok"]
+                          for t in reference["tools"]),
+                  {"http_status": reference["status"], "tool_events": reference["tools"],
+                   "trace_types": reference["trace_types"],
+                   "execution_mode": reference["execution_mode"],
+                   "definition_facts": mcp_definition_facts(reference["answer"], definition, observed_source),
+                   "definition_matched": bool(definition) and
+                   definition.casefold() in reference["answer"].casefold(),
+                   "observed_definition_present": bool(observed_definition),
+                   "observed_definition_in_answer": bool(observed_definition) and
+                   observed_definition.casefold() in reference["answer"].casefold(),
+                   "observed_source_in_answer": bool(observed_source) and
+                   observed_source.casefold() in reference["answer"].casefold(),
+                   "observed_matches_fixture": observed_definition == definition})
+
+            original_call = StdioMCPClient.call
+            def unavailable(self, name, arguments):
+                if name == "mcp_reference_lookup":
+                    return {"ok": False, "error": "mcp_unavailable"}
+                return original_call(self, name, arguments)
+            with patch.object(StdioMCPClient, "call", unavailable):
+                failure = send(client, cid, "请调用 MCP 参考目录核实 MCP 定义，未查证不能说已验证。")
+            failed_tool = any(t["name"] == "mcp_reference_lookup" and
+                              t["ok"] is False for t in failure["tools"])
+            check("mcp_outage_no_success", failed_tool and
+                  not any(t["name"] == "mcp_reference_lookup" and t["ok"]
+                          for t in failure["tools"]) and failure["agent_status"] != "completed",
+                  {"http_status": failure["status"], "agent_status": failure["agent_status"],
+                   "termination_reason": failure["termination_reason"],
+                   "tool_events": failure["tools"],
+                   "reason_code": failure["reason_code"],
+                   "understanding_attempts": failure["understanding_attempts"]})
+
+        # A new application and the same persistent conversation/database.
+        with TestClient(create_app(settings)) as restarted:
+            restored = restarted.get(f"/conversations/{cid}")
+            recovered = send(restarted, cid, "MCP 参考服务已恢复，请重新调用工具核实 MCP 定义。")
+            check("restarted_conversation_mcp_recovery",
+                  restored.status_code == 200 and task_title in tasks(cid)
+                  and any(t["name"] == "mcp_reference_lookup" and t["ok"]
+                          for t in recovered["tools"]),
+                  {"history_http_status": restored.status_code,
+                   "http_status": recovered["status"], "agent_status": recovered["agent_status"],
+                   "tool_events": recovered["tools"], "task_persisted": task_title in tasks(cid),
+                   "trace_types": recovered["trace_types"],
+                   "execution_mode": recovered["execution_mode"],
+                   "reason_code": recovered["reason_code"]})
+    finally:
+        engine.dispose()
+        database.unlink(missing_ok=True)
+
+    report = {"suite": "s25-04-unified-physical-v1", "mode": "REAL_PROVIDER",
+              "model": settings.model_name, "provider": settings.model_provider,
+              "routing_profile": settings.effective_routing_profile,
+              "passed": sum(r["passed"] for r in records), "total": len(records),
+              "cases": records,
+              "limitations": ["Model-dependent behavior: failures require review, not forced success.",
+                              "MCP outage is a controlled transport fault; provider remains real.",
+                              "Unified routing enabled; M5 may legitimately fence actions, recorded as gate failures for review.",
+                              "Report omits prompts, final answer text and memory values.",
+                              "Isolated SQLite; does not simulate a force-killed process."]}
+    target = folder / "unified-physical-v1.json"
+    report["expected_route"] = "unified"
+    report["head_sha_expected"] = os.getenv("S25_04_EXPECTED_HEAD_SHA", "not_verified")
+    target.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(json.dumps({"passed": report["passed"], "total": report["total"],
+                      "cases": [{"scenario": x["scenario"], "passed": x["passed"]}
+                                for x in records]}, ensure_ascii=False, indent=2))
+    print("Evidence:", target)
+    if report["passed"] != report["total"]:
+        raise SystemExit(1)
+
+
+if __name__ == "__main__":
+    main()

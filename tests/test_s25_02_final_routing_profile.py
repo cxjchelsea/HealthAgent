@@ -70,7 +70,7 @@ def valid_understanding():
     }, ensure_ascii=False)
 
 
-def test_missing_saved_plan_uses_single_primary_no_legacy_reclassification(
+def test_missing_saved_plan_requires_independent_readonly_denial_review(
         tmp_path, monkeypatch):
     counts = {"primary": 0, "old_plan": 0, "missing_review": 0}
     async def primary(*args, **kwargs):
@@ -83,7 +83,7 @@ def test_missing_saved_plan_uses_single_primary_no_legacy_reclassification(
 
     async def missing_review(*args, **kwargs):
         counts["missing_review"] += 1
-        raise AssertionError("unified missing-plan primary must not need a second classifier")
+        return True  # Independent confirmation of a truly absent saved plan.
 
     async def complete(self, *, model, messages, response_schema=None):
         return valid_understanding()
@@ -109,7 +109,7 @@ def test_missing_saved_plan_uses_single_primary_no_legacy_reclassification(
         body = response.json()
         assert body["termination_reason"] == "plan_not_found"
         assert body["steps"] == 0
-        assert counts == {"primary": 1, "old_plan": 0, "missing_review": 0}
+        assert counts == {"primary": 1, "old_plan": 0, "missing_review": 1}
 
 
 def test_missing_plan_primary_is_host_source_bound_and_nonexecuting():

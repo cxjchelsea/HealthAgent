@@ -133,8 +133,15 @@ async def propose_new_plan_route(provider, model: str, message: str) -> PlanRequ
     old intent classifier or ordinary AgentLoop tool execution.
     """
     prompt = (
-        "Decide current user's ONE route: plan_create ONLY if explicitly asking "
-        "to CREATE/SAVE a FUTURE EXECUTABLE plan without running any step now; "
+        "Decide current user's ONE route by the requested operation and timing. "
+        "plan_create ONLY when the user EXPLICITLY requests SAVING an ORDERED "
+        "MULTI-STEP executable plan for LATER without executing any step now. "
+        "One immediate operation is NOT a saved plan: calculate a formula, "
+        "create a to-do task, save a memory fact, or look up a reference must "
+        "all be route other, even when their verb is create/save/execute. "
+        "Example: 请计算 (19+23)*4 -> other; "
+        "请创建一个任务：周五提交测试报告 -> other; "
+        "请创建一个两步可执行计划：第一步计算 3+4，第二步计算 8+9。只保存，不执行。 -> plan_create. "
         "plan_missing ONLY when explicitly asking to execute/resume a PREVIOUSLY "
         "SAVED plan that is absent from Host state; otherwise other (standalone "
         "tools, chat, follow-ups, ambiguous). "

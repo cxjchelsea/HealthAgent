@@ -268,9 +268,17 @@ class UnderstandingService:
                                   "if essential details are absent, request clarification. "
                                   "Never invent facts or a confirmed goal."
                                   if attempts and attempts[-1].get("diagnostic") == "missing_goal"
-                                  else "Regenerate a complete valid object matching the "
-                                       "schema. Do not invent goal references, facts, "
-                                       "constraints or confirmations.")
+                                  else ("The previous JSON disagreed about clarification. "
+                                        "If clarification.required is true, use status "
+                                        "clarification_required with a non-none reason_code "
+                                        "and a question. Otherwise set required=false, "
+                                        "reason_code=none, question=null, and choose a "
+                                        "matching status. Preserve the user intent without "
+                                        "inventing a goal reference or confirmation."
+                                        if attempts and attempts[-1].get("diagnostic") == "clarification_status_mismatch"
+                                        else "Regenerate a complete valid object matching the "
+                                             "schema. Do not invent goal references, facts, "
+                                             "constraints or confirmations."))
                         prompt = [*messages, {"role": "system", "content": repair}]
                     raw = await self.model.complete(messages=prompt, model=model_name)
                     try:
@@ -318,7 +326,7 @@ class UnderstandingService:
                                      "duration_ms": int((time.monotonic() - start) * 1000),
                                      "outcome": reason, "retry": retry,
                                      "diagnostic": getattr(exc, "detail", None)})
-                    if reason not in ("structured_schema_error", "structured_consistency_error"):
+                    if reason not in ("structured_schema_error", "structured_consistency_error") and not (reason == "unverified_goal_reference" and role == "strong" and retry == 0):
                         break
         if (last_missing_goal_raw is not None and attempts
                 and all(a.get("diagnostic") == "missing_goal" for a in attempts)):
