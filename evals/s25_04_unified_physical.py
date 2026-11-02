@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from agent.config import Settings
 from agent.mcp_stdio_client import StdioMCPClient
 from agent.mock_mcp import MockMCPClient
+from evals.s25_04_mcp_facts import mcp_definition_faithful, mcp_definition_facts
 from apps.api.main import create_app
 from services.db import ConversationTask, UserMemory
 
@@ -168,12 +169,14 @@ def main():
             observed_definition = str(observed.get("definition", ""))
             observed_source = str(observed.get("source", ""))
             check("mcp_source_answer", bool(expected.get("ok")) and bool(definition)
-                  and definition.casefold() in reference["answer"].casefold()
+                  and mcp_definition_faithful(reference["answer"], definition, observed_source)
+                  and observed_definition == definition
                   and any(t["name"] == "mcp_reference_lookup" and t["ok"]
                           for t in reference["tools"]),
                   {"http_status": reference["status"], "tool_events": reference["tools"],
                    "trace_types": reference["trace_types"],
                    "execution_mode": reference["execution_mode"],
+                   "definition_facts": mcp_definition_facts(reference["answer"], definition, observed_source),
                    "definition_matched": bool(definition) and
                    definition.casefold() in reference["answer"].casefold(),
                    "observed_definition_present": bool(observed_definition),
