@@ -58,7 +58,7 @@ def test_invalid_both_models_fails_closed():
 def test_fabricated_goal_reference_is_not_accepted():
     candidate = payload()
     candidate["change"]["target_goal_id"] = "imaginary-123"
-    stub = StubModel([json.dumps(candidate), json.dumps(candidate)])
+    stub = StubModel([json.dumps(candidate)] * 3)
     with pytest.raises(UnderstandingError):
         asyncio.run(UnderstandingService(stub, "small", "large").understand(
             UnderstandingContext(current_message="改第二项")))
