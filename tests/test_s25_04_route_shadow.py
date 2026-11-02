@@ -66,3 +66,22 @@ def test_shadow_provider_error_fails_closed():
     result = asyncio.run(shadow_classify(
         Stub(error=RuntimeError("provider unavailable")), "test", "执行计划", True))
     assert result == {"label": "ambiguous", "reason": "invalid"}
+
+
+def test_quote_only_returned_when_explicitly_requested():
+    request = "请创建待办：明天发报告"
+    stub = Stub({"label": "ordinary_tool", "quote": request})
+    default = asyncio.run(shadow_classify(stub, "test", request, False))
+    expanded = asyncio.run(shadow_classify(
+        stub, "test", request, False, include_quote=True))
+    assert "quote" not in default
+    assert expanded == {"label": "ordinary_tool", "reason": "bound",
+                        "quote": request}
+
+
+def test_invalid_quote_not_exposed_in_diagnostic_mode():
+    request = "MCP 和 MCP 的区别"
+    result = asyncio.run(shadow_classify(
+        Stub({"label": "ordinary_tool", "quote": "MCP"}),
+        "test", request, False, include_quote=True))
+    assert result == {"label": "ambiguous", "reason": "unbound"}
