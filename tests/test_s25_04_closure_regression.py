@@ -84,3 +84,26 @@ def test_repeated_unverified_goal_reference_stays_unavailable():
     assert model.calls == 2
     assert all(a["outcome"] == "unverified_goal_reference"
                for a in caught.value.attempts)
+
+def test_strong_clarification_mismatch_repairs_under_original_validator():
+    invalid = _understanding()
+    invalid["status"] = "clarification_required"
+    model = _SequenceModel([invalid, _understanding()])
+    service = UnderstandingService(model, "strong", "strong")
+    output = asyncio.run(service.understand(
+        UnderstandingContext(current_message="查询参考资料"), use_strong=True))
+    assert model.calls == 2
+    assert output["result"].status == "understood"
+    assert output["attempts"][0]["diagnostic"] == "clarification_status_mismatch"
+
+
+def test_strong_clarification_mismatch_twice_fails_closed():
+    invalid = _understanding()
+    invalid["status"] = "clarification_required"
+    model = _SequenceModel([invalid, invalid])
+    service = UnderstandingService(model, "strong", "strong")
+    with pytest.raises(UnderstandingError) as caught:
+        asyncio.run(service.understand(
+            UnderstandingContext(current_message="查询参考资料"), use_strong=True))
+    assert caught.value.code == "understanding_unavailable"
+    assert model.calls == 2
