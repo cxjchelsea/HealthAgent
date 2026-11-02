@@ -2,7 +2,10 @@
 
 These tests assert secure validation, not a successful understanding recovery.
 """
+import asyncio
+import json
 import pytest
+from agent.understanding import UnderstandingContext, UnderstandingError, UnderstandingService
 from pydantic import ValidationError
 from agent.understanding import UnderstandingResult
 
@@ -39,9 +42,6 @@ def test_tool_observation_is_separate_from_final_model_text():
     assert observed["source"]
     # The final answer still requires independent matching/review.
 
-import asyncio
-import json
-from agent.understanding import UnderstandingContext, UnderstandingError, UnderstandingService
 
 
 class _SequenceModel:
