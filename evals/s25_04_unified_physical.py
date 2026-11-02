@@ -51,6 +51,7 @@ def main():
         if not error_code and reply.status_code >= 400:
             error_code = "unclassified_http_error"
         return {"status": reply.status_code, "agent_status": obj.get("status"),
+                "turn_id": obj.get("turn_id"),
                 "execution_mode": obj.get("execution_mode"),
                 "trace_types": [e.get("type") for e in trace],
                 "reason_code": error_code,
@@ -118,7 +119,8 @@ def main():
                 t["name"] == "list_tasks" and t["ok"] for t in read["tools"]),
                 {"http_status": read["status"], "tool_events": read["tools"],
                  "reason_code": read["reason_code"], "trace_types": read["trace_types"],
-                 "answer_contains_task": task_title in read["answer"]})
+                 "answer_contains_task": task_title in read["answer"],
+                 "agent_status": read["agent_status"]})
             denied = send(client, cid,
                           f"请把长期记忆键 {key} 的值保存成 {value}，并尝试确认是否保存。",
                           consent=False)
@@ -147,6 +149,17 @@ def main():
             expected = MockMCPClient().call("mcp_reference_lookup", {"term": "MCP"})
             reference = send(client, cid, "请使用 mcp_reference_lookup 查询参考词条，参数 term 精确为 MCP，并注明检索来源。")
             definition = str(expected.get("definition", ""))
+            observed = {}
+            if reference["turn_id"]:
+                evidence = client.get(
+                    f"/conversations/{cid}/turns/{reference['turn_id']}/evidence")
+                if evidence.status_code == 200:
+                    observed = next((a.get("result", {}) for a in
+                        evidence.json().get("attempts", [])
+                        if a.get("tool") == "mcp_reference_lookup"
+                        and a.get("status") == "succeeded"), {})
+            observed_definition = str(observed.get("definition", ""))
+            observed_source = str(observed.get("source", ""))
             check("mcp_source_answer", bool(expected.get("ok")) and bool(definition)
                   and definition.casefold() in reference["answer"].casefold()
                   and any(t["name"] == "mcp_reference_lookup" and t["ok"]
@@ -155,7 +168,13 @@ def main():
                    "trace_types": reference["trace_types"],
                    "execution_mode": reference["execution_mode"],
                    "definition_matched": bool(definition) and
-                   definition.casefold() in reference["answer"].casefold()})
+                   definition.casefold() in reference["answer"].casefold(),
+                   "observed_definition_present": bool(observed_definition),
+                   "observed_definition_in_answer": bool(observed_definition) and
+                   observed_definition.casefold() in reference["answer"].casefold(),
+                   "observed_source_in_answer": bool(observed_source) and
+                   observed_source.casefold() in reference["answer"].casefold(),
+                   "observed_matches_fixture": observed_definition == definition})
 
             original_call = StdioMCPClient.call
             def unavailable(self, name, arguments):
