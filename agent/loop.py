@@ -762,9 +762,21 @@ class AgentLoop:
             if isinstance(exc, ModelUnavailable):
                 from agent.decision import ToolDecisionError
                 safe_code = exc.code if isinstance(exc, ToolDecisionError) else "model_unavailable"
+                # Only bounded, provider-adapter-generated diagnostic metadata.
+                # Never export raw model output, prompts, or tool arguments.
+                safe_metadata = {}
+                if isinstance(exc, ToolDecisionError) and safe_code == "empty_decision":
+                    safe_metadata = {key: value for key, value in exc.metadata.items()
+                                     if key in {"message_present", "content_chars",
+                                                "tool_call_count", "thinking_present",
+                                                "done_reason", "retry_count"}
+                                     and isinstance(value, (str, int, bool))}
                 return {"run_id": run_id, "status": "provider_error",
                         "termination_reason": safe_code, "answer": "",
-                        "trace": [], "prompt_version": PROMPT_VERSION,
+                        "trace": ([{"step": 0, "type": "provider_decision_diagnostic",
+                                    "error_code": safe_code, "metadata": safe_metadata}]
+                                  if safe_metadata else []),
+                        "prompt_version": PROMPT_VERSION,
                         "failure_code": safe_code}
             raise
         result = {"run_id": run_id, "status": outcome["status"],
