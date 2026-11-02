@@ -318,7 +318,7 @@ class UnderstandingService:
                                      "duration_ms": int((time.monotonic() - start) * 1000),
                                      "outcome": reason, "retry": retry,
                                      "diagnostic": getattr(exc, "detail", None)})
-                    if reason not in ("structured_schema_error", "structured_consistency_error"):
+                    if reason not in ("structured_schema_error", "structured_consistency_error") and not (reason == "unverified_goal_reference" and role == "strong" and retry == 0):
                         break
         if (last_missing_goal_raw is not None and attempts
                 and all(a.get("diagnostic") == "missing_goal" for a in attempts)):
