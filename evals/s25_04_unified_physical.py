@@ -180,7 +180,9 @@ def main():
                               "Report omits prompts, final answer text and memory values.",
                               "Isolated SQLite; does not simulate a force-killed process."]}
     target = folder / "unified-physical-v1.json"
-    report["expected_route"] = "unified"\n    report["head_sha_expected"] = "5cbdbb7f2990bfe904c1c0429b0b023539395477"\n    target.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    report["expected_route"] = "unified"
+    report["head_sha_expected"] = "5cbdbb7f2990bfe904c1c0429b0b023539395477"
+    target.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps({"passed": report["passed"], "total": report["total"],
                       "cases": [{"scenario": x["scenario"], "passed": x["passed"]}
                                 for x in records]}, ensure_ascii=False, indent=2))
