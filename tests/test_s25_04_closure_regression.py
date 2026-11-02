@@ -38,3 +38,49 @@ def test_tool_observation_is_separate_from_final_model_text():
     assert observed["definition"]
     assert observed["source"]
     # The final answer still requires independent matching/review.
+
+import asyncio
+import json
+from agent.understanding import UnderstandingContext, UnderstandingError, UnderstandingService
+
+
+class _SequenceModel:
+    def __init__(self, responses):
+        self.responses = iter(responses)
+        self.calls = 0
+
+    async def complete(self, **kwargs):
+        self.calls += 1
+        return json.dumps(next(self.responses))
+
+
+def _understanding(goal_id=None):
+    return {
+        "status": "understood",
+        "goal": {"objective": "查看当前待办"},
+        "change": {"kind": "new_goal", "target_goal_id": goal_id, "delta": None},
+        "clarification": {"required": False, "reason_code": "none", "question": None},
+    }
+
+
+def test_strong_reference_rejection_then_valid_regeneration():
+    model = _SequenceModel([_understanding("fabricated"), _understanding()])
+    service = UnderstandingService(model, "strong", "strong")
+    result = asyncio.run(service.understand(
+        UnderstandingContext(current_message="查看当前待办"), use_strong=True))
+    assert model.calls == 2
+    assert result["result"].change.target_goal_id is None
+    assert [x["outcome"] for x in result["attempts"]] == [
+        "unverified_goal_reference", "valid"]
+
+
+def test_repeated_unverified_goal_reference_stays_unavailable():
+    model = _SequenceModel([_understanding("fabricated"), _understanding("fabricated")])
+    service = UnderstandingService(model, "strong", "strong")
+    with pytest.raises(UnderstandingError) as caught:
+        asyncio.run(service.understand(
+            UnderstandingContext(current_message="查看当前待办"), use_strong=True))
+    assert caught.value.code == "understanding_unavailable"
+    assert model.calls == 2
+    assert all(a["outcome"] == "unverified_goal_reference"
+               for a in caught.value.attempts)
