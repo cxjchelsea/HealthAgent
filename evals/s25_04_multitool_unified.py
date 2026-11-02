@@ -27,6 +27,9 @@ def main():
         "m5_unified_route_enabled": True, "m5_first_route_enabled": False,
         "skill_strategy": "semantic_topk", "skill_budget_chars": 2000,
         "database_url": url})
+    repeats = int(os.getenv("S25_04_MULTITOOL_REPEATS", "5"))
+    if not 1 <= repeats <= 10:
+        raise ValueError("S25_04_MULTITOOL_REPEATS must be 1..10")
     checks = []
 
     def request(client, cid, prompt):
@@ -42,26 +45,37 @@ def main():
                   if e.get("type") == "tool"]
         exposures = [e.get("tool_names", []) for e in trace
                      if e.get("type") == "tool_exposure"]
+        decisions = [e.get("step") for e in trace if e.get("type") == "decision"]
+        tool_steps = [e.get("step") for e in trace if e.get("type") == "tool"]
         checks.append({"case": name, "passed": bool(accepted),
+            "decision_steps": decisions, "tool_steps": tool_steps,
             "http_status": status, "agent_status": data.get("status"),
             "termination_reason": data.get("termination_reason"),
             "tools": events, "exposures": exposures, **extra})
 
     try:
         with TestClient(create_app(settings)) as client:
+          for repeat in range(1, repeats + 1):
             cid = client.post("/conversations").json()["id"]
             code, data, trace = request(client, cid,
                 "请先从 MCP 参考目录查询 MCP 的定义，再用计算工具计算 (19+23)*4，给出检索来源和计算结果。")
             tools = [(e.get("name"), e.get("ok")) for e in trace
                      if e.get("type") == "tool"]
             names = [name for name, ok in tools if ok]
-            passed = (code == 200 and data.get("status") == "completed"
+            sequential_steps = [e.get("step") for e in trace
+                if e.get("type") == "tool" and e.get("name") in
+                {"mcp_reference_lookup", "calculate"} and e.get("ok")]
+            distinct_decisions = (len(sequential_steps) >= 2 and
+                                  all(isinstance(x, int) for x in sequential_steps[:2])
+                                  and sequential_steps[0] < sequential_steps[1])
+            passed = (distinct_decisions and code == 200 and data.get("status") == "completed"
                       and "mcp_reference_lookup" in names
                       and "calculate" in names
                       and names.index("mcp_reference_lookup") <
                           names.index("calculate")
                       and "168" in data.get("answer", ""))
             record("sequential_lookup_then_calculate", passed, code, data, trace,
+                   repeat=repeat, distinct_decisions=distinct_decisions,
                    lookup_before_calculation=("mcp_reference_lookup" in names
                    and "calculate" in names and names.index("mcp_reference_lookup")
                    < names.index("calculate")))
@@ -86,24 +100,27 @@ def main():
                          if e.get("type") == "tool_exposure"]
             excluded_on_followup = bool(exposures) and any(
                 "mcp_reference_lookup" not in x for x in exposures[1:])
+            mcp_attempts = sum(e.get("type") == "tool" and
+                e.get("name") == "mcp_reference_lookup" for e in trace)
             record("mcp_failure_observation_reselection",
-                failure and not false_success
-                and data.get("status") != "completed",
+                failure and not false_success and mcp_attempts == 1
+                and excluded_on_followup and data.get("status") != "completed",
                 code, data, trace,
+                repeat=repeat, mcp_attempts=mcp_attempts,
                 failure_observed=failure,
                 candidate_excluded_on_followup=excluded_on_followup)
     finally:
         database.unlink(missing_ok=True)
 
-    result = {"suite": "s25-04-multitool-unified-v1",
+    result = {"suite": "s25-04-multitool-unified-v2", "repeats": repeats,
         "profile": settings.effective_routing_profile,
         "model": settings.understanding_strong_model,
         "passed": sum(x["passed"] for x in checks),
         "total": len(checks), "cases": checks,
-        "notes": ["A single pass does not prove statistical stability.",
+        "notes": ["Repeated tests are independent conversations in a shared isolated test database.",
                   "MCP outage is controlled; real model generates decisions.",
                   "Tool-event ordering and exposure lists are required evidence."]}
-    target = folder / "multitool-unified-v1.json"
+    target = folder / "multitool-unified-v2.json"
     target.write_text(json.dumps(result, ensure_ascii=False, indent=2),
                       encoding="utf-8")
     print(json.dumps(result, ensure_ascii=False, indent=2))
