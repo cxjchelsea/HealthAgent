@@ -197,7 +197,9 @@ def main():
                           for t in failure["tools"]) and failure["agent_status"] != "completed",
                   {"http_status": failure["status"], "agent_status": failure["agent_status"],
                    "termination_reason": failure["termination_reason"],
-                   "tool_events": failure["tools"]})
+                   "tool_events": failure["tools"],
+                   "reason_code": failure["reason_code"],
+                   "understanding_attempts": failure["understanding_attempts"]})
 
         # A new application and the same persistent conversation/database.
         with TestClient(create_app(settings)) as restarted:
