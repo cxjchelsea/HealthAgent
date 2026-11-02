@@ -10,7 +10,7 @@ class RouteLabel(BaseModel):
     quote: str
 
 
-async def shadow_classify(provider, model: str, request: str, saved_plan: bool):
+async def shadow_classify(provider, model: str, request: str, saved_plan: bool, *, include_quote: bool = False):
     instructions = (
         "You are an OFFLINE diagnostic classifier, not an execution router. "
         "Classify the entire CURRENT request (Chinese or English), not an isolated keyword. "
@@ -49,6 +49,9 @@ async def shadow_classify(provider, model: str, request: str, saved_plan: bool):
         result = RouteLabel.model_validate_json(raw)
         if not result.quote or request.count(result.quote) != 1:
             return {"label": "ambiguous", "reason": "unbound"}
-        return {"label": result.label, "reason": "bound"}
+        answer = {"label": result.label, "reason": "bound"}
+        if include_quote:
+            answer["quote"] = result.quote
+        return answer
     except (ValueError, TypeError, RuntimeError):
         return {"label": "ambiguous", "reason": "invalid"}
