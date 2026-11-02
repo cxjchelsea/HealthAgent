@@ -332,6 +332,28 @@ class AgentLoop:
                 if result["ok"]:
                     unresolved_failures = [a for a in unresolved_failures if a != action_key]
                     calculation_errors.pop(action_key, None)
+                    # A corrected MCP lookup may resolve an earlier invalid call only
+                    # when the failed arguments identify the same canonical term.
+                    if (name == "mcp_reference_lookup" and isinstance(arguments, dict)
+                            and result.get("term")):
+                        resolved = []
+                        for old_key in unresolved_failures:
+                            try:
+                                old_name, old_args = json.loads(old_key)
+                            except (TypeError, ValueError):
+                                continue
+                            if old_name != name or not isinstance(old_args, dict):
+                                continue
+                            old_term = old_args.get("term")
+                            if (isinstance(old_term, str)
+                                    and old_term.strip().casefold() == str(result["term"]).strip().casefold()):
+                                resolved.append(old_key)
+                        if resolved:
+                            unresolved_failures = [x for x in unresolved_failures if x not in resolved]
+                            traces.append({"step": state["iterations"],
+                                           "type": "tool_failure_recovered",
+                                           "name": name, "recovered_count": len(resolved),
+                                           "basis": "matching_verified_term"})
                     if name == "calculate" and isinstance(arguments, dict):
                         recovered = []
                         for old_key in unresolved_failures:
