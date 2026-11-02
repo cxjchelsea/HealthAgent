@@ -32,6 +32,7 @@ from agent.clarification_review import review_read_only_clarification
 from agent.control_admission import admit_clarification
 from agent.plan_intent import PlanRequest, review_plan_intent, build_plan_checkpoint
 from agent.s25_04_admission_shadow import evaluate_admission_shadow
+from agent.s25_04_explicit_ordinary import admit_explicit_ordinary_calculation
 from evals.s25_04_route_shadow import shadow_classify
 from agent.m5_first_route import propose_first_route
 from agent.m5_unified_route import (propose_saved_plan_route, propose_new_plan_route,
@@ -64,6 +65,7 @@ class ChatIn(BaseModel):
     content: str = Field(min_length=1)
     client_request_id: str = Field(min_length=8,max_length=120)
     memory_write_consent: bool = False
+    selected_ordinary_operation: str | None = None  # explicitly selected by client
     goal_confirmation: str | None = None
     expected_goal_version: int | None = None
 
@@ -306,11 +308,18 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                           "trace": [{"step": 0, "type": "goal_confirmation"}], "steps": 0}
             if settings.understanding_strategy not in {"direct", "structured"}:
                 raise UnderstandingError("invalid_understanding_strategy")
+            selected_ordinary_admitted = admit_explicit_ordinary_calculation(
+                selection=body.selected_ordinary_operation,
+                message=body.content,
+                saved_plan_present=preturn_plan_raw is not None,
+                pending_action_present=pending_action is not None,
+                clarification_present=clarification_id is not None)
             unified_new_plan_decision = None
             # Pending tool arguments and open clarifications belong to the
             # verified preturn origin; they cannot become a fresh plan route.
             # Preserve the existing pending/clarification Host pipeline.
             if (result is None and existing_checkpoint is None
+                    and not selected_ordinary_admitted
                     and pending_action is None and clarification_id is None
                     and settings.m5_unified_route_enabled
                     and settings.route_admission_mode == "guarded"
