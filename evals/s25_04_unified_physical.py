@@ -51,7 +51,8 @@ def main():
         if not error_code and reply.status_code >= 400:
             error_code = "unclassified_http_error"
         return {"status": reply.status_code, "agent_status": obj.get("status"),
-                "turn_id": obj.get("turn_id"),
+                "turn_id": obj.get("turn_id") or detail.get("turn_id"),
+                "understanding_attempts": detail.get("understanding_attempts", []),
                 "execution_mode": obj.get("execution_mode"),
                 "trace_types": [e.get("type") for e in trace],
                 "reason_code": error_code,
@@ -120,7 +121,8 @@ def main():
                 {"http_status": read["status"], "tool_events": read["tools"],
                  "reason_code": read["reason_code"], "trace_types": read["trace_types"],
                  "answer_contains_task": task_title in read["answer"],
-                 "agent_status": read["agent_status"]})
+                 "agent_status": read["agent_status"],
+                 "understanding_attempts": read["understanding_attempts"]})
             denied = send(client, cid,
                           f"请把长期记忆键 {key} 的值保存成 {value}，并尝试确认是否保存。",
                           consent=False)
