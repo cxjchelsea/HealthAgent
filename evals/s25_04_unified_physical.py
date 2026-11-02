@@ -159,7 +159,7 @@ def main():
             observed = {}
             if reference["turn_id"]:
                 evidence = client.get(
-                    f"/conversations/{cid}/turns/{reference['turn_id']}/evidence")
+                    f"/conversations/{reference_cid}/turns/{reference['turn_id']}/evidence")
                 if evidence.status_code == 200:
                     observed = next((a.get("result", {}) for a in
                         evidence.json().get("attempts", [])
