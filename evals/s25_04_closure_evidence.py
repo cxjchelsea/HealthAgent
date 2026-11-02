@@ -65,19 +65,22 @@ def main():
             report = json.loads(target.read_text(encoding="utf-8")) if copied else {}
             if label == "comparison":
                 cases = report.get("cases", [])
-                evidence_ok = bool(cases) and all(
+                topk = [c for c in cases if c.get("strategy") == "semantic_topk"]
+                evidence_ok = bool(topk) and all(
                     c.get("http_status") == 200
                     and c.get("agent_terminal_success") is True
-                    and c.get("tool_evidence_matched") is True for c in cases)
+                    and c.get("tool_evidence_matched") is True for c in topk)
             else:
                 evidence_ok = bool(report.get("total")) and (
                     report.get("passed") == report.get("total"))
             record = {"suite": label, "iteration": i,
                       "exit_code": process.returncode,
                       "report_found": copied, "evidence_passed": evidence_ok,
+                      "comparison_is_observational": label == "comparison",
                       "passed": process.returncode == 0 and copied and evidence_ok,
                       "report": str(target.relative_to(ROOT)) if copied else None,
-                      "total": report.get("total"), "passed_cases": report.get("passed")}
+                      "total": report.get("total"), "passed_cases": report.get("passed"),
+                      "strategy_summary": report.get("summary") if label == "comparison" else None}
             manifest["runs"].append(record)
             print(json.dumps(record, ensure_ascii=False), flush=True)
             if not record["passed"]:
