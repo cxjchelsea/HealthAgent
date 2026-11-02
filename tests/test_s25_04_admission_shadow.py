@@ -40,17 +40,17 @@ def test_unknown_label_cannot_expand_permission():
     assert result.advisory == "not_eligible"
 
 
-@pytest.mark.parametrize("label,request", [
+@pytest.mark.parametrize("label,user_request", [
     ("plan_control", "请将两步执行计划保存到系统"),
     ("plan_control", "从上次保存计划的下一步恢复执行"),
     ("ambiguous", "先创建计划再给我加一个待办"),
     ("ambiguous", "按刚才说的操作"),
     ("ambiguous", "取消已保存计划，并记住我的偏好"),
 ])
-def test_plan_and_mixed_never_become_review_candidates(label, request):
+def test_plan_and_mixed_never_become_review_candidates(label, user_request):
     result = evaluate_admission_shadow(**{
-        **BASE, "classification": label, "request": request,
-        "evidence_quote": request,
+        **BASE, "classification": label, "request": user_request,
+        "evidence_quote": user_request,
     })
     assert result.advisory == "not_eligible"
     assert result.execution_authorized is False
