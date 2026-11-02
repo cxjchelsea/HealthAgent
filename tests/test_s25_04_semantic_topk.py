@@ -478,3 +478,43 @@ def test_topk_execute_memory_requires_explicit_consent():
     assert memory.written == [("code", "S25-04")]
     assert any(e.get("type") == "tool" and e.get("name") == "save_memory"
                and e.get("ok") is True for e in allowed["trace"])
+
+
+def test_topk_memory_consent_instruction_is_host_bound_and_does_not_force_write():
+    class InspectDecision:
+        def __init__(self):
+            self.calls = []
+        async def decide(self, messages, tools):
+            self.calls.append((messages[0]["content"],
+                               {x["function"]["name"] for x in tools}))
+            return Decision("No write was executed.", [])
+
+    denied = InspectDecision()
+    denied_result = asyncio.run(AgentLoop(
+        denied, skill_strategy="semantic_topk"
+    ).run("Please remember key example with value sample",
+          execution_mode="execute", memory_write_consent=False))
+    denied_prompt, denied_tools = denied.calls[0]
+    assert "NOT authorized long-term memory writes" in denied_prompt
+    assert "save_memory" not in denied_tools
+    assert denied_result["status"] == "completed"
+    assert not any(e.get("name") == "save_memory" for e in denied_result["trace"])
+
+    approved = InspectDecision()
+    approved_result = asyncio.run(AgentLoop(
+        approved, skill_strategy="semantic_topk"
+    ).run("Please remember key example with value sample",
+          execution_mode="execute", memory_write_consent=True))
+    approved_prompt, approved_tools = approved.calls[0]
+    assert "Host permits save_memory" in approved_prompt
+    assert "save_memory" in approved_tools
+    assert not any(e.get("name") == "save_memory" for e in approved_result["trace"])
+
+    read_only = InspectDecision()
+    asyncio.run(AgentLoop(
+        read_only, skill_strategy="semantic_topk"
+    ).run("Please remember this", execution_mode="read_only",
+          memory_write_consent=True))
+    read_prompt, read_tools = read_only.calls[0]
+    assert "NOT authorized long-term memory writes" in read_prompt
+    assert "save_memory" not in read_tools
