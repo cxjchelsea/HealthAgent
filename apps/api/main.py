@@ -314,6 +314,16 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                 saved_plan_present=preturn_plan_raw is not None,
                 pending_action_present=pending_action is not None,
                 clarification_present=clarification_id is not None)
+            # A caller that explicitly selects an ordinary operation cannot
+            # silently fall back into M5 or AgentLoop when Host rejects it.
+            # Unselected plan requests retain their existing route unchanged.
+            if (result is None and body.selected_ordinary_operation is not None
+                    and not selected_ordinary_admitted):
+                result = {"run_id": turn_id, "status": "partial",
+                          "termination_reason": "explicit_ordinary_admission_denied",
+                          "answer": "本轮显式普通操作未通过 Host 准入；没有执行工具或修改计划。",
+                          "trace": [{"step": 0, "type": "explicit_ordinary_fenced"}],
+                          "steps": 0}
             unified_new_plan_decision = None
             # Pending tool arguments and open clarifications belong to the
             # verified preturn origin; they cannot become a fresh plan route.
