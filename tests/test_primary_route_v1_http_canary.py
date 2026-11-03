@@ -325,10 +325,10 @@ def test_canary_revise_conflicting_old_argument_is_not_written(tmp_path, monkeyp
             assert db.get(ConversationPlan, cid).snapshot == original
 
 
-def test_canary_pending_primary_does_not_invoke_old_classifier_or_tool(tmp_path, monkeypatch):
-    """A durable pending origin can be read by Primary but cannot bypass AC4."""
-    from services.db import Message, Turn
-    from agent.primary_route_v1 import PrimaryRouteRejected
+def test_canary_pending_read_only_is_journaled_without_legacy(tmp_path, monkeypatch):
+    """Trusted pending MCP continuation prepares and finishes durable evidence."""
+    from services.db import AgentAttempt, Message, Turn
+    from sqlalchemy import select
 
     async def pending_primary(*args, **kwargs):
         assert kwargs["pending_action"] == "mcp_reference_lookup"
@@ -340,14 +340,19 @@ def test_canary_pending_primary_does_not_invoke_old_classifier_or_tool(tmp_path,
             pending_action="mcp_reference_lookup", pending_origin_verified=True)
 
     async def forbidden(*args, **kwargs):
-        raise AssertionError("pending must not invoke legacy reviewer")
+        raise AssertionError("pending cannot call legacy semantics")
 
-    def no_tool(*args, **kwargs):
-        raise AssertionError("pending direct tool execution is still gated")
+    def fake_tool(name, arguments, tasks, **kwargs):
+        assert name == "mcp_reference_lookup"
+        assert arguments == {"term": "MCP"}
+        return {"ok": True, "definition": "Model Context Protocol", "source": "test"}
 
     monkeypatch.setattr("apps.api.main.propose_primary_route", pending_primary)
     monkeypatch.setattr("apps.api.main.classify_pending_reply", forbidden)
-    monkeypatch.setattr("apps.api.main.execute_tool", no_tool)
+    monkeypatch.setattr("apps.api.main.execute_tool",
+                        lambda *args, **kwargs: (_ for _ in ()).throw(
+                            AssertionError("unfenced legacy tool execution")))
+    monkeypatch.setattr("agent.primary_pending_readonly_v1.execute_tool", fake_tool)
     cfg = settings(tmp_path)
     with TestClient(create_app(cfg)) as client:
         cid = client.post("/conversations").json()["id"]
@@ -364,8 +369,58 @@ def test_canary_pending_primary_does_not_invoke_old_classifier_or_tool(tmp_path,
         reply = client.post(f"/conversations/{cid}/agent/messages", json={
             "content": "MCP", "client_request_id": "v1-pending-response-001"})
         assert reply.status_code == 200, reply.text
+        assert reply.json()["termination_reason"] == "verified_clarification_execution"
+        assert reply.json()["status"] == "completed"
+        with Session() as db:
+            attempts = db.scalars(select(AgentAttempt).where(
+                AgentAttempt.conversation_id == cid)).all()
+            assert len(attempts) == 1
+            assert attempts[0].tool_name == "mcp_reference_lookup"
+            assert attempts[0].status == "succeeded"
+            assert attempts[0].result_projection is not None
+        # A retry with the SAME request_id cannot dispatch the tool twice.
+        replay = client.post(f"/conversations/{cid}/agent/messages", json={
+            "content": "MCP", "client_request_id": "v1-pending-response-001"})
+        assert replay.status_code == 409
+        with Session() as db:
+            assert len(db.scalars(select(AgentAttempt).where(
+                AgentAttempt.conversation_id == cid)).all()) == 1
+
+
+def test_canary_pending_write_remains_restricted(tmp_path, monkeypatch):
+    from services.db import Message, Turn
+
+    async def pending_primary(*args, **kwargs):
+        assert kwargs["pending_action"] == "create_task"
+        return bind_route_signal(RouteSignal.model_validate({
+            "schema_version": "primary-route-v1",
+            "route_kind": "clarify_response", "quote": "提交报告",
+        }), "提交报告", saved_plan_present=False,
+            pending_action="create_task", pending_origin_verified=True)
+
+    monkeypatch.setattr("apps.api.main.propose_primary_route", pending_primary)
+    cfg = settings(tmp_path)
+    with TestClient(create_app(cfg)) as client:
+        cid = client.post("/conversations").json()["id"]
+        _, Session = database(cfg.database_url)
+        with Session.begin() as db:
+            assistant = Message(conversation_id=cid, role="assistant",
+                                content="请提供任务标题", status="partial")
+            db.add(assistant)
+            db.flush()
+            db.add(Turn(conversation_id=cid,
+                        request_id="v1-pending-write-prior-001",
+                        state="partial", assistant_message_id=assistant.id,
+                        failure_code="needs_input:create_task"))
+        reply = client.post(f"/conversations/{cid}/agent/messages", json={
+            "content": "提交报告", "client_request_id": "v1-pending-write-001"})
+        assert reply.status_code == 200, reply.text
         assert reply.json()["termination_reason"] == "primary_v1_admission_not_wired"
-        assert not any(t.get("type") == "tool" for t in reply.json()["trace"])
+        with Session() as db:
+            from services.db import ConversationTask
+            from sqlalchemy import select
+            assert db.scalars(select(ConversationTask).where(
+                ConversationTask.conversation_id == cid)).all() == []
 
 
 def test_canary_pending_origin_missing_fails_closed(tmp_path, monkeypatch):
