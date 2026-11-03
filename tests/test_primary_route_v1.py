@@ -186,3 +186,40 @@ def test_model_plan_evidence_invalid_fails_closed():
         asyncio.run(propose_primary_route(provider, "model", "取消当前计划",
                                     saved_plan_present=True))
     assert provider.calls == 1
+
+
+
+def test_invalid_primary_schema_reports_safe_field_categories_only():
+    """Model output and Pydantic messages must not leak in diagnostics."""
+    secret = "private-prompt-canary-92831"
+    provider = Provider({
+        "schema_version": "primary-route-v1",
+        "route_kind": "ordinary_tool",
+        "quote": "请计算",
+        "effect_intent": "unsafe_value_" + secret,
+        "execution_scope": "none",
+        "steps": [],
+        "unexpected_" + secret: secret,
+    })
+    with pytest.raises(PrimaryRouteRejected) as caught:
+        asyncio.run(propose_primary_route(provider, "model",
+                                          "请计算 2+3",
+                                          saved_plan_present=False))
+    assert str(caught.value) == "primary_route_invalid_signal"
+    issues = caught.value.validation_issues
+    assert {"field": "effect_intent", "category": "literal_error"} in issues
+    assert {"field": "root", "category": "extra_forbidden"} in issues
+    assert secret not in json.dumps(issues)
+    assert provider.calls == 1
+
+
+def test_model_validator_mismatch_keeps_single_safe_category():
+    provider = Provider(signal(
+        "plan_create", "创建计划", effect_intent="mutation_requested",
+        steps=[]))
+    with pytest.raises(PrimaryRouteRejected) as caught:
+        asyncio.run(propose_primary_route(provider, "model",
+                                          "请创建计划", saved_plan_present=False))
+    assert caught.value.validation_issues == [
+        {"field": "root", "category": "value_error"}]
+    assert provider.calls == 1
