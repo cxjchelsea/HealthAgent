@@ -43,7 +43,8 @@ def test_auto_real_provider_selects_primary_without_explicit_canary(tmp_path, mo
     assert settings.primary_route_v1_active is True
     assert Settings(model_provider="fake").primary_route_v1_active is False
     assert Settings(model_provider="ollama_proxy", routing_profile="legacy").primary_route_v1_active is False
-    assert Settings(model_provider="ollama_proxy", routing_profile="unified").primary_route_v1_active is False
+    assert Settings(model_provider="ollama_proxy", routing_profile="unified").primary_route_v1_active is True
+    assert Settings(model_provider="fake", routing_profile="unified").primary_route_v1_active is False
 
     calls = []
 
