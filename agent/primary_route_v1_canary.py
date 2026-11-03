@@ -102,6 +102,22 @@ def admit_v1_canary(proposal: BoundPrimaryProposal, *, message: str,
                                  "revision": checkpoint["revision"]}],
                 "plan_cancellation_requested": True}
 
+    if kind == "clarify":
+        # Clarification is informational only. No implicit pending tool
+        # authorization, executable action, or checkpoint write.
+        if not proposal.clarification_question:
+            return deny("primary_v1_clarification_unbound",
+                        "请补充请求所需的信息。")
+        return {"run_id": turn_id, "status": "partial",
+                "termination_reason": "primary_v1_clarification_required",
+                "answer": proposal.clarification_question,
+                "trace": trace + [{"step": 0, "type": "clarification_requested"}],
+                "steps": 0}
+
+    if kind == "reject":
+        return deny("primary_v1_route_rejected",
+                    "本轮请求无法安全执行或识别，请重新说明目标。")
+
     if kind == "plan_missing":
         return deny("plan_not_found", "没有可继续执行的已保存计划。")
 
