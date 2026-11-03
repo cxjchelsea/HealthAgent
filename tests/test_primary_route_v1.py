@@ -370,3 +370,42 @@ def test_revision_generation_contract_requires_bare_old_and_new_expressions():
     assert "NEVER output '计算 5*6'" in _PRIMARY_SYSTEM
     assert "stored expected_arguments.expression" in _PRIMARY_SYSTEM
     assert "clarify route" in _PRIMARY_SYSTEM
+
+
+
+def test_primary_includes_bounded_trusted_plan_steps_for_revision():
+    message = "将第二步由计算 5*6 改为计算 7*8，第一步不变"
+    class CaptureProvider:
+        def __init__(self):
+            self.payload = None
+            self.calls = 0
+        async def complete(self, *, model, messages, response_schema):
+            self.calls += 1
+            self.payload = json.loads(messages[1]["content"])
+            return json.dumps(signal(
+                "plan_revise", "第二步由计算 5*6 改为计算 7*8",
+                effect_intent="mutation_requested", step_number=2,
+                revision_old_argument="5*6", revision_new_argument="7*8"))
+    provider = CaptureProvider()
+    context = [
+        {"step_number": 1, "expected_tool": "calculate",
+         "expected_arguments": {"expression": "3*4"}, "status": "pending"},
+        {"step_number": 2, "expected_tool": "calculate",
+         "expected_arguments": {"expression": "5*6"}, "status": "pending"},
+    ]
+    result = asyncio.run(propose_primary_route(
+        provider, "test", message, saved_plan_present=True,
+        saved_step_count=2, saved_plan_steps=context))
+    assert result.route_kind == "plan_revise"
+    assert provider.calls == 1
+    assert provider.payload["saved_plan_steps"] == context
+    assert provider.payload["saved_plan_exists"] is True
+    absent = CaptureProvider()
+    # The provider's proposal will be rejected because there is no checkpoint,
+    # but the absent plan must never carry stale step data to the model.
+    with pytest.raises(PrimaryRouteRejected, match="primary_route_missing_saved_plan"):
+        asyncio.run(propose_primary_route(
+            absent, "test", message, saved_plan_present=False,
+            saved_plan_steps=context))
+    assert absent.calls == 1
+    assert absent.payload["saved_plan_steps"] == []
