@@ -94,7 +94,8 @@ def assess(case, status, data, evidence, categories, tools, *, original_plan=Non
         return (data.get("status") == "completed"
                 and any(t == {"name": "calculate", "ok": True} for t in tools)
                 and "54" in str(data.get("answer", ""))
-                and not data.get("plan_checkpoint")
+                and isinstance(original_plan, list) and len(original_plan) == 2
+                and data.get("plan") == original_plan
                 and not any(t.get("name") in ("create_task", "save_memory")
                             for t in tools))
     if case == "MISSING_REFERENCE":
@@ -190,6 +191,7 @@ def main():
             groups = {}
             blocked = set()
             request_ids = {}
+            expected_plans = {}
             for case, group, message, consent in cases:
                 if group in blocked:
                     add(case, "BLOCKED", category="prior_group_failed")
@@ -229,7 +231,10 @@ def main():
                           for t in (body.get("trace") or [])
                           if t.get("type") in {"tool", "clarification_resumed"}]
                 ok = assess(case, response.status_code, body, diagnostic,
-                            cats, events)
+                            cats, events,
+                            original_plan=expected_plans.get(group))
+                if case == "PLAN_SETUP" and ok:
+                    expected_plans[group] = body.get("plan")
                 # Do not persist raw response/answer, free-form model outputs,
                 # task title or memory values in the shareable report.
                 add(case, "PASS" if ok else "FAIL",
