@@ -361,7 +361,7 @@ def test_canary_revise_conflicting_old_argument_is_not_written(tmp_path, monkeyp
         reply = client.post(f"/conversations/{cid}/agent/messages", json={
             "content": request, "client_request_id": "v1-revise-negative-001"})
         assert reply.status_code == 200, reply.text
-        assert reply.json()["termination_reason"] == "plan_revision_conflict"
+        assert reply.json()["termination_reason"] == "primary_v1_revision_old_argument_mismatch"
         with Session() as db:
             assert db.get(ConversationPlan, cid).snapshot == original
 
