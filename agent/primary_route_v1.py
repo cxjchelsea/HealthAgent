@@ -60,6 +60,7 @@ class RouteSignal(StrictRouteModel):
     revision_new_argument: str | None = Field(default=None, min_length=1, max_length=400)
     write_tool_name: Literal["create_task", "save_memory"] | None = None
     write_arguments: dict | None = None
+    pending_write_tool_name: Literal["create_task"] | None = None
 
     @model_validator(mode="after")
     def match_operation(self):
@@ -96,6 +97,9 @@ class RouteSignal(StrictRouteModel):
                 raise ValueError("primary_route_write_contract_missing")
         elif self.write_tool_name is not None or self.write_arguments is not None:
             raise ValueError("primary_route_unexpected_write_contract")
+        if self.pending_write_tool_name is not None and (
+                self.route_kind != "clarify" or self.pending_write_tool_name != "create_task"):
+            raise ValueError("primary_route_pending_write_invalid")
         if (self.route_kind == "clarify") != (self.clarification_question is not None):
             raise ValueError("primary_route_clarification_mismatch")
         return self
@@ -121,6 +125,7 @@ class BoundPrimaryProposal(StrictRouteModel):
     revision_new_argument: str | None = None
     write_tool_name: Literal["create_task", "save_memory"] | None = None
     write_arguments: dict | None = None
+    pending_write_tool_name: Literal["create_task"] | None = None
 
 
 def adapt_legacy_route(value: str) -> RouteKind:
@@ -210,7 +215,8 @@ def bind_route_signal(signal: RouteSignal, message: str, *,
         revision_old_argument=signal.revision_old_argument,
         revision_new_argument=signal.revision_new_argument,
         write_tool_name=signal.write_tool_name,
-        write_arguments=signal.write_arguments)
+        write_arguments=signal.write_arguments,
+        pending_write_tool_name=signal.pending_write_tool_name)
 
 
 _PRIMARY_SYSTEM = (
@@ -240,6 +246,11 @@ _PRIMARY_SYSTEM = (
     "respond: explanation only; clarify: request is ambiguous or missing a required "
     "argument, include clarification_question; clarify_response: reply to a "
     "verified pending question; reject: no supported route. "
+    "If the CURRENT user explicitly asks to create_task but omits a title, "
+    "choose clarify, include clarification_question, set "
+    "pending_write_tool_name=create_task, and use a verbatim source quote "
+    "grounding the ORIGINAL task-creation request. Never set this field "
+    "for ordinary questions or existing pending responses. "
     "Always copy a UNIQUE contiguous verbatim quote from current_request as evidence. "
     "Never use legacy alias 'other'. If unsure, clarify/reject, not an executable route. "
     "For plan_create output ordered steps with exact quote and grounded arguments. "
