@@ -350,8 +350,7 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
             if result is None and settings.primary_route_v1_active:
                 if (settings.effective_routing_profile != "unified"
                         or agent_decider is not None
-                        or execution_policy is not None
-                        or body.selected_ordinary_operation is not None):
+                        or execution_policy is not None):
                     result = {"run_id": turn_id, "status": "partial",
                               "termination_reason": "primary_v1_canary_incompatible",
                               "answer": "当前配置未满足 v1 独立试运行准入条件，未执行工具。",
@@ -401,6 +400,22 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                 "termination_reason": v1_admission.reason,
                                 "answer": "本轮请求未通过确定性 Host 准入，未执行工具。",
                                 "trace": [{"step": 0, "type": "primary_route_v1_denied"}],
+                                "steps": 0}
+                        # Explicit client operation narrows the Primary/Host
+                        # admitted route; it never grants tool authority.
+                        if (result is None
+                                and body.selected_ordinary_operation is not None
+                                and not (
+                                    selected_ordinary_admitted
+                                    and body.selected_ordinary_operation == "calculate"
+                                    and primary_proposal.route_kind == "ordinary_tool"
+                                    and primary_proposal.effect_intent == "read_only"
+                                    and v1_admission.disposition == "allow")):
+                            result = {
+                                "run_id": turn_id, "status": "partial",
+                                "termination_reason": "explicit_ordinary_primary_mismatch",
+                                "answer": "显式操作与主语义不一致，未执行工具。",
+                                "trace": [{"step": 0, "type": "explicit_ordinary_fenced"}],
                                 "steps": 0}
                         if (result is None
                                 and primary_proposal.route_kind == "clarify_response"
@@ -548,7 +563,10 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                   understanding_result=None,
                                   execution_mode="read_only",
                                   memory_write_consent=False,
-                                  plan_control=None)
+                                  plan_control=None,
+                                  tool_allowlist=(("calculate",)
+                                      if body.selected_ordinary_operation == "calculate"
+                                      else None))
                         elif result is None:
                             result = admit_v1_canary(
                                 primary_proposal, message=body.content,
