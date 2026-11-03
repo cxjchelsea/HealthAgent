@@ -74,7 +74,7 @@ class RouteSignal(StrictRouteModel):
         scopes, effects = allowed[self.route_kind]
         if self.execution_scope not in scopes or self.effect_intent not in effects:
             raise ValueError("primary_route_scope_effect_mismatch")
-        if (self.route_kind == "plan_create") != (2 <= len(self.steps) <= 8):
+        if (self.route_kind == "plan_create" and not 2 <= len(self.steps) <= 8) or (self.route_kind != "plan_create" and self.steps):
             raise ValueError("primary_route_steps_mismatch")
         if self.route_kind == "plan_revise" and self.step_number is None:
             raise ValueError("primary_route_revision_needs_step")
