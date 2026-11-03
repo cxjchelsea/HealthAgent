@@ -79,10 +79,22 @@ def test_phase3_pending_answer_requires_verified_route_and_real_tool():
 
 
 def test_phase3_ordinary_with_saved_plan_must_execute_not_reject():
-    body = {"status": "completed", "answer": "54"}
+    original = [
+        {"id": 1, "status": "pending",
+         "expected_arguments": {"expression": "13+17"}},
+        {"id": 2, "status": "pending",
+         "expected_arguments": {"expression": "21+24"}},
+    ]
+    body = {"status": "completed", "answer": "54", "plan": original}
     assert assess("ORDINARY_WITH_PLAN", 200, body,
                   evidence("ordinary_tool"),
-                  {"primary": 1}, [{"name": "calculate", "ok": True}])
+                  {"primary": 1}, [{"name": "calculate", "ok": True}],
+                  original_plan=original)
+    changed = [{**original[0], "status": "completed"}, original[1]]
+    assert not assess("ORDINARY_WITH_PLAN", 200,
+                      {**body, "plan": changed}, evidence("ordinary_tool"),
+                      {"primary": 1}, [{"name": "calculate", "ok": True}],
+                      original_plan=original)
     assert not assess("ORDINARY_WITH_PLAN", 200,
                       {"status": "partial", "answer": "不能执行"}, 
                       evidence("reject", "restrict"), {"primary": 1}, [])
