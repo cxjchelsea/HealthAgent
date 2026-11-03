@@ -134,6 +134,7 @@ class RouteSignal(StrictRouteModel):
     write_tool_name: Literal["create_task", "save_memory"] | None = None
     write_arguments: dict | None = None
     pending_write_tool_name: Literal["create_task"] | None = None
+    pending_read_tool_name: Literal["mcp_reference_lookup"] | None = None
 
     @model_validator(mode="after")
     def match_operation(self):
@@ -199,6 +200,7 @@ class BoundPrimaryProposal(StrictRouteModel):
     write_tool_name: Literal["create_task", "save_memory"] | None = None
     write_arguments: dict | None = None
     pending_write_tool_name: Literal["create_task"] | None = None
+    pending_read_tool_name: Literal["mcp_reference_lookup"] | None = None
 
 
 def adapt_legacy_route(value: str) -> RouteKind:
