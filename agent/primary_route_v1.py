@@ -8,6 +8,7 @@ import json
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic_core import PydanticCustomError
 
 from agent.route_shadow import EvidenceSpan
 from agent.m5_model_call_metrics import attributed
@@ -55,6 +56,16 @@ _ROUTE_DIAGNOSTIC_TYPES = frozenset({
     "greater_than_equal", "less_than_equal", "string_too_short",
     "string_too_long", "too_long", "too_short", "value_error",
     "json_invalid", "json_type", "none_required",
+    # Explicit validator codes, no raw model output or Pydantic ctx.
+    "primary_route_scope_effect_mismatch",
+    "primary_route_steps_mismatch",
+    "primary_route_revision_needs_step",
+    "primary_route_unexpected_step",
+    "primary_route_unexpected_revision_arguments",
+    "primary_route_write_contract_missing",
+    "primary_route_unexpected_write_contract",
+    "primary_route_pending_write_invalid",
+    "primary_route_clarification_mismatch",
 })
 
 
@@ -116,29 +127,29 @@ class RouteSignal(StrictRouteModel):
         }
         scopes, effects = allowed[self.route_kind]
         if self.execution_scope not in scopes or self.effect_intent not in effects:
-            raise ValueError("primary_route_scope_effect_mismatch")
+            raise PydanticCustomError("primary_route_scope_effect_mismatch", "primary_route_scope_effect_mismatch")
         if (self.route_kind == "plan_create" and not 2 <= len(self.steps) <= 8) or (self.route_kind != "plan_create" and self.steps):
-            raise ValueError("primary_route_steps_mismatch")
+            raise PydanticCustomError("primary_route_steps_mismatch", "primary_route_steps_mismatch")
         if self.route_kind == "plan_revise" and self.step_number is None:
-            raise ValueError("primary_route_revision_needs_step")
+            raise PydanticCustomError("primary_route_revision_needs_step", "primary_route_revision_needs_step")
         if self.route_kind != "plan_revise" and self.step_number is not None:
-            raise ValueError("primary_route_unexpected_step")
+            raise PydanticCustomError("primary_route_unexpected_step", "primary_route_unexpected_step")
         if self.route_kind != "plan_revise" and (self.revision_old_argument is not None
                 or self.revision_new_argument is not None):
-            raise ValueError("primary_route_unexpected_revision_arguments")
+            raise PydanticCustomError("primary_route_unexpected_revision_arguments", "primary_route_unexpected_revision_arguments")
         if self.route_kind == "ordinary_tool" and self.effect_intent == "mutation_requested":
             permitted = {"create_task": {"title"}, "save_memory": {"key", "value"}}
             if (self.write_tool_name not in permitted
                     or not isinstance(self.write_arguments, dict)
                     or set(self.write_arguments) != permitted[self.write_tool_name]):
-                raise ValueError("primary_route_write_contract_missing")
+                raise PydanticCustomError("primary_route_write_contract_missing", "primary_route_write_contract_missing")
         elif self.write_tool_name is not None or self.write_arguments is not None:
-            raise ValueError("primary_route_unexpected_write_contract")
+            raise PydanticCustomError("primary_route_unexpected_write_contract", "primary_route_unexpected_write_contract")
         if self.pending_write_tool_name is not None and (
                 self.route_kind != "clarify" or self.pending_write_tool_name != "create_task"):
-            raise ValueError("primary_route_pending_write_invalid")
+            raise PydanticCustomError("primary_route_pending_write_invalid", "primary_route_pending_write_invalid")
         if (self.route_kind == "clarify") != (self.clarification_question is not None):
-            raise ValueError("primary_route_clarification_mismatch")
+            raise PydanticCustomError("primary_route_clarification_mismatch", "primary_route_clarification_mismatch")
         return self
 
 
