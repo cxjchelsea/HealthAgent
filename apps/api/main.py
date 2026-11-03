@@ -33,6 +33,8 @@ from agent.control_admission import admit_clarification
 from agent.plan_intent import PlanRequest, review_plan_intent, build_plan_checkpoint
 from agent.s25_04_admission_shadow import evaluate_admission_shadow
 from agent.s25_04_explicit_ordinary import admit_explicit_ordinary_calculation
+from agent.primary_route_v1 import PrimaryRouteRejected, propose_primary_route
+from agent.primary_route_v1_canary import admit_v1_canary
 from evals.s25_04_route_shadow import shadow_classify
 from agent.m5_first_route import propose_first_route
 from agent.m5_unified_route import (propose_saved_plan_route, propose_new_plan_route,
@@ -324,6 +326,45 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                           "answer": "本轮显式普通操作未通过 Host 准入；没有执行工具或修改计划。",
                           "trace": [{"step": 0, "type": "explicit_ordinary_fenced"}],
                           "steps": 0}
+            # Explicit v1 opt-in only. Never silently replace Unified on main.
+            # The canary either uses verified Host create/cancel gates or stops
+            # safely: no second semantic model, Legacy fallback, or AgentLoop.
+            if result is None and settings.primary_route_v1_canary_enabled:
+                if (settings.effective_routing_profile != "unified"
+                        or agent_decider is not None
+                        or execution_policy is not None
+                        or body.selected_ordinary_operation is not None):
+                    result = {"run_id": turn_id, "status": "partial",
+                              "termination_reason": "primary_v1_canary_incompatible",
+                              "answer": "当前配置未满足 v1 独立试运行准入条件，未执行工具。",
+                              "trace": [{"step": 0, "type": "primary_route_v1_denied"}],
+                              "steps": 0}
+                else:
+                    try:
+                        primary_proposal = await propose_primary_route(
+                            HTTPUnderstandingModel(
+                                settings.model_provider, settings.model_base_url,
+                                settings.model_api_key, settings.model_timeout_seconds,
+                                settings.model_max_output_tokens),
+                            settings.understanding_strong_model, body.content,
+                            saved_plan_present=existing_checkpoint is not None,
+                            pending_action=pending_action,
+                            pending_origin_verified=bool(
+                                pending_action and clarification_id and pending_question),
+                            saved_step_count=(len(existing_checkpoint.get("steps", []))
+                                              if existing_checkpoint else None),
+                            recent_context=context)
+                        result = admit_v1_canary(
+                            primary_proposal, message=body.content,
+                            conversation_id=cid, request_id=body.client_request_id,
+                            turn_id=turn_id, checkpoint=existing_checkpoint)
+                    except PrimaryRouteRejected as exc:
+                        result = {"run_id": turn_id, "status": "partial",
+                                  "termination_reason": "primary_v1_proposal_refused",
+                                  "primary_v1_refusal_code": str(exc),
+                                  "answer": "本轮主语义提案未通过验证，未执行工具或修改计划。",
+                                  "trace": [{"step": 0, "type": "primary_route_v1_denied"}],
+                                  "steps": 0}
             unified_new_plan_decision = None
             # Pending tool arguments and open clarifications belong to the
             # verified preturn origin; they cannot become a fresh plan route.
