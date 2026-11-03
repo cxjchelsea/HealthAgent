@@ -12,7 +12,7 @@ _ALLOWED_OUTPUT = {
     # memory values may be sensitive: presence only, not the fact itself.
     "recall_memory": ("found",),
     "save_memory": (),
-    "create_task": ("id",),
+    "create_task": ("task_id",),
 }
 
 def bounded_projection(tool_name: str, observation: dict) -> dict:
