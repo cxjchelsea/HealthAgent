@@ -614,6 +614,7 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                   "termination_reason": "primary_v1_proposal_refused",
                                   "primary_v1_refusal_code": str(exc),
                                   "primary_v1_validation_issues": exc.validation_issues,
+                                  "primary_v1_route_triple": exc.route_triple,
                                   "answer": "本轮主语义提案未通过验证，未执行工具或修改计划。",
                                   "trace": [{"step": 0, "type": "primary_route_v1_denied"}],
                                   "steps": 0}
