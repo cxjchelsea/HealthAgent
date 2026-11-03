@@ -33,3 +33,18 @@ python -m evals.primary_wp_c_phase2_live --endpoint http://127.0.0.1:8012 --revi
 脚本使用新的 CREATE_B → REVISE 会话。两步均通过后，还应运行完整 Phase 2 脚本复验 FIRST/RESUME/REPLAY/CANCEL 的非回归表现。若仍失败，检查 `reason`：Host 拒绝说明旧参数错误；`plan_revision_conflict` 说明后续严格修订绑定仍未通过；勿擅自降低安全校验或标记为通过。
 
 未经显式授权不得合并主分支；AC5 仍 HOLD。
+
+
+## 完整 Phase 2 v2 非回归（同日）
+
+物理报告 `phase2-live-v2.json`，HEAD `f0de30c419e25ab4b99ad089a32ae8ee383761f7`：6 PASS、1 FAIL、2 BLOCKED。CREATE_B → REVISE 与 CREATE_C → CANCEL 均通过；CREATE_A 成功；**FIRST** 返回 `primary_route_invalid_signal`，细分 `primary_route_steps_mismatch`，未执行工具。随后 RESUME 与 REPLAY 被安全阻断。此报告只证明非 `plan_create` 的输出步骤不符合合同，不包含原始模型步骤，不能断言究竟复制了哪些内容。
+
+整改：系统 Prompt 现在明确将 `saved_plan_steps` 作为**只读 Host 输入快照**，`steps` 作为**仅用于创建新计划**的输出字段；FIRST/RESUME 等所有非 CREATE 路由必须输出 `steps=[]`。同时加入经过 `RouteSignal` 校验的 FIRST JSON 示例，及非 CREATE 回显步骤仍然严格拒绝、无第二语义重试的测试。Phase 2 验收脚本新增 `--execution-only` 以定位 CREATE_A→FIRST→RESUME→REPLAY。
+
+修复后的运行命令：
+
+```powershell
+python -m evals.primary_wp_c_phase2_live --endpoint http://127.0.0.1:8012 --execution-only --output artifacts/wp-c/phase2-execution-v3.json --timeout 240
+```
+
+此定向运行通过后仍需重新运行完整 Phase 2 非回归；直到完整实测 PASS 之前继续 HOLD，且不得无授权合并。
