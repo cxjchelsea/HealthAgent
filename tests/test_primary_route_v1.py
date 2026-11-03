@@ -325,3 +325,38 @@ def test_untrusted_route_triple_values_are_never_returned():
         "execution_scope": "invalid",
         "effect_intent": "invalid"}
     assert safe_route_triple(json.dumps(data), []) is None
+
+
+
+def test_missing_saved_plan_prompt_uses_trusted_snapshot_without_execution():
+    """Plan existence is a Host fact; the model never gains write or run rights."""
+    from agent.primary_route_v1 import _PRIMARY_SYSTEM
+    assert "saved_plan_exists=false" in _PRIMARY_SYSTEM
+    assert "saved_plan_exists=true" in _PRIMARY_SYSTEM
+    assert "plan_missing/none/none" in _PRIMARY_SYSTEM
+    assert "plan_resume/remaining_steps/read_only" in _PRIMARY_SYSTEM
+    assert "Do not invent a saved plan" in _PRIMARY_SYSTEM
+    assert "Host verifies snapshot existence again" in _PRIMARY_SYSTEM
+
+
+def test_model_proposed_missing_plan_binds_but_cannot_dispatch():
+    message = "请继续执行之前保存的计划剩余步骤。"
+    provider = Provider(signal(
+        "plan_missing", "继续执行之前保存的计划剩余步骤",
+        execution_scope="none", effect_intent="none"))
+    route = asyncio.run(propose_primary_route(
+        provider, "model", message, saved_plan_present=False))
+    assert route.route_kind == "plan_missing"
+    assert provider.calls == 1
+
+
+def test_model_resume_absent_plan_remains_refused_no_reclassification():
+    message = "请继续执行之前保存的计划剩余步骤。"
+    provider = Provider(signal(
+        "plan_resume", "继续执行之前保存的计划剩余步骤",
+        execution_scope="remaining_steps", effect_intent="read_only"))
+    with pytest.raises(PrimaryRouteRejected,
+                       match="primary_route_missing_saved_plan"):
+        asyncio.run(propose_primary_route(
+            provider, "model", message, saved_plan_present=False))
+    assert provider.calls == 1
