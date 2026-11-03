@@ -468,7 +468,8 @@ class AgentLoop:
                   understanding_result: dict | None = None,
                   execution_mode: str | None = None,
                   plan_control: str | None = None,
-                  execution_guard=None, memory_write_consent: bool = False) -> dict:
+                  execution_guard=None, memory_write_consent: bool = False,
+                  tool_allowlist: tuple[str, ...] | None = None) -> dict:
         if not goal.strip() or len(goal) > 12000:
             raise ValueError("Goal must contain 1..12000 characters")
         run_id = str(uuid.uuid4())
@@ -696,6 +697,14 @@ class AgentLoop:
                           "recall_memory", "mcp_reference_lookup"}
             selected_tools = [tool for tool in selected_tools
                               if tool["function"]["name"] in read_tools]
+        # Host-selected operations narrow exposure; never authorize writes.
+        if tool_allowlist is not None:
+            approved = set(tool_allowlist)
+            if not approved.issubset({"calculate", "utc_time", "list_tasks",
+                                      "recall_memory", "mcp_reference_lookup"}):
+                raise ValueError("invalid_host_tool_allowlist")
+            selected_tools = [tool for tool in selected_tools
+                              if tool["function"]["name"] in approved]
         topk_trace = None
         # S25-04 opt-in: model-mediated shortlist is a reduction ONLY of the
         # already Host-admitted read-only tools; keep plan/control and writes
