@@ -123,6 +123,9 @@ def main():
                     "http_status": response.status_code,
                     "status": data.get("status") or detail.get("status"),
                     "reason": data.get("termination_reason") or detail.get("code"),
+                    # Returned by the existing Primary handler as an internal,
+                    # fixed-category error code; never capture raw LLM output.
+                    "primary_refusal_code": data.get("primary_v1_refusal_code"),
                     "turn_id": turn_id, "request_id": request_id,
                     "duration_s": elapsed, "categories": _categories(response.headers),
                     "model_http_attempts": response.headers.get(
@@ -167,8 +170,9 @@ def main():
                 and missing["status"] == "partial"
                 and not missing["tool_events"]
                 and missing["evidence"] is not None
-                and missing["evidence"]["disposition"] in
-                    {"restrict", "deny", "refused"}
+                and missing["evidence"]["route_kind"] == "plan_missing"
+                and missing["evidence"]["disposition"] == "restrict"
+                and missing["reason"] == "primary_v1_missing_plan_status"
                 and missing["categories"].get("primary") == 1)
             record("missing_plan_no_dispatch", missing_ok, **missing)
 
