@@ -130,11 +130,12 @@ def test_plan_create_requires_grounded_steps_and_only_saves():
 def test_revision_needs_host_verified_step_number():
     payload = RouteSignal.model_validate(signal(
         "plan_revise", "修改第二步", effect_intent="mutation_requested",
-        step_number=2))
+        step_number=2, revision_old_argument="3+4",
+        revision_new_argument="7+8"))
     with pytest.raises(PrimaryRouteRejected, match="primary_route_unbound_step"):
-        bind_route_signal(payload, "修改第二步", saved_plan_present=True,
+        bind_route_signal(payload, "修改第二步由3+4改成7+8", saved_plan_present=True,
                           pending_action=None, saved_step_count=1)
-    result = bind_route_signal(payload, "修改第二步", saved_plan_present=True,
+    result = bind_route_signal(payload, "修改第二步由3+4改成7+8", saved_plan_present=True,
                                pending_action=None, saved_step_count=2)
     assert result.step_number == 2
 
