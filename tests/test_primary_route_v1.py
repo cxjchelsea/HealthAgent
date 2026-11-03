@@ -21,6 +21,26 @@ def signal(route_kind="respond", quote="你好", **kwargs):
     return body
 
 
+def test_primary_model_call_attribution_is_request_scoped():
+    from agent.m5_model_call_metrics import model_call_category
+
+    class InspectingProvider:
+        def __init__(self):
+            self.categories = []
+
+        async def complete(self, **kwargs):
+            self.categories.append(model_call_category.get())
+            return json.dumps(signal("respond", "你好"), ensure_ascii=False)
+
+    provider = InspectingProvider()
+    assert model_call_category.get() == "other"
+    selected = asyncio.run(propose_primary_route(
+        provider, "test", "你好", saved_plan_present=False))
+    assert selected.route_kind == "respond"
+    assert provider.categories == ["primary"]
+    assert model_call_category.get() == "other"
+
+
 class Provider:
     def __init__(self, body):
         self.body = body
