@@ -1,0 +1,85 @@
+{
+  "kind": "runtime_semantic_call_baseline_pending_verified",
+  "source_head": "41d91a3ae3fceeaa6f5401313f7471285b8cd86f",
+  "working_tree_dirty": true,
+  "provider": "ollama_proxy",
+  "model": "qwen3:14b",
+  "scope": "real-provider HTTP with fresh conversation per setup, isolated SQLite",
+  "setup_attempt_limit": 3,
+  "pending_reached": true,
+  "pending_action": "mcp_reference_lookup",
+  "ac2_total": 2,
+  "ac2_counts": {
+    "review_plan_cancellation": 0,
+    "propose_first_route": 0,
+    "review_plan_intent": 0,
+    "check_plan_edit_intent": 0,
+    "classify_pending_reply": 1,
+    "review_pending_reference_lookup": 1,
+    "review_unsupported_capability": 0,
+    "review_read_only_clarification": 0,
+    "reconcile_execution_policy": 0,
+    "review_plan_creation_reference": 0,
+    "review_missing_plan_reference": 0,
+    "review_plan_execution_authorization": 0,
+    "review_plan_execution_scope": 0
+  },
+  "other_counts": {
+    "propose_new_plan_route": 1,
+    "propose_saved_plan_route": 0,
+    "review_plan_revision": 0,
+    "decide_execution_policy_detail": 0,
+    "UnderstandingService.understand": 2
+  },
+  "errors_by_function": {},
+  "requests": [
+    {
+      "scenario": "pending_setup_1",
+      "http_status": 200,
+      "agent_status": "partial",
+      "reason_code": "needs_input",
+      "termination_reason": "needs_input",
+      "trace_types": [
+        "goal_clarification"
+      ],
+      "call_counts": {
+        "review_pending_reference_lookup": 1,
+        "propose_new_plan_route": 1,
+        "UnderstandingService.understand": 1
+      },
+      "elapsed_ms": 12026,
+      "durable": {
+        "state": "partial",
+        "failure_code": "needs_input:mcp_reference_lookup",
+        "assistant_status": "partial"
+      }
+    },
+    {
+      "scenario": "pending_answer",
+      "http_status": 200,
+      "agent_status": "completed",
+      "reason_code": "verified_clarification_execution",
+      "termination_reason": "verified_clarification_execution",
+      "trace_types": [
+        "clarification_resumed"
+      ],
+      "call_counts": {
+        "classify_pending_reply": 1,
+        "UnderstandingService.understand": 1
+      },
+      "elapsed_ms": 2819,
+      "durable": {
+        "state": "completed",
+        "failure_code": null,
+        "assistant_status": "completed"
+      }
+    }
+  ],
+  "limitations": [
+    "No repo module edits, model monkeypatch or synthetic database Pending state.",
+    "Only Python function entries counted, not nested provider HTTP attempts.",
+    "Bounded three setup variants. If no needs_input:<tool> is persisted, report uncovered.",
+    "No PostgreSQL, process crash, or concurrent replay tested.",
+    "No success claim based solely on HTTP 200 or a natural-language clarification."
+  ]
+}
