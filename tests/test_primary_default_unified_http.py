@@ -102,6 +102,7 @@ def test_default_unified_invalid_primary_never_falls_back(tmp_path, monkeypatch)
                   "client_request_id": "default-primary-refused-001"})
         assert response.status_code == 200, response.text
         assert response.json()["termination_reason"] == "primary_v1_proposal_refused"
+        assert response.json()["primary_v1_refusal_code"] == "primary_route_invalid_signal"
         assert response.json()["steps"] == 0
         _, Session = database(settings.database_url)
         with Session() as db:
