@@ -740,9 +740,11 @@ class AgentLoop:
                           "; steps: " + json.dumps(resumed.snapshot(), ensure_ascii=False)
                           if resumed.revision else "")
         # A bounded re-decision only for explicit saved-memory requests.
-        recall_required = understanding_result is None and any(phrase in goal for phrase in (
+        recall_required = (execution_mode != "respond_only"
+                           and understanding_result is None
+                           and any(phrase in goal for phrase in (
             "还记得", "记得我", "之前保存", "之前记住", "保存的",
-            "记住的", "测试偏好是什么", "测试偏好吗"))
+            "记住的", "测试偏好是什么", "测试偏好吗")))
         bounded_first_step = bool(
             re.search(r"(只|先|首先|先尝试).{0,14}(完成|执行).{0,6}(第一步|第1步|步骤一)", goal)
             and re.search(r"(剩余|其他|后续).{0,12}(步骤|保留|不要|暂)", goal))
