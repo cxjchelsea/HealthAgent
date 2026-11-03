@@ -232,3 +232,47 @@ def test_default_unified_trusted_pending_task_uses_single_use_authority(
             assert tasks[0].title == "提交测试报告"
             assert receipts[0].status == "succeeded"
             assert permit.status == "consumed"
+
+
+def test_explicit_legacy_profile_retains_pending_lookup_compatibility(
+        tmp_path, monkeypatch):
+    """The direct legacy tool path must be unreachable from Unified only."""
+    cfg = Settings(
+        database_url=f"sqlite:///{tmp_path / 'legacy_pending.db'}",
+        model_provider="ollama_proxy", routing_profile="legacy",
+        understanding_strategy="structured", route_admission_mode="guarded",
+    )
+
+    async def fake_complete(self, *, model, messages, response_schema=None):
+        return understood()
+
+    async def pending_answer(*args, **kwargs):
+        return "answer"
+
+    async def policy(message, interpretation):
+        return "read_only"
+
+    calls = []
+    def legacy_lookup(name, arguments, *args, **kwargs):
+        calls.append((name, arguments))
+        return {"ok": True, "definition": "legacy test result"}
+
+    monkeypatch.setattr(HTTPUnderstandingModel, "complete", fake_complete)
+    monkeypatch.setattr("apps.api.main.classify_pending_reply", pending_answer)
+    monkeypatch.setattr("apps.api.main.execute_tool", legacy_lookup)
+    with TestClient(create_app(cfg, execution_policy=policy)) as client:
+        cid = client.post("/conversations").json()["id"]
+        _, Session = database(cfg.database_url)
+        with Session.begin() as db:
+            answer = Message(conversation_id=cid, role="assistant",
+                             content="请提供词条", status="partial")
+            db.add(answer)
+            db.flush()
+            db.add(Turn(conversation_id=cid, request_id="legacy-pending-origin-001",
+                        state="partial", assistant_message_id=answer.id,
+                        failure_code="needs_input:mcp_reference_lookup"))
+        reply = client.post(f"/conversations/{cid}/agent/messages", json={
+            "content": "RAG", "client_request_id": "legacy-pending-response-001"})
+        assert reply.status_code == 200, reply.text
+        assert reply.json()["termination_reason"] == "verified_clarification_execution"
+    assert calls == [("mcp_reference_lookup", {"term": "RAG"})]
