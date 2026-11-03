@@ -48,6 +48,21 @@ class ConversationPlan(Base):
         ForeignKey("conversations.id"), primary_key=True)
     snapshot: Mapped[str] = mapped_column(Text, default="{}")
 
+
+class PendingWriteAuthority(Base):
+    """Host-minted single-use authority for a clarified, internal task write."""
+    __tablename__ = "pending_write_authorities"
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: str(uuid.uuid4()))
+    conversation_id: Mapped[str] = mapped_column(ForeignKey("conversations.id"), index=True)
+    origin_turn_id: Mapped[str] = mapped_column(ForeignKey("turns.id"), unique=True)
+    origin_user_message_id: Mapped[str] = mapped_column(ForeignKey("messages.id"))
+    tool_name: Mapped[str] = mapped_column(String(80))
+    source_digest: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(24), default="pending")
+    consumed_turn_id: Mapped[str | None] = mapped_column(ForeignKey("turns.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
 class PlanExecutionClaim(Base):
     """Durable per-conversation reservation for saved-plan tool execution."""
     __tablename__ = "plan_execution_claims"
