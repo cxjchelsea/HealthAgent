@@ -1010,7 +1010,10 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                   "steps": 1}
             execution_mode = "read_only" if clarification_read_only else None
             execution_target = "tool_action" if (clarification_read_only or (result is not None and
-                any(t.get("type") == "clarification_resumed" for t in result.get("trace", [])))) else "goal_state"  # Legacy injected strategy conservatively preserves revisions.
+                any(t.get("type") in {"clarification_resumed", "pending_write_fenced",
+                                      "pending_write_authority_consumed",
+                                      "primary_pending_readonly_v1"}
+                    for t in result.get("trace", [])))) else "goal_state"  # Pending outcomes never become goal edits.
             if result is None and interpretation is not None and not clarification_read_only:
                 if execution_policy is not None:
                     policy_result = await execution_policy(body.content, interpretation)
