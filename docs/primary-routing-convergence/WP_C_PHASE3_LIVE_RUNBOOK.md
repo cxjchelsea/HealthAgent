@@ -66,3 +66,21 @@ python -m evals.primary_wp_c_phase3_live `
 ## 合并门禁
 
 WP-C Phase 1/2 PASS；Phase 3 NOT RUN；Phase 4 NOT RUN；AC1–AC5 最终复核 HOLD；不合并 `main`，除非用户明确授权标准合并。
+
+
+## Phase 3 首轮真实模型证据与整改（2026-11-03）
+
+本机用户报告 `phase3-live-v1.json`，精确代码 HEAD `b19244012bc4324e375fe5ba3db9d47074a73002`，ollama_proxy/qwen3:14b。**8 PASS、3 FAIL、3 BLOCKED**。未知计划、普通任务和重放、记忆允许/拒绝均通过；失败项：
+
+- `ORDINARY_WITH_PLAN`：已正确绑定 `ordinary_tool/allow`，成功调用 calculate，保存计划仍是 pending/pending，但最终回显 `status=partial, termination_reason=pending_plan_steps`。根因是普通 AgentLoop 把独立请求与未完成计划的生命周期混同。
+- `PENDING_TASK_ANSWER`：回复被 Qwen 再次判为 `clarify`，最终 `needs_input`；未执行任务。模型提案层没有准确地区分“验证后的 Pending 回复”与新的澄清请求。
+- `PENDING_MCP_ORIGIN`：`clarify` 返回 `primary_v1_clarification_required`，未持久化后续 Pending 来源。原 Primary Schema 仅承载 pending_write_tool_name，缺少明确的只读 MCP Pending 字段。
+
+整改：`agent/loop.py` 为独立 read_only ordinary 设置明确隔离，不让普通工具 observation 完成保存计划的步骤或把其 pending 判作本轮失败；`agent/primary_route_v1.py` 增加仅 clarify 可用的 `pending_read_tool_name=mcp_reference_lookup` 提案字段，并约束 verified pending reply 为 `clarify_response`；`agent/primary_route_v1_canary.py` 对该提案建立 `needs_input:mcp_reference_lookup` Pending 事实，但不预先执行任何工具。增加 AgentLoop 和 HTTP Pending 测试。
+
+以上为**针对原始失败的实现修复**，没有改动 `evals/primary_wp_c_phase3_live.py` 的业务通过条件。尚未用 Qwen 对整改版本执行完整物理复验，Phase 3 仍 HOLD。
+
+定向复验可使用：
+```powershell
+python -m evals.primary_wp_c_phase3_live --endpoint http://127.0.0.1:8012 --groups plan_ordinary pending_task pending_mcp --output artifacts/wp-c/phase3-targeted-v2.json --timeout 240
+```
