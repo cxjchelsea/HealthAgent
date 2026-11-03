@@ -326,6 +326,7 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                           "answer": "本轮显式普通操作未通过 Host 准入；没有执行工具或修改计划。",
                           "trace": [{"step": 0, "type": "explicit_ordinary_fenced"}],
                           "steps": 0}
+            v1_plan_control = None
             # Explicit v1 opt-in only. Never silently replace Unified on main.
             # The canary either uses verified Host create/cancel gates or stops
             # safely: no second semantic model, Legacy fallback, or AgentLoop.
@@ -354,10 +355,77 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                             saved_step_count=(len(existing_checkpoint.get("steps", []))
                                               if existing_checkpoint else None),
                             recent_context=context)
-                        result = admit_v1_canary(
-                            primary_proposal, message=body.content,
-                            conversation_id=cid, request_id=body.client_request_id,
-                            turn_id=turn_id, checkpoint=existing_checkpoint)
+                        if primary_proposal.route_kind in {
+                                "plan_execute_first", "plan_resume"}:
+                            requested_control = (
+                                "execute_first" if primary_proposal.route_kind ==
+                                "plan_execute_first" else "resume")
+                            # Never let a model proposal grant tool authority.
+                            # M4 validates the exact bound checkpoint and
+                            # registered read-only step arguments.
+                            if not admit_guarded_plan_execution(
+                                    conversation_id=cid,
+                                    request_id=body.client_request_id,
+                                    checkpoint=existing_checkpoint,
+                                    scope=requested_control,
+                                    turn_created=True,
+                                    semantic_confirmed=True):
+                                result = {
+                                    "run_id": turn_id, "status": "partial",
+                                    "termination_reason": "primary_v1_plan_admission_denied",
+                                    "answer": "计划执行未通过 Host 准入，未调用工具。",
+                                    "trace": [{"step": 0, "type": "primary_route_v1_denied"}],
+                                    "steps": 0}
+                            else:
+                                # M4 already owns claim, journal and atomic CAS.
+                                # Do not invoke legacy semantics or bypass the
+                                # outcome-unknown reconciliation fence.
+                                with Session() as recovery_db:
+                                    unresolved = recovery_db.scalar(
+                                        select(PlanToolDispatch.id).where(
+                                            PlanToolDispatch.conversation_id == cid,
+                                            PlanToolDispatch.status.in_(
+                                                UNRESOLVED_DISPATCH_STATUSES)))
+                                    unknown = recovery_db.scalar(
+                                        select(Turn.id).where(
+                                            Turn.conversation_id == cid,
+                                            Turn.failure_code ==
+                                            "plan_execution_outcome_unknown"))
+                                if unresolved is not None or unknown is not None:
+                                    result = {
+                                        "run_id": turn_id, "status": "partial",
+                                        "termination_reason": "plan_execution_reconciliation_required",
+                                        "answer": "此前执行结果尚未核实，未继续调用工具。",
+                                        "trace": [{"step": 0,
+                                                   "type": "plan_execution_fenced"}],
+                                        "steps": 0}
+                                else:
+                                    v1_plan_control = requested_control
+                                    result = await AgentLoop(
+                                        NativeToolDecision(settings),
+                                        task_store=ConversationTaskStore(Session, cid),
+                                        memory_store=MemoryStore(
+                                            Session, uid,
+                                            write_allowed=body.memory_write_consent),
+                                        mcp_client=StdioMCPClient(),
+                                        skill_strategy=settings.skill_strategy,
+                                        skill_budget_chars=settings.skill_budget_chars,
+                                        execution_guard=saved_plan_execution_guard,
+                                        dispatch_journal=PlanDispatchJournal(
+                                            Session, cid, turn_id),
+                                    ).run(
+                                        body.content, history=context,
+                                        plan_checkpoint=existing_checkpoint,
+                                        understanding_result=None,
+                                        execution_mode="read_only",
+                                        memory_write_consent=body.memory_write_consent,
+                                        plan_control=requested_control)
+                        else:
+                            result = admit_v1_canary(
+                                primary_proposal, message=body.content,
+                                conversation_id=cid,
+                                request_id=body.client_request_id,
+                                turn_id=turn_id, checkpoint=existing_checkpoint)
                     except PrimaryRouteRejected as exc:
                         result = {"run_id": turn_id, "status": "partial",
                                   "termination_reason": "primary_v1_proposal_refused",
@@ -818,7 +886,7 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                   "trace": [{"step": 0, "type": "goal_confirmation_required"}],
                                   "steps": 0, "proposed_goal": parsed_result.goal.model_dump(),
                                   "expected_goal_version": previous_goal["version"] + 1}
-            plan_control = None
+            plan_control = v1_plan_control
             confirmed_plan_execution = False
             # Separate authoring a future plan from executing its steps. Only
             # the bound checkpoint can authorize later read-only execution.
