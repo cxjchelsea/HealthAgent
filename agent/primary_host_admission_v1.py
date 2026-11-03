@@ -69,10 +69,18 @@ def admit_primary_route_v1(
         return decide("allow", "primary_v1_answer_only", "respond_only")
 
     if kind == "ordinary_tool":
+        if proposal.effect_intent == "mutation_requested":
+            # Pending writes require independent durable prior authorization;
+            # do not reinterpret a pending answer as a new write.
+            if facts.pending_action is not None:
+                return decide("restrict", "primary_v1_pending_write_not_governed")
+            if (proposal.write_tool_name != "create_task"
+                    or not proposal.write_arguments
+                    or set(proposal.write_arguments) != {"title"}):
+                return decide("restrict", "primary_v1_admission_not_wired")
+            return decide("allow", "primary_v1_create_task_candidate")
         if proposal.effect_intent != "read_only":
-            # A write-consent flag alone does not authorize a tool dispatch.
-            # WP3 must provide a per-tool governed effect contract.
-            return decide("restrict", "primary_v1_admission_not_wired")
+            return decide("deny", "primary_v1_ordinary_effect_invalid")
         return decide("allow", "primary_v1_ordinary_read_only", "read_only")
 
     if kind == "plan_create":
