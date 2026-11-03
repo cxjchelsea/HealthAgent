@@ -956,25 +956,58 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                     # the operation; the reply supplies only its missing title.
                     # Reference lookup is read-only. These are the only two allowed
                     # resumable tool types, not an arbitrary model-supplied tool name.
-                    if pending_action == "create_task":
-                        observed = execute_tool(pending_action, validated.model_dump(), [],
-                            task_store=ConversationTaskStore(Session, cid))
+                    if settings.effective_routing_profile == "unified":
+                        # An old needs_input failure code is NOT a write permit.
+                        # Both Unified Pending operations must use an existing
+                        # Host-authorized, durable effect path; no direct tool
+                        # calls or fallback after the original Turn.
+                        if pending_action == "create_task":
+                            if (pending_write_authority_id is None
+                                    or pending_write_origin_turn_id is None):
+                                result = {
+                                    "run_id": turn_id, "status": "partial",
+                                    "termination_reason": "pending_write_origin_unverified",
+                                    "answer": "原始任务写入授权无法验证，未创建任务。",
+                                    "trace": [{"step": 0, "type": "pending_write_fenced"}],
+                                    "steps": 0}
+                            else:
+                                result = consume_pending_task_write_v1(
+                                    session_factory=Session,
+                                    conversation_id=cid, current_turn_id=turn_id,
+                                    origin_turn_id=pending_write_origin_turn_id,
+                                    authority_id=pending_write_authority_id,
+                                    reply=body.content)
+                        elif pending_action == "mcp_reference_lookup":
+                            result = execute_pending_readonly_v1(
+                                message=body.content, conversation_id=cid,
+                                turn_id=turn_id, session_factory=Session,
+                                prior_pending_action=pending_action,
+                                prior_origin_verified=bool(
+                                    clarification_id and pending_question))
                     else:
-                        observed = execute_tool(pending_action, validated.model_dump(), [],
-                            mcp_client=StdioMCPClient())
-                    result = {"run_id": turn_id,
-                              "status": "completed" if observed.get("ok") else "partial",
-                              "termination_reason": ("verified_clarification_execution"
-                                    if observed.get("ok") else "clarification_tool_failed"),
-                              "answer": ("已创建任务：" + candidate if pending_action == "create_task"
-                                  and observed.get("ok") else
-                                  "已查询词条：" + candidate + "。" + str(
-                                      observed.get("definition", observed.get("value", "")))
-                                  if pending_action == "mcp_reference_lookup" and observed.get("ok")
-                                  else "工具执行未成功，请检查查询或任务服务。"),
-                              "trace": [{"step": 0, "type": "clarification_resumed",
-                                         "name": pending_action, "ok": bool(observed.get("ok"))}],
-                              "steps": 1}
+                        # Explicit legacy compatibility; never used in Unified.
+                        if pending_action == "create_task":
+                            observed = execute_tool(
+                                pending_action, validated.model_dump(), [],
+                                task_store=ConversationTaskStore(Session, cid))
+                        else:
+                            observed = execute_tool(
+                                pending_action, validated.model_dump(), [],
+                                mcp_client=StdioMCPClient())
+                        result = {"run_id": turn_id,
+                                  "status": "completed" if observed.get("ok") else "partial",
+                                  "termination_reason": ("verified_clarification_execution"
+                                        if observed.get("ok") else "clarification_tool_failed"),
+                                  "answer": ("已创建任务：" + candidate if pending_action == "create_task"
+                                      and observed.get("ok") else
+                                      "已查询词条：" + candidate + "。" + str(
+                                          observed.get("definition", observed.get("value", "")))
+                                      if pending_action == "mcp_reference_lookup" and observed.get("ok")
+                                      else "工具执行未成功，请检查查询或任务服务。"),
+                                  "trace": [{"step": 0, "type": "clarification_resumed",
+                                             "name": pending_action,
+                                             "ok": bool(observed.get("ok"))}],
+                                  "steps": 1}
             execution_mode = "read_only" if clarification_read_only else None
             execution_target = "tool_action" if (clarification_read_only or (result is not None and
                 any(t.get("type") == "clarification_resumed" for t in result.get("trace", [])))) else "goal_state"  # Legacy injected strategy conservatively preserves revisions.
@@ -1309,6 +1342,8 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                         if plan_control not in {"execute_first", "resume"} else None),
                     ordinary_attempt_session_factory=(Session
                         if plan_control not in {"execute_first", "resume"} else None),
+                    governed_ordinary_writes=(
+                        settings.effective_routing_profile == "unified"),
                     candidate_selector=(HTTPUnderstandingModel(
                         settings.model_provider, settings.model_base_url,
                         settings.model_api_key, settings.model_timeout_seconds,
