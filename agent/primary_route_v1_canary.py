@@ -102,6 +102,17 @@ def admit_v1_canary(proposal: BoundPrimaryProposal, *, message: str,
                                  "revision": checkpoint["revision"]}],
                 "plan_cancellation_requested": True}
 
+    if kind == "clarify" and proposal.pending_write_tool_name == "create_task":
+        if not proposal.clarification_question:
+            return deny("pending_write_question_missing", "请补充任务名称。")
+        return {"run_id": turn_id, "status": "partial",
+                "termination_reason": "needs_input",
+                "pending_action": "create_task",
+                "pending_write_authority_candidate": True,
+                "answer": proposal.clarification_question,
+                "trace": trace + [{"step": 0, "type": "pending_write_clarification"}],
+                "steps": 0}
+
     if kind == "clarify":
         # Clarification is informational only. No implicit pending tool
         # authorization, executable action, or checkpoint write.
