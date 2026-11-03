@@ -99,16 +99,18 @@ class Settings(BaseSettings):
 
     @property
     def primary_route_v1_active(self) -> bool:
-        """Use Primary v1 for real-provider automatic Unified by default.
+        """One Primary owner for real-provider Unified (auto or explicit).
 
-        Explicit Unified and legacy compatibility profiles are unchanged in
-        this first bounded cutover. An explicit canary opt-in still takes
-        precedence, including for fake-provider contract tests. There is no
-        fallback to M5 or Legacy after a v1 proposal or admission failure.
+        Fake-provider fixtures retain their legacy test harness until their
+        contracts are migrated. Explicit legacy remains a separate profile.
+        The explicit v1 canary still allows fake-provider contract tests;
+        failure of Primary admission never falls back to old classifiers.
         """
         return self.primary_route_v1_canary_enabled or (
-            self.effective_routing_profile == "unified"
-            and self.routing_profile_source == "auto_real_provider_default"
+            self.model_provider != "fake"
+            and self.effective_routing_profile == "unified"
+            and self.routing_profile_source in {
+                "auto_real_provider_default", "explicit_unified"}
         )
 
     @property
