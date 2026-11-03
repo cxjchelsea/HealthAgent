@@ -1,0 +1,79 @@
+"""Bounded primary-route-v1 HTTP canary.
+
+No Legacy semantic reviewer is invoked here. The canary is deliberately
+non-default: plan CREATE/CANCEL reuse proven Host admission and durable Turn
+finalization; the remaining routes fail closed until WP2/WP3 admission exists.
+A model proposal is never its own authorization.
+"""
+from agent.m4_guarded_cancel import admit_guarded_plan_cancel
+from agent.m4_guarded_plan import admit_guarded_plan_create
+from agent.plan_intent import PlanRequest, build_plan_checkpoint
+from agent.primary_route_v1 import BoundPrimaryProposal
+
+
+def admit_v1_canary(proposal: BoundPrimaryProposal, *, message: str,
+                    conversation_id: str, request_id: str, turn_id: str,
+                    checkpoint: dict | None) -> dict:
+    kind = proposal.route_kind
+    trace = [{"step": 0, "type": "primary_route_v1",
+              "schema_version": proposal.schema_version, "route_kind": kind}]
+
+    def deny(reason: str, answer: str) -> dict:
+        return {"run_id": turn_id, "status": "partial",
+                "termination_reason": reason, "answer": answer,
+                "trace": trace, "steps": 0}
+
+    if kind == "plan_create":
+        if checkpoint is not None:
+            return deny("primary_v1_plan_exists", "已有保存计划，请明确修改现有计划。")
+        steps = [{"goal": s.goal, "expected_tool": s.tool_name,
+                  "expected_arguments": s.arguments} for s in proposal.steps]
+        try:
+            new_checkpoint = build_plan_checkpoint(
+                message, PlanRequest(intent="plan_only", steps=steps))
+        except (ValueError, TypeError):
+            return deny("primary_v1_create_binding_denied",
+                        "计划步骤未通过可信参数验证，未保存计划。")
+        if not admit_guarded_plan_create(
+                message=message, conversation_id=conversation_id,
+                request_id=request_id, checkpoint=new_checkpoint,
+                turn_created=True, semantic_confirmed=True):
+            return deny("primary_v1_create_admission_denied",
+                        "计划未通过受保护的建立准入，未保存计划。")
+        return {"run_id": turn_id, "status": "partial",
+                "termination_reason": "plan_created_pending_execution",
+                "answer": "已建立计划，尚未执行任何步骤。请指定执行步骤。",
+                "trace": trace + [{"step": 0, "type": "plan_created"}],
+                "steps": 0, "plan": new_checkpoint["steps"],
+                "plan_revision": new_checkpoint["revision"],
+                "plan_events": [{"event": "plan_created",
+                                 "revision": new_checkpoint["revision"]}],
+                "plan_checkpoint": new_checkpoint}
+
+    if kind == "plan_cancel":
+        if checkpoint is None:
+            return deny("primary_v1_missing_plan", "没有可取消的已保存计划。")
+        if not admit_guarded_plan_cancel(
+                message=message, conversation_id=conversation_id,
+                request_id=request_id, checkpoint=checkpoint,
+                turn_created=True, semantic_confirmed=True):
+            return deny("primary_v1_cancel_admission_denied",
+                        "无法验证计划取消权限，未取消计划。")
+        return {"run_id": turn_id, "status": "completed",
+                "termination_reason": "plan_cancelled",
+                "answer": "已取消当前保存的计划，未执行任何步骤。",
+                "trace": trace + [{"step": 0, "type": "plan_cancelled"}],
+                "steps": 0, "plan": [],
+                "plan_revision": checkpoint["revision"],
+                "plan_events": [{"event": "plan_cancelled",
+                                 "revision": checkpoint["revision"]}],
+                "plan_cancellation_requested": True}
+
+    if kind == "plan_missing":
+        return deny("plan_not_found", "没有可继续执行的已保存计划。")
+
+    # These are intentionally not silently routed to Legacy or AgentLoop.
+    # They will be enabled only after independent deterministic Host admission
+    # and shared execution governance are wired in WP2/WP3.
+    return deny("primary_v1_admission_not_wired",
+                "当前 v1 试运行路径尚未授权此类操作，未执行工具或修改计划。")
