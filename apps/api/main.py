@@ -345,10 +345,9 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                           "steps": 0}
             v1_plan_control = None
             v1_primary_kind = None
-            # Explicit v1 opt-in only. Never silently replace Unified on main.
-            # The canary either uses verified Host create/cancel gates or stops
-            # safely: no second semantic model, Legacy fallback, or AgentLoop.
-            if result is None and settings.primary_route_v1_canary_enabled:
+            # Primary v1 owns auto real-provider Unified and explicit canary requests.
+            # Rejected v1 proposals never fall back to M5 or Legacy.
+            if result is None and settings.primary_route_v1_active:
                 if (settings.effective_routing_profile != "unified"
                         or agent_decider is not None
                         or execution_policy is not None
@@ -565,7 +564,7 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                   "steps": 0}
             # Host decision is diagnostic; neither trace field grants access
             # or changes a pending plan execution claim.
-            if (settings.primary_route_v1_canary_enabled
+            if (settings.primary_route_v1_active
                     and v1_primary_kind is not None):
                 result["trace"] = [
                     {"step": 0, "type": "primary_host_admission_v1",
@@ -575,7 +574,7 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
             # One non-sensitive entry for the bound Primary route, regardless
             # of which existing Host executor produced the final result.
             # This is diagnostic only, not permission or durable authority.
-            if settings.primary_route_v1_canary_enabled and v1_primary_kind is not None:
+            if settings.primary_route_v1_active and v1_primary_kind is not None:
                 route_trace = {"step": 0, "type": "primary_route_v1",
                                "schema_version": "primary-route-v1",
                                "route_kind": v1_primary_kind}
@@ -1510,7 +1509,7 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                         and result is not None
                         and result.get("pending_write_authority_candidate") is True
                         and v1_primary_kind == "clarify"
-                        and settings.primary_route_v1_canary_enabled):
+                        and settings.primary_route_v1_active):
                     mint_pending_write_authority_in_session(
                         db, conversation_id=cid, origin_turn_id=turn_id,
                         origin_user_message_id=user_message.id,
@@ -1747,6 +1746,7 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                 "routing_profile": settings.effective_routing_profile,
                 "routing_profile_requested": settings.routing_profile,
                 "routing_profile_source": settings.routing_profile_source,
+                "primary_route_v1_active": settings.primary_route_v1_active,
                 "m5_unified_route_enabled": settings.m5_unified_route_enabled,
                 "route_shadow_enabled": settings.route_shadow_enabled,
                 "m4_contract": "guarded-plan-route-priority-v2"}
