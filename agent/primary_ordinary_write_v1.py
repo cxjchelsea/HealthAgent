@@ -56,7 +56,7 @@ def execute_primary_write_v1(*, proposal, session_factory,
         turn = db.get(Turn, turn_id)
         if turn is None or turn.conversation_id != conversation_id or turn.state != "running":
             return deny("primary_v1_write_claim_conflict")
-        journal.save_in_session(db, [attempt])
+        journal.save_in_session(db, [{**attempt, "status": "prepared"}])
         db.flush()
     # After prepared, the only permitted write is the title from Primary's
     # bound request; task and receipt are committed atomically.
