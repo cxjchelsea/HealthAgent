@@ -14,25 +14,31 @@ from services.evidence_store import (
     AttemptEvidenceStore, bounded_projection, make_attempt,
 )
 from services.task_store import ConversationTaskStore
+from services.memory_store import MemoryStore
 
 
-def execute_primary_task_create_v1(*, proposal, session_factory,
-                                   conversation_id: str, turn_id: str) -> dict:
-    trace = [{"step": 0, "type": "primary_write_v1",
-              "tool": "create_task"}]
+def execute_primary_write_v1(*, proposal, session_factory,
+                             conversation_id: str, turn_id: str,
+                             owner_id: str | None = None,
+                             memory_write_consent: bool = False) -> dict:
+    name = proposal.write_tool_name
+    trace = [{"step": 0, "type": "primary_write_v1", "tool": name}]
 
     def deny(reason):
         return {"run_id": turn_id, "status": "partial",
                 "termination_reason": reason,
-                "answer": "任务写入未通过 Host 执行证据校验，未创建任务。",
+                "answer": "写入未通过 Host 执行证据校验，未执行写入。",
                 "trace": trace, "steps": 0}
 
     if (proposal.route_kind != "ordinary_tool"
             or proposal.effect_intent != "mutation_requested"
-            or proposal.write_tool_name != "create_task"):
+            or name not in {"create_task", "save_memory"}):
         return deny("primary_v1_write_tool_not_authorized")
+    if name == "save_memory" and (
+            not memory_write_consent or not owner_id):
+        return deny("primary_v1_memory_consent_required")
     try:
-        arguments = SCHEMAS["create_task"].model_validate(
+        arguments = SCHEMAS[name].model_validate(
             proposal.write_arguments).model_dump()
     except (ValueError, TypeError):
         return deny("primary_v1_write_arguments_invalid")
@@ -51,7 +57,7 @@ def execute_primary_task_create_v1(*, proposal, session_factory,
             return deny("primary_v1_write_reconciliation_required")
 
     journal = AttemptEvidenceStore(conversation_id, turn_id)
-    attempt = make_attempt(turn_id, "create_task", arguments,
+    attempt = make_attempt(turn_id, name, arguments,
                            {"ok": False, "error": "prepared"})
     journal.begin(session_factory, attempt)
     # After prepared, the only permitted write is the title from Primary's
@@ -63,29 +69,45 @@ def execute_primary_task_create_v1(*, proposal, session_factory,
                 or turn.state != "running" or record is None
                 or record.conversation_id != conversation_id
                 or record.turn_id != turn_id or record.status != "prepared"
-                or record.tool_name != "create_task"
+                or record.tool_name != name
                 or record.arguments_digest != attempt["arguments_digest"]):
             raise RuntimeError("primary_v1_write_claim_conflict")
-        observed = ConversationTaskStore(
-            session_factory, conversation_id).create_in_session(
-                db, arguments["title"])
+        if name == "create_task":
+            observed = ConversationTaskStore(
+                session_factory, conversation_id).create_in_session(
+                    db, arguments["title"])
+        else:
+            observed = MemoryStore(
+                session_factory, owner_id, write_allowed=memory_write_consent
+            ).put_in_session(db, arguments["key"], arguments["value"])
         record.status = "succeeded" if observed.get("ok") else "failed"
         record.error_code = (
             None if observed.get("ok") else str(
                 observed.get("error", "unknown"))[:80])
         record.result_projection = json.dumps(
-            bounded_projection("create_task", observed), ensure_ascii=False)
+            bounded_projection(name, observed), ensure_ascii=False)
 
     if observed.get("ok"):
+        message = ("已创建任务：" + arguments["title"] if name == "create_task"
+                   else "已保存指定记忆键；未回显记忆内容。")
         return {"run_id": turn_id, "status": "completed",
-                "termination_reason": "primary_v1_task_created",
-                "answer": "已创建任务：" + arguments["title"],
+                "termination_reason": ("primary_v1_task_created" if
+                                       name == "create_task" else "primary_v1_memory_saved"),
+                "answer": message,
                 "trace": trace + [{"step": 1, "type": "tool",
-                                   "name": "create_task", "ok": True}],
+                                   "name": name, "ok": True}],
                 "steps": 1}
     return {"run_id": turn_id, "status": "partial",
-            "termination_reason": "primary_v1_task_create_failed",
-            "answer": "任务未创建，已记录失败结果。",
+            "termination_reason": "primary_v1_write_failed",
+            "answer": "写入未成功，已记录失败结果。",
             "trace": trace + [{"step": 1, "type": "tool",
-                               "name": "create_task", "ok": False}],
+                               "name": name, "ok": False}],
             "steps": 1}
+
+
+def execute_primary_task_create_v1(*, proposal, session_factory,
+                                   conversation_id: str, turn_id: str) -> dict:
+    """Compatibility with existing task-only tests/callers."""
+    return execute_primary_write_v1(
+        proposal=proposal, session_factory=session_factory,
+        conversation_id=conversation_id, turn_id=turn_id)
