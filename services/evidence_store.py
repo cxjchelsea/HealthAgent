@@ -130,7 +130,7 @@ class AttemptEvidenceStore:
                 or_(
                     AgentAttempt.status == "prepared",
                     and_(AgentAttempt.status == "succeeded",
-                         Turn.state.not_in(("completed", "partial")))
+                         Turn.state != "completed")
                 )
             ).limit(1)) is not None
 
