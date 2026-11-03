@@ -14,7 +14,7 @@ import hashlib
 import json
 import uuid
 
-from sqlalchemy import select, update, and_, or_
+from sqlalchemy import select, update
 from services.db import (
     AgentAttempt, Message, PendingWriteAuthority, Turn,
 )
@@ -22,6 +22,7 @@ from services.evidence_store import arguments_digest, bounded_projection
 from services.task_store import ConversationTaskStore
 from agent.tools import SCHEMAS
 from agent.argument_provenance import user_supplied_value
+from services.write_effect_fence import write_fence_in_session
 
 
 def source_digest(message: str) -> str:
@@ -116,14 +117,10 @@ def consume_pending_task_write_v1(
                 or source.role != "user"
                 or source_digest(source.content) != authority.source_digest):
             return deny("pending_write_source_changed")
-        unresolved = db.scalar(select(AgentAttempt.id).join(
-            Turn, Turn.id == AgentAttempt.turn_id).where(
-            AgentAttempt.conversation_id == conversation_id,
-            AgentAttempt.tool_name.in_(("create_task", "save_memory")),
-            or_(AgentAttempt.status == "prepared",
-                and_(AgentAttempt.status == "succeeded",
-                     Turn.state != "completed"))).limit(1))
-        if unresolved is not None:
+        # Same row lock and unresolved-effect policy as ordinary writes.
+        # Keep it held until authority CAS, task and receipt are committed.
+        reason = write_fence_in_session(db, conversation_id)
+        if reason is not None:
             return deny("pending_write_reconciliation_required")
         changed = db.execute(update(PendingWriteAuthority).where(
             PendingWriteAuthority.id == authority_id,
