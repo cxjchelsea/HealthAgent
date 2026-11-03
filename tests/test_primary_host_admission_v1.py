@@ -134,3 +134,24 @@ def test_response_scope_cannot_be_rewritten_by_host():
     d = admit_primary_route_v1(p, facts())
     assert d.disposition == "clarify"
     assert d.route_kind == p.route_kind
+
+
+
+def test_host_revision_requires_exact_trusted_old_argument_before_admission():
+    message = "把第二步由计算8+9改成计算10+11，第一步不变"
+    exact = bound("plan_revise", message, "第二步由计算8+9改成计算10+11",
+                  checkpoint=CHECKPOINT, effect="mutation_requested",
+                  step_number=2, old="8+9", new="10+11")
+    approved = admit_primary_route_v1(exact, facts(CHECKPOINT))
+    assert approved.reason == "primary_v1_revision_candidate"
+    assert approved.disposition == "allow"
+
+    # Prefix is verbatim in user wording, but is NOT the stored tool argument.
+    # Host must not convert or trim it to authorize the change.
+    prefixed = bound("plan_revise", message, "第二步由计算8+9改成计算10+11",
+                     checkpoint=CHECKPOINT, effect="mutation_requested",
+                     step_number=2, old="计算8+9", new="10+11")
+    denied = admit_primary_route_v1(prefixed, facts(CHECKPOINT))
+    assert denied.reason == "primary_v1_revision_old_argument_mismatch"
+    assert denied.disposition == "deny"
+    assert CHECKPOINT["steps"][1]["expected_arguments"] == {"expression": "8+9"}
