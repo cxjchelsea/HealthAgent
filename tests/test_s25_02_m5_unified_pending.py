@@ -234,14 +234,16 @@ def test_default_unified_trusted_pending_task_uses_single_use_authority(
             assert permit.status == "consumed"
 
 
-def test_explicit_legacy_profile_retains_pending_lookup_compatibility(
+def test_nonunified_structured_compatibility_retains_pending_lookup(
         tmp_path, monkeypatch):
-    """The direct legacy tool path must be unreachable from Unified only."""
+    """Explicit structured compatibility retains the pre-v1 Pending behavior."""
     cfg = Settings(
         database_url=f"sqlite:///{tmp_path / 'legacy_pending.db'}",
-        model_provider="ollama_proxy", routing_profile="legacy",
-        understanding_strategy="structured", route_admission_mode="guarded",
+        model_provider="ollama_proxy", routing_profile="auto",
+        understanding_strategy="structured", route_admission_mode="legacy",
+        m5_unified_route_enabled=False,
     )
+    assert cfg.effective_routing_profile == "compatibility"
 
     async def fake_complete(self, *, model, messages, response_schema=None):
         return understood()
