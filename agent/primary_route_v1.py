@@ -119,7 +119,7 @@ class BoundPrimaryProposal(StrictRouteModel):
     clarification_question: str | None = None
     revision_old_argument: str | None = None
     revision_new_argument: str | None = None
-    write_tool_name: Literal["create_task"] | None = None
+    write_tool_name: Literal["create_task", "save_memory"] | None = None
     write_arguments: dict | None = None
 
 
