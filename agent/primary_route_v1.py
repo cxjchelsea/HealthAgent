@@ -323,21 +323,30 @@ _PRIMARY_SYSTEM = (
     "clarify_response/none/none; reject/none/none. "
     "Before returning JSON, check the triple exactly against this table. "
     "For ordinary_tool read-only, do not include write fields or a step_number. "
-    "Example of the REQUIRED SHAPE for a read-only tool request: "
-    "{\\\"schema_version\\\":\\\"primary-route-v1\\\","
-    "\\\"route_kind\\\":\\\"ordinary_tool\\\","
-    "\\\"quote\\\":\\\"a unique verbatim phrase from current_request\\\","
-    "\\\"execution_scope\\\":\\\"none\\\","
-    "\\\"effect_intent\\\":\\\"read_only\\\","
-    "\\\"steps\\\":[],\\\"step_number\\\":null,"
-    "\\\"clarification_question\\\":null,"
-    "\\\"revision_old_argument\\\":null,"
-    "\\\"revision_new_argument\\\":null,"
-    "\\\"write_tool_name\\\":null,\\\"write_arguments\\\":null,"
-    "\\\"pending_write_tool_name\\\":null}. "
-    "Use the example ONLY for field structure; replace quote with exact current "
-    "message substring and select route_kind/effect according to this table. "
+    "Use ALL schema keys with JSON null for unused optional fields. "
     "Model guesses never authorize execution. "
+)
+
+# The example is rendered as valid JSON rather than handwritten escaped text.
+# It is a format example only; the model must bind the quote to the request.
+_PRIMARY_SYSTEM += (
+    " Read-only tool OUTPUT FORMAT EXAMPLE ONLY (not a default route): "
+    + json.dumps({
+        "schema_version": ROUTE_SCHEMA_VERSION,
+        "route_kind": "ordinary_tool",
+        "quote": "a unique verbatim phrase from current_request",
+        "execution_scope": "none",
+        "effect_intent": "read_only",
+        "steps": [],
+        "step_number": None,
+        "clarification_question": None,
+        "revision_old_argument": None,
+        "revision_new_argument": None,
+        "write_tool_name": None,
+        "write_arguments": None,
+        "pending_write_tool_name": None,
+    }, ensure_ascii=False)
+    + " Never copy the example quote; copy a unique exact substring of the request."
 )
 
 
