@@ -227,7 +227,7 @@ def main():
                     cats = {}
                 events = [{"name": t.get("name"), "ok": t.get("ok")}
                           for t in (body.get("trace") or [])
-                          if t.get("type") == "tool"]
+                          if t.get("type") in {"tool", "clarification_resumed"}]
                 ok = assess(case, response.status_code, body, diagnostic,
                             cats, events)
                 # Do not persist raw response/answer, free-form model outputs,
