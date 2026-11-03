@@ -358,6 +358,7 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                               "trace": [{"step": 0, "type": "primary_route_v1_denied"}],
                               "steps": 0}
                 else:
+                    v1_evidence_recorded = False
                     try:
                         primary_proposal = await propose_primary_route(
                             HTTPUnderstandingModel(
@@ -398,6 +399,7 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                             turn_id=turn_id, preturn_plan_raw=preturn_plan_raw,
                             proposal=primary_proposal, decision=v1_admission,
                             semantic_attempts=primary_attempts)
+                        v1_evidence_recorded = True
                         # The Host decision is authoritative. A restricted
                         # proposal must NEVER fall through to an executor or
                         # the legacy canary's operation-specific handlers.
@@ -594,12 +596,27 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                             semantic_attempts=counter.get(
                                 "by_category", {}).get("primary", 0),
                             refusal_reason="primary_v1_proposal_refused")
+                        v1_evidence_recorded = True
                         result = {"run_id": turn_id, "status": "partial",
                                   "termination_reason": "primary_v1_proposal_refused",
                                   "primary_v1_refusal_code": str(exc),
                                   "answer": "本轮主语义提案未通过验证，未执行工具或修改计划。",
                                   "trace": [{"step": 0, "type": "primary_route_v1_denied"}],
                                   "steps": 0}
+                    except Exception:
+                        # A model/provider or Host exception has no executable
+                        # admission. Retain a durable refusal, never reclassify
+                        # or dispatch a different route.
+                        if not v1_evidence_recorded:
+                            counter = model_call_counter.get() or {}
+                            record_primary_admission(
+                                session_factory=Session, conversation_id=cid,
+                                turn_id=turn_id,
+                                preturn_plan_raw=preturn_plan_raw,
+                                semantic_attempts=counter.get(
+                                    "by_category", {}).get("primary", 0),
+                                refusal_reason="primary_v1_admission_unavailable")
+                        raise
             # Host decision is diagnostic; neither trace field grants access
             # or changes a pending plan execution claim.
             if (settings.primary_route_v1_active
