@@ -387,6 +387,14 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                      or pending_write_authority_id is not None)),
                             saved_step_count=(len(existing_checkpoint.get("steps", []))
                                               if existing_checkpoint else None),
+                            saved_plan_steps=([
+                                {"step_number": i + 1,
+                                 "expected_tool": step.get("expected_tool"),
+                                 "expected_arguments": step.get("expected_arguments"),
+                                 "status": step.get("status")}
+                                for i, step in enumerate(
+                                    existing_checkpoint.get("steps", [])[:8])]
+                                if existing_checkpoint else []),
                             recent_context=context)
                         v1_primary_kind = primary_proposal.route_kind
                         v1_admission = admit_primary_route_v1(
