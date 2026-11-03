@@ -180,3 +180,136 @@ def test_pending_write_malformed_title_is_not_consumed(tmp_path, monkeypatch):
         with Session() as db:
             assert db.get(PendingWriteAuthority, permit_id).status == "pending"
             assert db.scalars(select(ConversationTask)).all() == []
+
+
+def test_pending_write_transaction_rolls_back_authority_and_effect(tmp_path, monkeypatch):
+    import pytest
+    from services.primary_pending_write import (
+        consume_pending_task_write_v1, mint_pending_write_authority_in_session,
+    )
+    from services.task_store import ConversationTaskStore
+    settings = cfg(tmp_path)
+    with TestClient(create_app(settings)) as client:
+        cid = client.post("/conversations").json()["id"]
+        _, Session = database(settings.database_url)
+        with Session.begin() as db:
+            source = Message(conversation_id=cid, role="user", content=ORIGIN)
+            assistant = Message(conversation_id=cid, role="assistant",
+                                content="请提供任务标题", status="partial")
+            db.add_all([source, assistant])
+            db.flush()
+            original = Turn(conversation_id=cid, request_id="rollback-origin-001",
+                            state="running", assistant_message_id=assistant.id)
+            db.add(original)
+            db.flush()
+            origin_id = original.id
+            authority_id = mint_pending_write_authority_in_session(
+                db, conversation_id=cid, origin_turn_id=origin_id,
+                origin_user_message_id=source.id,
+                source_message=ORIGIN, tool_name="create_task")
+            original.state = "partial"
+            original.failure_code = "needs_input:create_task"
+        with Session.begin() as db:
+            assistant = Message(conversation_id=cid, role="assistant",
+                                content="", status="pending")
+            db.add(assistant)
+            db.flush()
+            current = Turn(conversation_id=cid, request_id="rollback-reply-001",
+                           state="running", assistant_message_id=assistant.id)
+            db.add(current)
+            db.flush()
+            current_id = current.id
+
+        original_create = ConversationTaskStore.create_in_session
+
+        def crash(self, db, title):
+            # Crash after task INSERT but before authorization/receipt COMMIT.
+            original_create(self, db, title)
+            raise RuntimeError("crash_in_local_transaction")
+
+        monkeypatch.setattr(ConversationTaskStore, "create_in_session", crash)
+        with pytest.raises(RuntimeError, match="crash_in_local_transaction"):
+            consume_pending_task_write_v1(
+                session_factory=Session, conversation_id=cid,
+                current_turn_id=current_id, origin_turn_id=origin_id,
+                authority_id=authority_id, reply=REPLY)
+
+        with Session() as db:
+            assert db.get(PendingWriteAuthority, authority_id).status == "pending"
+            assert db.scalars(select(ConversationTask)).all() == []
+            assert db.scalars(select(AgentAttempt)).all() == []
+
+        # Transaction rollback proves there is no local side effect. A later
+        # explicitly authorized attempt can retry the SAME permit safely.
+        monkeypatch.setattr(ConversationTaskStore, "create_in_session",
+                            original_create)
+        restored = consume_pending_task_write_v1(
+            session_factory=Session, conversation_id=cid,
+            current_turn_id=current_id, origin_turn_id=origin_id,
+            authority_id=authority_id, reply=REPLY)
+        assert restored["termination_reason"] == "pending_task_created"
+        with Session() as db:
+            assert db.get(PendingWriteAuthority, authority_id).status == "consumed"
+            assert len(db.scalars(select(ConversationTask)).all()) == 1
+            assert len(db.scalars(select(AgentAttempt)).all()) == 1
+
+
+def test_consumed_authority_cannot_dispatch_again(tmp_path):
+    from services.primary_pending_write import (
+        consume_pending_task_write_v1, mint_pending_write_authority_in_session,
+    )
+    settings = cfg(tmp_path)
+    with TestClient(create_app(settings)) as client:
+        cid = client.post("/conversations").json()["id"]
+        _, Session = database(settings.database_url)
+        with Session.begin() as db:
+            source = Message(conversation_id=cid, role="user", content=ORIGIN)
+            assistant = Message(conversation_id=cid, role="assistant",
+                                content="请提供任务标题", status="partial")
+            db.add_all([source, assistant])
+            db.flush()
+            original = Turn(conversation_id=cid, request_id="reuse-origin-001",
+                            state="running", assistant_message_id=assistant.id)
+            db.add(original)
+            db.flush()
+            origin_id = original.id
+            permit = mint_pending_write_authority_in_session(
+                db, conversation_id=cid, origin_turn_id=origin_id,
+                origin_user_message_id=source.id,
+                source_message=ORIGIN, tool_name="create_task")
+            original.state = "partial"
+            original.failure_code = "needs_input:create_task"
+        with Session.begin() as db:
+            assistant = Message(conversation_id=cid, role="assistant",
+                                content="", status="pending")
+            db.add(assistant)
+            db.flush()
+            current = Turn(conversation_id=cid, request_id="reuse-reply-001",
+                           state="running", assistant_message_id=assistant.id)
+            db.add(current)
+            db.flush()
+            first_id = current.id
+        created = consume_pending_task_write_v1(
+            session_factory=Session, conversation_id=cid,
+            current_turn_id=first_id, origin_turn_id=origin_id,
+            authority_id=permit, reply=REPLY)
+        assert created["termination_reason"] == "pending_task_created"
+        with Session.begin() as db:
+            db.get(Turn, first_id).state = "completed"
+            assistant = Message(conversation_id=cid, role="assistant",
+                                content="", status="pending")
+            db.add(assistant)
+            db.flush()
+            next_turn = Turn(conversation_id=cid, request_id="reuse-reply-002",
+                             state="running", assistant_message_id=assistant.id)
+            db.add(next_turn)
+            db.flush()
+            next_id = next_turn.id
+        replay = consume_pending_task_write_v1(
+            session_factory=Session, conversation_id=cid,
+            current_turn_id=next_id, origin_turn_id=origin_id,
+            authority_id=permit, reply=REPLY)
+        assert replay["termination_reason"] == "pending_write_authority_conflict"
+        with Session() as db:
+            assert len(db.scalars(select(ConversationTask)).all()) == 1
+            assert len(db.scalars(select(AgentAttempt)).all()) == 1
