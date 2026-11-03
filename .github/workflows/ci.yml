@@ -31,6 +31,10 @@ jobs:
         env:
           TEST_POSTGRES_URL: postgresql+psycopg://healthagent:ci_local_only@localhost:5432/healthagent
         run: python -m pytest -q -rs tests/test_s25_03_step5_postgres_physical.py
+      - name: Primary Pending write PostgreSQL CAS and reconciliation
+        env:
+          TEST_POSTGRES_URL: postgresql+psycopg://healthagent:ci_local_only@localhost:5432/healthagent
+        run: python -m pytest -q -rs tests/test_primary_pending_write_postgres.py
       - name: M4 targeted PostgreSQL claim-row-lock verification
         env:
           TEST_POSTGRES_URL: postgresql+psycopg://healthagent:ci_local_only@localhost:5432/healthagent
