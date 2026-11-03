@@ -85,3 +85,38 @@ def test_ordinary_executor_exception_keeps_prepared_unknown(monkeypatch, tmp_pat
         assert len(rows) == 1
         assert rows[0].status == "prepared"
     engine.dispose()
+
+
+@pytest.mark.parametrize("name,arguments", [
+    ("create_task", {"title": "提交测试报告"}),
+    ("save_memory", {"key": "qa", "value": "qa17"}),
+])
+def test_unified_agentloop_cannot_dispatch_unbound_writes(
+        tmp_path, monkeypatch, name, arguments):
+    """A model tool decision is not a Primary proposal or Host write permit."""
+    engine, Session = setup(tmp_path)
+    calls = []
+
+    def prohibited(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise AssertionError("Unbound Unified write reached execute_tool")
+
+    monkeypatch.setattr("agent.loop.execute_tool", prohibited)
+    model = Scripted([
+        one_tool(name, arguments),
+        Decision("无法直接执行未授权写入", []),
+    ])
+    try:
+        result = asyncio.run(AgentLoop(
+            model,
+            ordinary_attempt_journal=AttemptEvidenceStore("c1", "t1"),
+            ordinary_attempt_session_factory=Session,
+            governed_ordinary_writes=True,
+        ).run("请保存/创建相应记录", memory_write_consent=True))
+        assert not calls
+        assert not any(t.get("ok") and t.get("name") == name
+                       for t in result["trace"] if t.get("type") == "tool")
+        with Session() as db:
+            assert db.query(AgentAttempt).count() == 0
+    finally:
+        engine.dispose()
