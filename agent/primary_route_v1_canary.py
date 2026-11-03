@@ -120,7 +120,8 @@ def admit_v1_canary(proposal: BoundPrimaryProposal, *, message: str,
             return deny("primary_v1_clarification_unbound",
                         "请补充请求所需的信息。")
         return {"run_id": turn_id, "status": "partial",
-                "termination_reason": "primary_v1_clarification_required",
+                "termination_reason": ("needs_input" if proposal.pending_read_tool_name else "primary_v1_clarification_required"),
+                "pending_action": proposal.pending_read_tool_name,
                 "answer": proposal.clarification_question,
                 "trace": trace + [{"step": 0, "type": "clarification_requested"}],
                 "steps": 0}
