@@ -95,7 +95,11 @@ def test_selected_calculate_does_not_override_primary_route(
             "content": MESSAGE, "client_request_id": "explicit-mismatch-001",
             "selected_ordinary_operation": "calculate"})
         assert reply.status_code == 200, reply.text
-        assert reply.json()["termination_reason"] == "explicit_ordinary_primary_mismatch"
+        # Host restrict is authoritative and terminates before the
+        # selected-operation mismatch check; both prohibit execution.
+        expected = ("primary_v1_route_rejected" if route_kind == "reject"
+                    else "explicit_ordinary_primary_mismatch")
+        assert reply.json()["termination_reason"] == expected
         assert reply.json()["steps"] == 0
 
 
