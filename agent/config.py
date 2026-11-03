@@ -98,5 +98,19 @@ class Settings(BaseSettings):
         return "compatibility"
 
     @property
+    def primary_route_v1_active(self) -> bool:
+        """Use Primary v1 for real-provider automatic Unified by default.
+
+        Explicit Unified and legacy compatibility profiles are unchanged in
+        this first bounded cutover. An explicit canary opt-in still takes
+        precedence, including for fake-provider contract tests. There is no
+        fallback to M5 or Legacy after a v1 proposal or admission failure.
+        """
+        return self.primary_route_v1_canary_enabled or (
+            self.effective_routing_profile == "unified"
+            and self.routing_profile_source == "auto_real_provider_default"
+        )
+
+    @property
     def provider_ready(self) -> bool:
         return self.model_provider in ("fake", "ollama_proxy") or bool(self.model_api_key)
