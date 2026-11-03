@@ -1,5 +1,5 @@
-import asyncio
 """Contract-level tests for work package 1 (no provider/network/tool execution)."""
+import asyncio
 import json
 
 import pytest
