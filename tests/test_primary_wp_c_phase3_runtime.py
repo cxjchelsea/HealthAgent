@@ -17,7 +17,7 @@ class Script:
 
 
 def test_ordinary_readonly_does_not_complete_matching_saved_step():
-    plan = build_plan_checkpoint("合成两步计划", PlanRequest(
+    plan = build_plan_checkpoint("第一步计算13+17，第二步计算21+24；只保存不执行", PlanRequest(
         intent="plan_only", steps=[
             {"goal": "计算13+17", "expected_tool": "calculate",
              "expected_arguments": {"expression": "13+17"}},
