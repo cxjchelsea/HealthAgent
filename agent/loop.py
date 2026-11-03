@@ -496,7 +496,9 @@ class AgentLoop:
                 and step.get("expected_arguments") == {"expression": old_expression}]
         # Explicit saved-memory questions use a trusted, owner-scoped read.
         # Do not leave correctness to optional model tool choice.
-        if (understanding_result is None and self.memory_store is not None and any(phrase in goal for phrase in (
+        if (execution_mode != "respond_only"
+                and understanding_result is None
+                and self.memory_store is not None and any(phrase in goal for phrase in (
                 "还记得", "记得我", "之前保存", "之前记住", "保存的",
                 "记住的", "测试偏好是什么", "测试偏好吗"))):
             records = self.memory_store.list()
