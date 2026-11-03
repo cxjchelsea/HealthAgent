@@ -7,9 +7,9 @@ No claims about external exactly-once or save_memory authority are made.
 """
 import json
 
-from sqlalchemy import select, and_, or_
 from agent.tools import SCHEMAS
 from services.db import AgentAttempt, Turn
+from services.write_effect_fence import write_fence_in_session
 from services.evidence_store import (
     AttemptEvidenceStore, bounded_projection, make_attempt,
 )
@@ -43,23 +43,21 @@ def execute_primary_write_v1(*, proposal, session_factory,
     except (ValueError, TypeError):
         return deny("primary_v1_write_arguments_invalid")
 
-    with session_factory() as db:
-        # No automatic replay after an unresolved write, including a write
-        # whose result was recorded but whose Turn did not complete.
-        blocked = db.scalar(select(AgentAttempt.id).join(
-            Turn, Turn.id == AgentAttempt.turn_id).where(
-            AgentAttempt.conversation_id == conversation_id,
-            AgentAttempt.tool_name.in_(("create_task", "save_memory")),
-            or_(AgentAttempt.status == "prepared",
-                and_(AgentAttempt.status == "succeeded",
-                     Turn.state != "completed"))).limit(1))
-        if blocked is not None:
-            return deny("primary_v1_write_reconciliation_required")
-
     journal = AttemptEvidenceStore(conversation_id, turn_id)
     attempt = make_attempt(turn_id, name, arguments,
                            {"ok": False, "error": "prepared"})
-    journal.begin(session_factory, attempt)
+    # The unresolved-write query and prepared intent must share one
+    # transaction under the same per-conversation lock as Pending writes.
+    # Never execute the effect unless the prepared record was committed.
+    with session_factory.begin() as db:
+        reason = write_fence_in_session(db, conversation_id)
+        if reason is not None:
+            return deny("primary_v1_write_reconciliation_required")
+        turn = db.get(Turn, turn_id)
+        if turn is None or turn.conversation_id != conversation_id or turn.state != "running":
+            return deny("primary_v1_write_claim_conflict")
+        journal.save_in_session(db, [attempt])
+        db.flush()
     # After prepared, the only permitted write is the title from Primary's
     # bound request; task and receipt are committed atomically.
     with session_factory.begin() as db:
