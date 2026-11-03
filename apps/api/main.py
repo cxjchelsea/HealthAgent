@@ -36,6 +36,7 @@ from agent.s25_04_explicit_ordinary import admit_explicit_ordinary_calculation
 from agent.primary_route_v1 import PrimaryRouteRejected, propose_primary_route
 from agent.primary_route_v1_canary import admit_v1_canary
 from agent.primary_host_admission_v1 import PrimaryHostFacts, admit_primary_route_v1
+from agent.primary_pending_readonly_v1 import execute_pending_readonly_v1
 from evals.s25_04_route_shadow import shadow_classify
 from agent.m5_first_route import propose_first_route
 from agent.m5_unified_route import (propose_saved_plan_route, propose_new_plan_route,
@@ -374,6 +375,16 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                 "answer": "本轮请求未通过确定性 Host 准入，未执行工具。",
                                 "trace": [{"step": 0, "type": "primary_route_v1_denied"}],
                                 "steps": 0}
+                        if (result is None
+                                and primary_proposal.route_kind == "clarify_response"
+                                and v1_admission.disposition == "allow"
+                                and pending_action == "mcp_reference_lookup"):
+                            result = execute_pending_readonly_v1(
+                                message=body.content, conversation_id=cid,
+                                turn_id=turn_id, session_factory=Session,
+                                prior_pending_action=pending_action,
+                                prior_origin_verified=bool(
+                                    pending_action and clarification_id and pending_question))
                         if result is None and primary_proposal.route_kind in {
                                 "plan_execute_first", "plan_resume"}:
                             requested_control = (
