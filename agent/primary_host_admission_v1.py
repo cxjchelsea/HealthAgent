@@ -74,10 +74,15 @@ def admit_primary_route_v1(
             # do not reinterpret a pending answer as a new write.
             if facts.pending_action is not None:
                 return decide("restrict", "primary_v1_pending_write_not_governed")
-            if (proposal.write_tool_name != "create_task"
+            fields = {"create_task": {"title"}, "save_memory": {"key", "value"}}
+            if (proposal.write_tool_name not in fields
                     or not proposal.write_arguments
-                    or set(proposal.write_arguments) != {"title"}):
+                    or set(proposal.write_arguments) != fields[proposal.write_tool_name]):
                 return decide("restrict", "primary_v1_admission_not_wired")
+            if proposal.write_tool_name == "save_memory":
+                if not facts.write_consent:
+                    return decide("deny", "primary_v1_memory_consent_required")
+                return decide("allow", "primary_v1_save_memory_candidate")
             return decide("allow", "primary_v1_create_task_candidate")
         if proposal.effect_intent != "read_only":
             return decide("deny", "primary_v1_ordinary_effect_invalid")
