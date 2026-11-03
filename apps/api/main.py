@@ -389,7 +389,14 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                 guarded_mode=settings.route_admission_mode == "guarded",
                                 turn_created=True,
                                 write_consent=body.memory_write_consent))
-                        if v1_admission.disposition == "deny":
+                        # The Host decision is authoritative. A restricted
+                        # proposal must NEVER fall through to an executor or
+                        # the legacy canary's operation-specific handlers.
+                        # Clarification may proceed only for the original
+                        # clarify route; it is not permission to execute.
+                        if (v1_admission.disposition in {"deny", "restrict"}
+                                or (v1_admission.disposition == "clarify"
+                                    and primary_proposal.route_kind != "clarify")):
                             result = {
                                 "run_id": turn_id, "status": "partial",
                                 "termination_reason": v1_admission.reason,
