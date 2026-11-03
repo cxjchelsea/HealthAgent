@@ -47,8 +47,12 @@ def admit_primary_route_v1(
     if kind == "clarify_response":
         if not (facts.pending_action and facts.pending_origin_verified):
             return decide("deny", "primary_v1_pending_origin_unverified")
-        # WP3 must provide pending execution ledger and replay fencing.
-        return decide("restrict", "primary_v1_admission_not_wired")
+        # Only the known read-only MCP lookup can use the existing
+        # prepared/receipt evidence store without write-side idempotency.
+        # create_task remains restricted until write authority is durable.
+        if facts.pending_action == "mcp_reference_lookup":
+            return decide("allow", "primary_v1_pending_read_only", "read_only")
+        return decide("restrict", "primary_v1_pending_write_not_governed")
 
     if kind == "plan_missing":
         if facts.checkpoint is not None:
