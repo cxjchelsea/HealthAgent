@@ -174,6 +174,11 @@ class RouteSignal(StrictRouteModel):
         if self.pending_write_tool_name is not None and (
                 self.route_kind != "clarify" or self.pending_write_tool_name != "create_task"):
             raise PydanticCustomError("primary_route_pending_write_invalid", "primary_route_pending_write_invalid")
+        if self.pending_read_tool_name is not None and (
+                self.route_kind != "clarify"
+                or self.pending_read_tool_name != "mcp_reference_lookup"
+                or self.pending_write_tool_name is not None):
+            raise PydanticCustomError("primary_route_pending_read_invalid", "primary_route_pending_read_invalid")
         if (self.route_kind == "clarify") != (self.clarification_question is not None):
             raise PydanticCustomError("primary_route_clarification_mismatch", "primary_route_clarification_mismatch")
         return self
@@ -291,7 +296,8 @@ def bind_route_signal(signal: RouteSignal, message: str, *,
         revision_new_argument=signal.revision_new_argument,
         write_tool_name=signal.write_tool_name,
         write_arguments=signal.write_arguments,
-        pending_write_tool_name=signal.pending_write_tool_name)
+        pending_write_tool_name=signal.pending_write_tool_name,
+        pending_read_tool_name=signal.pending_read_tool_name)
 
 
 _PRIMARY_SYSTEM = (
