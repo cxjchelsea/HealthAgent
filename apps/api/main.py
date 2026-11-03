@@ -38,6 +38,11 @@ from agent.primary_route_v1_canary import admit_v1_canary
 from agent.primary_host_admission_v1 import PrimaryHostFacts, admit_primary_route_v1
 from agent.primary_pending_readonly_v1 import execute_pending_readonly_v1
 from agent.primary_ordinary_write_v1 import execute_primary_write_v1
+from services.primary_pending_write import (
+    pending_write_authority_for_origin,
+    mint_pending_write_authority_in_session,
+    consume_pending_task_write_v1,
+)
 from evals.s25_04_route_shadow import shadow_classify
 from agent.m5_first_route import propose_first_route
 from agent.m5_unified_route import (propose_saved_plan_route, propose_new_plan_route,
@@ -192,6 +197,8 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
         """S2-B1: reuse S1 ownership, persisted turns and completed conversation context."""
         if len(body.content) > settings.max_input_chars:
             raise HTTPException(413, "message_too_long")
+        pending_write_authority_id = None
+        pending_write_origin_turn_id = None
         try:
             with Session.begin() as db:
                 get_owned(db, cid, uid)
@@ -214,6 +221,13 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                     pending_action = None
                 pending_question = (db.get(Message, clarification_id).content
                     if clarification_id else None)
+                if pending_action == "create_task":
+                    write_origin = pending_write_authority_for_origin(
+                        db, conversation_id=cid,
+                        origin_turn=latest_turn, pending_action=pending_action)
+                    if write_origin is not None:
+                        pending_write_authority_id = write_origin.id
+                        pending_write_origin_turn_id = write_origin.origin_turn_id
                 history = db.scalars(select(Message).where(
                     Message.conversation_id == cid,
                     ((Message.status == "completed") |
@@ -355,7 +369,9 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                             saved_plan_present=existing_checkpoint is not None,
                             pending_action=pending_action,
                             pending_origin_verified=bool(
-                                pending_action and clarification_id and pending_question),
+                                pending_action and clarification_id and pending_question
+                                and (pending_action != "create_task"
+                                     or pending_write_authority_id is not None)),
                             saved_step_count=(len(existing_checkpoint.get("steps", []))
                                               if existing_checkpoint else None),
                             recent_context=context)
@@ -365,7 +381,11 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                 checkpoint=existing_checkpoint,
                                 pending_action=pending_action,
                                 pending_origin_verified=bool(
-                                    pending_action and clarification_id and pending_question),
+                                    pending_action and clarification_id and pending_question
+                                    and (pending_action != "create_task"
+                                         or pending_write_authority_id is not None)),
+                                pending_write_authority_verified=(
+                                    pending_write_authority_id is not None),
                                 guarded_mode=settings.route_admission_mode == "guarded",
                                 turn_created=True,
                                 write_consent=body.memory_write_consent))
@@ -376,6 +396,18 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                 "answer": "本轮请求未通过确定性 Host 准入，未执行工具。",
                                 "trace": [{"step": 0, "type": "primary_route_v1_denied"}],
                                 "steps": 0}
+                        if (result is None
+                                and primary_proposal.route_kind == "clarify_response"
+                                and v1_admission.disposition == "allow"
+                                and pending_action == "create_task"
+                                and pending_write_authority_id is not None
+                                and pending_write_origin_turn_id is not None):
+                            result = consume_pending_task_write_v1(
+                                session_factory=Session,
+                                conversation_id=cid, current_turn_id=turn_id,
+                                origin_turn_id=pending_write_origin_turn_id,
+                                authority_id=pending_write_authority_id,
+                                reply=body.content)
                         if (result is None
                                 and primary_proposal.route_kind == "clarify_response"
                                 and v1_admission.disposition == "allow"
@@ -1428,6 +1460,16 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                 # Release any saved-plan claim in the same transaction that
                 # persists the terminal Turn state, including partial/error paths.
                 plan_store.release_execution_claim_in_session(db, turn_id=turn_id)
+                if (status == "partial"
+                        and failure_code == "needs_input:create_task"
+                        and result is not None
+                        and result.get("pending_write_authority_candidate") is True
+                        and v1_primary_kind == "clarify"
+                        and settings.primary_route_v1_canary_enabled):
+                    mint_pending_write_authority_in_session(
+                        db, conversation_id=cid, origin_turn_id=turn_id,
+                        origin_user_message_id=user_message.id,
+                        source_message=body.content, tool_name="create_task")
                 response.content = answer
                 response.status = status
                 turn.state = status
