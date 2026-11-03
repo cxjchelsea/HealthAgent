@@ -87,7 +87,7 @@ def test_plan_route_never_creates_own_checkpoint():
 
 def test_saved_plan_must_not_capture_ordinary_request():
     payload = RouteSignal.model_validate(signal(
-        "ordinary_tool", "请计算", execution_scope="single_tool",
+        "ordinary_tool", "请计算", execution_scope="none",
         effect_intent="read_only"))
     bound = bind_route_signal(payload, "请计算 1+2", saved_plan_present=True,
                               pending_action=None)
@@ -141,7 +141,7 @@ def test_revision_needs_host_verified_step_number():
 @pytest.mark.asyncio
 async def test_exactly_one_semantic_model_call_no_legacy_fallback():
     provider = Provider(signal(
-        "ordinary_tool", "请计算", execution_scope="single_tool",
+        "ordinary_tool", "请计算", execution_scope="none",
         effect_intent="read_only"))
     route = await propose_primary_route(provider, "model", "请计算 2+3",
                                         saved_plan_present=False)
