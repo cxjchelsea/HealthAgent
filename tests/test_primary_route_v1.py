@@ -360,3 +360,13 @@ def test_model_resume_absent_plan_remains_refused_no_reclassification():
         asyncio.run(propose_primary_route(
             provider, "model", message, saved_plan_present=False))
     assert provider.calls == 1
+
+
+
+def test_revision_generation_contract_requires_bare_old_and_new_expressions():
+    from agent.primary_route_v1 import _PRIMARY_SYSTEM
+    assert "revision_old_argument='5*6'" in _PRIMARY_SYSTEM
+    assert "revision_new_argument='7*8'" in _PRIMARY_SYSTEM
+    assert "NEVER output '计算 5*6'" in _PRIMARY_SYSTEM
+    assert "stored expected_arguments.expression" in _PRIMARY_SYSTEM
+    assert "clarify route" in _PRIMARY_SYSTEM
