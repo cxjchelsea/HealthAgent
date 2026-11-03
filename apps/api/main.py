@@ -35,6 +35,7 @@ from agent.s25_04_admission_shadow import evaluate_admission_shadow
 from agent.s25_04_explicit_ordinary import admit_explicit_ordinary_calculation
 from agent.primary_route_v1 import PrimaryRouteRejected, propose_primary_route
 from agent.primary_route_v1_canary import admit_v1_canary
+from agent.primary_host_admission_v1 import PrimaryHostFacts, admit_primary_route_v1
 from evals.s25_04_route_shadow import shadow_classify
 from agent.m5_first_route import propose_first_route
 from agent.m5_unified_route import (propose_saved_plan_route, propose_new_plan_route,
@@ -357,7 +358,23 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                               if existing_checkpoint else None),
                             recent_context=context)
                         v1_primary_kind = primary_proposal.route_kind
-                        if primary_proposal.route_kind in {
+                        v1_admission = admit_primary_route_v1(
+                            primary_proposal, PrimaryHostFacts(
+                                checkpoint=existing_checkpoint,
+                                pending_action=pending_action,
+                                pending_origin_verified=bool(
+                                    pending_action and clarification_id and pending_question),
+                                guarded_mode=settings.route_admission_mode == "guarded",
+                                turn_created=True,
+                                write_consent=body.memory_write_consent))
+                        if v1_admission.disposition == "deny":
+                            result = {
+                                "run_id": turn_id, "status": "partial",
+                                "termination_reason": v1_admission.reason,
+                                "answer": "本轮请求未通过确定性 Host 准入，未执行工具。",
+                                "trace": [{"step": 0, "type": "primary_route_v1_denied"}],
+                                "steps": 0}
+                        if result is None and primary_proposal.route_kind in {
                                 "plan_execute_first", "plan_resume"}:
                             requested_control = (
                                 "execute_first" if primary_proposal.route_kind ==
@@ -422,7 +439,7 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                         execution_mode="read_only",
                                         memory_write_consent=body.memory_write_consent,
                                         plan_control=requested_control)
-                        elif primary_proposal.route_kind == "respond":
+                        elif result is None and primary_proposal.route_kind == "respond":
                             # Answer generation is post-admission AgentLoop work,
                             # not another semantic route owner. Empty tools in
                             # respond_only guarantee no business side effects.
@@ -440,7 +457,7 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                   execution_mode="respond_only",
                                   memory_write_consent=False,
                                   plan_control=None)
-                        elif (primary_proposal.route_kind == "ordinary_tool"
+                        elif (result is None and primary_proposal.route_kind == "ordinary_tool"
                               and primary_proposal.effect_intent == "read_only"):
                             # Host restriction: AgentLoop may select among
                             # registered read-only tools only. No plan control,
@@ -472,7 +489,7 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                   execution_mode="read_only",
                                   memory_write_consent=False,
                                   plan_control=None)
-                        else:
+                        elif result is None:
                             result = admit_v1_canary(
                                 primary_proposal, message=body.content,
                                 conversation_id=cid,
@@ -485,6 +502,15 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                   "answer": "本轮主语义提案未通过验证，未执行工具或修改计划。",
                                   "trace": [{"step": 0, "type": "primary_route_v1_denied"}],
                                   "steps": 0}
+            # Host decision is diagnostic; neither trace field grants access
+            # or changes a pending plan execution claim.
+            if (settings.primary_route_v1_canary_enabled
+                    and v1_primary_kind is not None):
+                result["trace"] = [
+                    {"step": 0, "type": "primary_host_admission_v1",
+                     "disposition": v1_admission.disposition,
+                     "reason": v1_admission.reason},
+                    *result.get("trace", [])]
             # One non-sensitive entry for the bound Primary route, regardless
             # of which existing Host executor produced the final result.
             # This is diagnostic only, not permission or durable authority.
