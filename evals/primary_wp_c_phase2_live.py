@@ -49,7 +49,10 @@ def main():
     p.add_argument("--endpoint", default="http://127.0.0.1:8012")
     p.add_argument("--output", default="artifacts/wp-c/phase2-live.json")
     p.add_argument("--timeout", type=float, default=240)
+    p.add_argument("--revision-only", action="store_true",
+                   help="Run fresh CREATE_B -> REVISE only; no other plan groups")
     args = p.parse_args()
+    cases = [x for x in CASES if x[1] == "revise"] if args.revision_only else CASES
     url = args.endpoint.rstrip("/")
     if not url.startswith(("http://127.0.0.1:", "http://localhost:")):
         p.error("Only localhost acceptance endpoint is supported")
@@ -74,8 +77,8 @@ def main():
                   for k in ("PASS", "FAIL", "BLOCKED")}
         report["summary"] = counts
         report["verdict"] = "PASS" if (
-            len(report["cases"]) == len(CASES) + 1
-            and counts == {"PASS": len(CASES) + 1, "FAIL": 0, "BLOCKED": 0}
+            len(report["cases"]) == len(cases) + 1
+            and counts == {"PASS": len(cases) + 1, "FAIL": 0, "BLOCKED": 0}
         ) else "FAIL"
         output.write_text(json.dumps(report, ensure_ascii=False, indent=2),
                           encoding="utf-8")
@@ -102,7 +105,7 @@ def main():
                 return 2
 
             groups, blocked_groups, last_rids = {}, set(), {}
-            for case, group, message in CASES:
+            for case, group, message in cases:
                 if group in blocked_groups:
                     blocked(case, "prior_group_failure")
                     continue
