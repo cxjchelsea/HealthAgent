@@ -161,3 +161,74 @@ def test_default_unified_old_task_pending_without_authority_never_dispatches(
             assert db.scalars(select(ConversationTask)).all() == []
             assert db.scalars(select(AgentAttempt)).all() == []
             assert db.scalars(select(PendingWriteAuthority)).all() == []
+
+
+def test_default_unified_trusted_pending_task_uses_single_use_authority(
+        tmp_path, monkeypatch):
+    """Even before default Primary cutover, an existing v1 permit can be consumed."""
+    from sqlalchemy import select
+    from services.db import AgentAttempt, ConversationTask, PendingWriteAuthority
+    from services.primary_pending_write import mint_pending_write_authority_in_session
+
+    cfg = Settings(
+        database_url=f"sqlite:///{tmp_path / 'pending_permitted.db'}",
+        model_provider="ollama_proxy", understanding_strategy="structured",
+        route_admission_mode="guarded", m5_unified_route_enabled=True,
+    )
+
+    async def fake_complete(self, *, model, messages, response_schema=None):
+        return understood()
+
+    async def pending_answer(*args, **kwargs):
+        return "answer"
+
+    async def policy(message, interpretation):
+        return "read_only"
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Unified pending resumed via legacy execute_tool")
+
+    monkeypatch.setattr(HTTPUnderstandingModel, "complete", fake_complete)
+    monkeypatch.setattr("apps.api.main.classify_pending_reply", pending_answer)
+    monkeypatch.setattr("apps.api.main.execute_tool", forbidden)
+
+    with TestClient(create_app(cfg, execution_policy=policy)) as client:
+        cid = client.post("/conversations").json()["id"]
+        _, Session = database(cfg.database_url)
+        with Session.begin() as db:
+            original_user = Message(conversation_id=cid, role="user",
+                                    content="请创建一个任务，先告诉我要提供标题。")
+            pending = Message(conversation_id=cid, role="assistant",
+                              content="请提供任务标题", status="partial")
+            db.add_all([original_user, pending])
+            db.flush()
+            old = Turn(conversation_id=cid, request_id="permit-origin-001",
+                       state="running", assistant_message_id=pending.id)
+            db.add(old)
+            db.flush()
+            mint_pending_write_authority_in_session(
+                db, conversation_id=cid, origin_turn_id=old.id,
+                origin_user_message_id=original_user.id,
+                source_message=original_user.content, tool_name="create_task")
+            old.state = "partial"
+            old.failure_code = "needs_input:create_task"
+
+        reply = {"content": "提交测试报告",
+                 "client_request_id": "permit-response-001"}
+        response = client.post(f"/conversations/{cid}/agent/messages",
+                               json=reply)
+        assert response.status_code == 200, response.text
+        assert response.json()["termination_reason"] == "pending_task_created"
+        assert client.post(f"/conversations/{cid}/agent/messages",
+                           json=reply).status_code == 409
+        with Session() as db:
+            tasks = db.scalars(select(ConversationTask).where(
+                ConversationTask.conversation_id == cid)).all()
+            receipts = db.scalars(select(AgentAttempt).where(
+                AgentAttempt.conversation_id == cid)).all()
+            permit = db.scalar(select(PendingWriteAuthority).where(
+                PendingWriteAuthority.conversation_id == cid))
+            assert len(tasks) == len(receipts) == 1
+            assert tasks[0].title == "提交测试报告"
+            assert receipts[0].status == "succeeded"
+            assert permit.status == "consumed"
