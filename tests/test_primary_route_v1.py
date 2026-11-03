@@ -227,7 +227,7 @@ def test_model_validator_mismatch_keeps_single_safe_category():
 
 
 @pytest.mark.parametrize("candidate,reason", [
-    (signal("ordinary_tool", "请计算", effect_intent="none",
+    (signal("ordinary_tool", "请计算", effect_intent="read_only",
             write_tool_name="create_task", write_arguments={"title": "秘密"}),
      "primary_route_unexpected_write_contract"),
     (signal("respond", "你好", effect_intent="read_only"),
