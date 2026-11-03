@@ -96,6 +96,28 @@ class Turn(Base):
     decision_steps: Mapped[int] = mapped_column(Integer, default=0)
 
 
+class PrimaryRouteEvidence(Base):
+    """Write-once Host admission evidence for one Primary Turn.
+
+    Never stores prompts, user text, model raw output, tool arguments or
+    credentials. The row is committed before any Primary-authorized effect.
+    """
+    __tablename__ = "primary_route_evidence"
+    turn_id: Mapped[str] = mapped_column(
+        ForeignKey("turns.id"), primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(
+        ForeignKey("conversations.id"), index=True)
+    proposal_id: Mapped[str] = mapped_column(String(40), unique=True)
+    schema_version: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    route_kind: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    semantic_attempts: Mapped[int] = mapped_column(Integer, nullable=False)
+    preturn_snapshot_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    disposition: Mapped[str] = mapped_column(String(20))
+    admission_reason: Mapped[str] = mapped_column(String(80))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=now)
+
+
 class PlanToolDispatch(Base):
     """Durable pre-dispatch intention. An unreceipted dispatch is never retryable."""
     __tablename__ = "plan_tool_dispatches"
