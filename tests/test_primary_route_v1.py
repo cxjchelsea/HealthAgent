@@ -409,3 +409,63 @@ def test_primary_includes_bounded_trusted_plan_steps_for_revision():
             saved_plan_steps=context))
     assert absent.calls == 1
     assert absent.payload["saved_plan_steps"] == []
+
+
+
+def test_saved_plan_first_prompt_does_not_echo_snapshot_into_output_steps():
+    from agent.primary_route_v1 import _PRIMARY_SYSTEM
+    assert "OUTPUT-vs-CONTEXT BOUNDARY" in _PRIMARY_SYSTEM
+    assert "NEVER copy saved_plan_steps" in _PRIMARY_SYSTEM
+    marker = "Existing-plan FIRST OUTPUT FORMAT EXAMPLE ONLY: "
+    example = _PRIMARY_SYSTEM.split(marker, 1)[1].split(
+        " If current_request asks", 1)[0]
+    signal = RouteSignal.model_validate_json(example)
+    assert signal.route_kind == "plan_execute_first"
+    assert signal.execution_scope == "first_step"
+    assert signal.effect_intent == "read_only"
+    assert signal.steps == []
+    assert "plan_resume/remaining_steps/read_only" in _PRIMARY_SYSTEM
+
+
+def test_primary_first_snapshot_is_readonly_input_and_output_steps_must_be_empty():
+    message = "现在只执行已保存计划的第一步，第二步先不要执行。"
+
+    class SnapshotProvider:
+        def __init__(self, echo_steps):
+            self.echo_steps = echo_steps
+            self.calls = 0
+            self.payload = None
+
+        async def complete(self, *, model, messages, response_schema):
+            self.calls += 1
+            self.payload = json.loads(messages[1]["content"])
+            return json.dumps(signal(
+                "plan_execute_first", "只执行已保存计划的第一步",
+                execution_scope="first_step", effect_intent="read_only",
+                steps=self.payload["saved_plan_steps"] if self.echo_steps else []),
+                ensure_ascii=False)
+
+    saved = [
+        {"step_number": 1, "expected_tool": "calculate",
+         "expected_arguments": {"expression": "3*4"}, "status": "pending"},
+        {"step_number": 2, "expected_tool": "calculate",
+         "expected_arguments": {"expression": "5*6"}, "status": "pending"},
+    ]
+    valid = SnapshotProvider(False)
+    result = asyncio.run(propose_primary_route(
+        valid, "test", message, saved_plan_present=True,
+        saved_step_count=2, saved_plan_steps=saved))
+    assert result.route_kind == "plan_execute_first"
+    assert result.steps == []
+    assert valid.payload["saved_plan_steps"] == saved
+    assert valid.calls == 1
+
+    invalid = SnapshotProvider(True)
+    with pytest.raises(PrimaryRouteRejected) as caught:
+        asyncio.run(propose_primary_route(
+            invalid, "test", message, saved_plan_present=True,
+            saved_step_count=2, saved_plan_steps=saved))
+    assert {"field": "root", "category": "primary_route_steps_mismatch"} in (
+        caught.value.validation_issues
+    ) or any(issue["field"].startswith("steps") for issue in caught.value.validation_issues)
+    assert invalid.calls == 1
