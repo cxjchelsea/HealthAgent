@@ -137,9 +137,10 @@ def consume_pending_task_write_v1(
         observed = ConversationTaskStore(session_factory, conversation_id).create_in_session(
             db, arguments["title"])
         if not observed.get("ok"):
-            # No task effect. Do not consume the authority on capacity failure.
-            # This rollback is local and does not imply external retry safety.
-            raise PendingWriteLocalFailure(observed.get("error", "write_failed"))
+            # The task limit is a deterministic local failure. Roll back
+            # authority consumption and report a bounded refusal.
+            db.rollback()
+            return deny("pending_write_task_capacity_denied")
         db.add(AgentAttempt(
             id=str(uuid.uuid4()), conversation_id=conversation_id,
             turn_id=current_turn_id, run_id=current_turn_id,
@@ -157,6 +158,3 @@ def consume_pending_task_write_v1(
         "steps": 1,
     }
 
-
-class PendingWriteLocalFailure(RuntimeError):
-    """Transaction rolled back; no task, receipt, or consumption committed."""
