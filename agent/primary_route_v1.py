@@ -65,7 +65,7 @@ class RouteSignal(StrictRouteModel):
             "plan_resume": ({"remaining_steps", "all_steps"}, {"read_only"}),
             "plan_cancel": ({"none"}, {"mutation_requested"}),
             "plan_missing": ({"none"}, {"none"}),
-            "ordinary_tool": ({"single_tool"}, {"read_only", "mutation_requested"}),
+            "ordinary_tool": ({"none"}, {"read_only", "mutation_requested"}),
             "respond": ({"none"}, {"none"}),
             "clarify": ({"none"}, {"none"}),
             "clarify_response": ({"none"}, {"none"}),
@@ -192,7 +192,7 @@ _PRIMARY_SYSTEM = (
     "For non-create routes steps must be empty; step_number only for plan_revise. "
     "Set scope/effect as follows: create/revise/cancel none+mutation_requested, "
     "execute_first first_step+read_only, resume remaining_steps+read_only, "
-    "ordinary_tool single_tool+read_only or mutation_requested, "
+    "ordinary_tool none+read_only or mutation_requested, "
     "all other routes none+none. Do not infer Host rights or execute anything."
 )
 
