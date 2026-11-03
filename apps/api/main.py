@@ -66,6 +66,7 @@ from services.db import PlanExecutionClaim, PlanToolDispatch
 from services.db import AgentAttempt, ConversationPlan
 from services.task_state import AgentTaskStateStore
 from services.evidence_store import AttemptEvidenceStore
+from services.primary_route_evidence import record_primary_admission, read_primary_evidence
 from services.s25_03_projection import project_finalized_turn
 
 log=logging.getLogger("healthagent")
@@ -387,6 +388,16 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                 guarded_mode=settings.route_admission_mode == "guarded",
                                 turn_created=True,
                                 write_consent=body.memory_write_consent))
+                        # AC1/AC3: durable, immutable proposal+Host evidence
+                        # must commit before any tool, task, memory or plan effect.
+                        counter = model_call_counter.get() or {}
+                        primary_attempts = counter.get("by_category", {}).get(
+                            "primary", 0)
+                        record_primary_admission(
+                            session_factory=Session, conversation_id=cid,
+                            turn_id=turn_id, preturn_plan_raw=preturn_plan_raw,
+                            proposal=primary_proposal, decision=v1_admission,
+                            semantic_attempts=primary_attempts)
                         # The Host decision is authoritative. A restricted
                         # proposal must NEVER fall through to an executor or
                         # the legacy canary's operation-specific handlers.
@@ -574,6 +585,15 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                 request_id=body.client_request_id,
                                 turn_id=turn_id, checkpoint=existing_checkpoint)
                     except PrimaryRouteRejected as exc:
+                        # Invalid schema or unbound quote is not an admission.
+                        # Persist refusal without a guessed route or permission.
+                        counter = model_call_counter.get() or {}
+                        record_primary_admission(
+                            session_factory=Session, conversation_id=cid,
+                            turn_id=turn_id, preturn_plan_raw=preturn_plan_raw,
+                            semantic_attempts=counter.get(
+                                "by_category", {}).get("primary", 0),
+                            refusal_reason="primary_v1_proposal_refused")
                         result = {"run_id": turn_id, "status": "partial",
                                   "termination_reason": "primary_v1_proposal_refused",
                                   "primary_v1_refusal_code": str(exc),
@@ -1714,7 +1734,9 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
             return {"turn_id": turn.id, "status": turn.state,
                     "failure_code": turn.failure_code,
                     "decision_steps": turn.decision_steps,
-                    "duration_ms": turn.duration_ms}
+                    "duration_ms": turn.duration_ms,
+                    "primary_route_evidence": read_primary_evidence(
+                        db, conversation_id=cid, turn_id=turn_id)}
 
     @app.get("/conversations/{cid}/plan/recovery-status")
     def plan_recovery_status(cid: str, uid=Depends(user_id)):
