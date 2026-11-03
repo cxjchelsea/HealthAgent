@@ -55,6 +55,8 @@ class RouteSignal(StrictRouteModel):
     steps: list[ProposedStep] = Field(default_factory=list, max_length=8)
     step_number: int | None = Field(default=None, ge=1, le=8)
     clarification_question: str | None = Field(default=None, min_length=1, max_length=500)
+    revision_old_argument: str | None = Field(default=None, min_length=1, max_length=400)
+    revision_new_argument: str | None = Field(default=None, min_length=1, max_length=400)
 
     @model_validator(mode="after")
     def match_operation(self):
@@ -80,6 +82,9 @@ class RouteSignal(StrictRouteModel):
             raise ValueError("primary_route_revision_needs_step")
         if self.route_kind != "plan_revise" and self.step_number is not None:
             raise ValueError("primary_route_unexpected_step")
+        if self.route_kind != "plan_revise" and (self.revision_old_argument is not None
+                or self.revision_new_argument is not None):
+            raise ValueError("primary_route_unexpected_revision_arguments")
         if (self.route_kind == "clarify") != (self.clarification_question is not None):
             raise ValueError("primary_route_clarification_mismatch")
         return self
@@ -101,6 +106,8 @@ class BoundPrimaryProposal(StrictRouteModel):
     steps: list[BoundStep] = Field(default_factory=list)
     step_number: int | None = None
     clarification_question: str | None = None
+    revision_old_argument: str | None = None
+    revision_new_argument: str | None = None
 
 
 def adapt_legacy_route(value: str) -> RouteKind:
@@ -143,8 +150,14 @@ def bind_route_signal(signal: RouteSignal, message: str, *,
     if signal.route_kind == "plan_revise":
         if saved_step_count is None or signal.step_number > saved_step_count:
             raise PrimaryRouteRejected("primary_route_unbound_step")
-        # Exact ordinal/argument binding is a separate Host validation phase.
-        # Passing this check does NOT make a revision executable.
+        # A revision must bind both the old and replacement arguments to the
+        # current message. The existing Host apply_plan_revision validates the
+        # checkpoint, explicit step target and exact current stored argument.
+        if not (signal.revision_old_argument and signal.revision_new_argument):
+            raise PrimaryRouteRejected("primary_route_revision_arguments_missing")
+        if signal.revision_old_argument.casefold() not in message.casefold() or (
+                signal.revision_new_argument.casefold() not in message.casefold()):
+            raise PrimaryRouteRejected("primary_route_revision_arguments_unbound")
     if signal.route_kind == "plan_create":
         bound_steps = []
         for step in signal.steps:
@@ -165,7 +178,9 @@ def bind_route_signal(signal: RouteSignal, message: str, *,
         schema_version=ROUTE_SCHEMA_VERSION, route_kind=signal.route_kind,
         execution_scope=signal.execution_scope, effect_intent=signal.effect_intent,
         evidence=root, steps=bound_steps, step_number=signal.step_number,
-        clarification_question=signal.clarification_question)
+        clarification_question=signal.clarification_question,
+        revision_old_argument=signal.revision_old_argument,
+        revision_new_argument=signal.revision_new_argument)
 
 
 _PRIMARY_SYSTEM = (
@@ -177,7 +192,8 @@ _PRIMARY_SYSTEM = (
     "plan_resume: explicitly run remaining saved steps; use remaining_steps scope; "
     "never infer all_steps from a vague request. "
     "plan_revise: explicitly edit one saved step; include a step_number but do not "
-    "invent new arguments or authorize the change. "
+    "extract old and replacement arguments ONLY when both appear verbatim in "
+    "current_request; otherwise leave them null to request clarification. "
     "plan_cancel: explicitly cancel saved plan; no tool execution. "
     "plan_missing: user explicitly refers to executing an absent saved plan; "
     "absence is provisional until Host checks it. "
@@ -189,7 +205,8 @@ _PRIMARY_SYSTEM = (
     "Always copy a UNIQUE contiguous verbatim quote from current_request as evidence. "
     "Never use legacy alias 'other'. If unsure, clarify/reject, not an executable route. "
     "For plan_create output ordered steps with exact quote and grounded arguments. "
-    "For non-create routes steps must be empty; step_number only for plan_revise. "
+    "For non-create routes steps must be empty; step_number and revision_old_argument "
+    "and revision_new_argument only for plan_revise. "
     "Set scope/effect as follows: create/revise/cancel none+mutation_requested, "
     "execute_first first_step+read_only, resume remaining_steps+read_only, "
     "ordinary_tool none+read_only or mutation_requested, "
