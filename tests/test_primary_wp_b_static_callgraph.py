@@ -53,6 +53,9 @@ def test_primary_route_is_precedes_legacy_fallback():
             "result is None and settings.primary_route_v1_active"
     ]
     assert len(primary) == 1
-    assert primary[0].lineno < source.index(
-        "            unified_new_plan_decision = None"
-    )  # source offset is deliberately not a line number; below compares sections
+    legacy_boundary = next(
+        i for i, line in enumerate(source.splitlines(), 1)
+        if line.strip() == "unified_new_plan_decision = None"
+    )
+    assert primary[0].end_lineno < legacy_boundary, (
+        "Legacy fallback must remain outside the Primary scope")
