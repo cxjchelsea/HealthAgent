@@ -221,5 +221,32 @@ def test_model_validator_mismatch_keeps_single_safe_category():
         asyncio.run(propose_primary_route(provider, "model",
                                           "请创建计划", saved_plan_present=False))
     assert caught.value.validation_issues == [
-        {"field": "root", "category": "value_error"}]
+        {"field": "root", "category": "primary_route_steps_mismatch"}]
+    assert provider.calls == 1
+
+
+
+@pytest.mark.parametrize("candidate,reason", [
+    (signal("ordinary_tool", "请计算", effect_intent="none",
+            write_tool_name="create_task", write_arguments={"title": "秘密"}),
+     "primary_route_unexpected_write_contract"),
+    (signal("respond", "你好", effect_intent="read_only"),
+     "primary_route_scope_effect_mismatch"),
+    (signal("plan_cancel", "取消计划", effect_intent="mutation_requested",
+            step_number=1),
+     "primary_route_unexpected_step"),
+    (signal("clarify", "帮我看看这个"),
+     "primary_route_clarification_mismatch"),
+    (signal("ordinary_tool", "创建任务", effect_intent="mutation_requested"),
+     "primary_route_write_contract_missing"),
+])
+def test_route_invariants_produce_distinct_safe_diagnostic_codes(candidate, reason):
+    provider = Provider(candidate)
+    with pytest.raises(PrimaryRouteRejected) as caught:
+        asyncio.run(propose_primary_route(
+            provider, "model", candidate["quote"],
+            saved_plan_present=False))
+    assert str(caught.value) == "primary_route_invalid_signal"
+    assert caught.value.validation_issues == [
+        {"field": "root", "category": reason}]
     assert provider.calls == 1
