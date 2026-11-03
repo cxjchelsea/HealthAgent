@@ -43,9 +43,10 @@ def inspect_primary_write_reconciliation(session_factory, conversation_id: str) 
                 except (TypeError, ValueError):
                     projection = {}
                 task_id = projection.get("task_id")
-                task_present = bool(
-                    isinstance(task_id, str)
-                    and db.get(ConversationTask, task_id) is not None)
+                task = (db.get(ConversationTask, task_id)
+                        if isinstance(task_id, str) else None)
+                task_present = bool(task is not None
+                                    and task.conversation_id == conversation_id)
                 if not task_present:
                     assessment = "receipt_effect_conflict"
             summary.append({
