@@ -347,8 +347,18 @@ _PRIMARY_SYSTEM = (
     "Always copy a UNIQUE contiguous verbatim quote from current_request as evidence. "
     "Never use legacy alias 'other'. If unsure, clarify/reject, not an executable route. "
     "For plan_create output ordered steps with exact quote and grounded arguments. "
-    "For non-create routes steps must be empty; step_number and revision_old_argument "
-    "and revision_new_argument only for plan_revise. "
+    "OUTPUT-vs-CONTEXT BOUNDARY: saved_plan_steps in the input JSON is a "
+    "READ-ONLY Host snapshot used to understand an existing plan. NEVER "
+    "copy saved_plan_steps or any of its entries into the output field steps. "
+    "The output steps field is ONLY a proposed NEW plan definition and is "
+    "allowed nonempty ONLY for route_kind=plan_create. For plan_execute_first, "
+    "plan_resume, plan_revise, plan_cancel, plan_missing, ordinary_tool, "
+    "respond, clarify, clarify_response and reject, output steps=[] EXACTLY, "
+    "even when saved_plan_exists=true and saved_plan_steps is nonempty. "
+    "For FIRST or RESUME do not re-list or re-create existing steps; Host "
+    "loads and executes eligible checkpoint steps only after admission. "
+    "step_number and revision_old_argument and revision_new_argument only "
+    "for plan_revise. "
     "Set scope/effect as follows: create/revise/cancel none+mutation_requested, "
     "execute_first first_step+read_only, resume remaining_steps+read_only, "
     "ordinary_tool none+read_only or mutation_requested, "
@@ -399,6 +409,32 @@ _PRIMARY_SYSTEM += (
         "pending_write_tool_name": None,
     }, ensure_ascii=False)
     + " Never copy the example quote; copy a unique exact substring of the request."
+)
+
+# Explicit existing-plan example uses steps=[] even when the INPUT has a plan.
+# A model must propose a control intent, never echo the stored checkpoint.
+_PRIMARY_SYSTEM += (
+    " Existing-plan FIRST OUTPUT FORMAT EXAMPLE ONLY: "
+    + json.dumps({
+        "schema_version": ROUTE_SCHEMA_VERSION,
+        "route_kind": "plan_execute_first",
+        "quote": "只执行已保存计划的第一步",
+        "execution_scope": "first_step",
+        "effect_intent": "read_only",
+        "steps": [],
+        "step_number": None,
+        "clarification_question": None,
+        "revision_old_argument": None,
+        "revision_new_argument": None,
+        "write_tool_name": None,
+        "write_arguments": None,
+        "pending_write_tool_name": None,
+    }, ensure_ascii=False)
+    + " If current_request asks to run just the first saved step and "
+    "saved_plan_exists=true, this example shows the output field structure "
+    "only; replace quote with an exact unique substring of current_request. "
+    "For RESUME similarly use plan_resume/remaining_steps/read_only and "
+    "steps=[] regardless of the number of saved steps."
 )
 
 
