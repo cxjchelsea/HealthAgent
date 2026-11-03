@@ -112,6 +112,16 @@ def admit_primary_route_v1(
             if (type(n) is not int or n < 1 or n > len(steps)
                     or steps[n - 1]["status"] != "pending"):
                 return decide("deny", "primary_v1_revision_step_unavailable")
+            # A semantic proposal never grants permission to replace an
+            # arbitrary existing argument. Bind it to trusted Host snapshot
+            # before accepting a candidate. A mismatch remains fail-closed;
+            # do not strip prefixes or rewrite the model's claimed argument.
+            target = steps[n - 1]
+            if (target.get("expected_tool") != "calculate"
+                    or not isinstance(target.get("expected_arguments"), dict)
+                    or target["expected_arguments"].get("expression")
+                    != proposal.revision_old_argument):
+                return decide("deny", "primary_v1_revision_old_argument_mismatch")
             return decide("allow", "primary_v1_revision_candidate")
         if kind == "plan_cancel":
             return decide("allow", "primary_v1_cancel_candidate")
