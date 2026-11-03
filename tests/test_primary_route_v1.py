@@ -1,3 +1,4 @@
+import asyncio
 """Contract-level tests for work package 1 (no provider/network/tool execution)."""
 import json
 
@@ -138,32 +139,29 @@ def test_revision_needs_host_verified_step_number():
     assert result.step_number == 2
 
 
-@pytest.mark.asyncio
-async def test_exactly_one_semantic_model_call_no_legacy_fallback():
+def test_exactly_one_semantic_model_call_no_legacy_fallback():
     provider = Provider(signal(
         "ordinary_tool", "请计算", execution_scope="none",
         effect_intent="read_only"))
-    route = await propose_primary_route(provider, "model", "请计算 2+3",
-                                        saved_plan_present=False)
+    route = asyncio.run(propose_primary_route(provider, "model", "请计算 2+3",
+                                        saved_plan_present=False))
     assert route.route_kind == "ordinary_tool"
     assert provider.calls == 1
     assert provider.last_schema["properties"]["schema_version"]
 
 
-@pytest.mark.asyncio
-async def test_model_invalid_output_fails_closed_without_retry():
+def test_model_invalid_output_fails_closed_without_retry():
     provider = Provider(signal(route_kind="other"))
     with pytest.raises(PrimaryRouteRejected, match="primary_route_invalid_signal"):
-        await propose_primary_route(provider, "model", "你好",
-                                    saved_plan_present=False)
+        asyncio.run(propose_primary_route(provider, "model", "你好",
+                                    saved_plan_present=False))
     assert provider.calls == 1
 
 
-@pytest.mark.asyncio
-async def test_model_plan_evidence_invalid_fails_closed():
+def test_model_plan_evidence_invalid_fails_closed():
     provider = Provider(signal(
         "plan_cancel", "取消不存在的文字", effect_intent="mutation_requested"))
     with pytest.raises(PrimaryRouteRejected, match="primary_route_quote_not_found"):
-        await propose_primary_route(provider, "model", "取消当前计划",
-                                    saved_plan_present=True)
+        asyncio.run(propose_primary_route(provider, "model", "取消当前计划",
+                                    saved_plan_present=True))
     assert provider.calls == 1
