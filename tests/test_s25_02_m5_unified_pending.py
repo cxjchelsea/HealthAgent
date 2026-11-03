@@ -109,3 +109,55 @@ def test_pending_origin_is_not_sent_to_fresh_plan_primary(
                 assert json.loads(saved.snapshot) == original
             else:
                 assert saved is None
+
+
+def test_default_unified_old_task_pending_without_authority_never_dispatches(
+        tmp_path, monkeypatch):
+    """Old needs_input failure code cannot authorize a task mutation."""
+    from sqlalchemy import select
+    from services.db import ConversationTask, PendingWriteAuthority, AgentAttempt
+
+    settings = Settings(
+        database_url=f"sqlite:///{tmp_path / 'pending_write.db'}",
+        model_provider="ollama_proxy",
+        understanding_strategy="structured",
+        route_admission_mode="guarded",
+        m5_unified_route_enabled=True,
+    )
+
+    async def fake_complete(self, *, model, messages, response_schema=None):
+        return understood()
+
+    async def pending_answer(*args, **kwargs):
+        return "answer"
+
+    async def policy(message, interpretation):
+        return "read_only"
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("old Unified Pending attempted direct dispatch")
+
+    monkeypatch.setattr(HTTPUnderstandingModel, "complete", fake_complete)
+    monkeypatch.setattr("apps.api.main.classify_pending_reply", pending_answer)
+    monkeypatch.setattr("apps.api.main.execute_tool", forbidden)
+    monkeypatch.setattr("agent.primary_pending_readonly_v1.execute_tool", forbidden)
+    with TestClient(create_app(settings, execution_policy=policy)) as client:
+        cid = client.post("/conversations").json()["id"]
+        _, Session = database(settings.database_url)
+        with Session.begin() as db:
+            pending = Message(conversation_id=cid, role="assistant",
+                              content="请提供任务标题", status="partial")
+            db.add(pending)
+            db.flush()
+            db.add(Turn(conversation_id=cid, request_id="old-task-origin-001",
+                        state="partial", assistant_message_id=pending.id,
+                        failure_code="needs_input:create_task"))
+        resp = client.post(f"/conversations/{cid}/agent/messages", json={
+            "content": "提交测试报告",
+            "client_request_id": "old-task-reply-001"})
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["termination_reason"] == "pending_write_origin_unverified"
+        with Session() as db:
+            assert db.scalars(select(ConversationTask)).all() == []
+            assert db.scalars(select(AgentAttempt)).all() == []
+            assert db.scalars(select(PendingWriteAuthority)).all() == []
