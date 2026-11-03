@@ -344,6 +344,14 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                           "answer": "本轮显式普通操作未通过 Host 准入；没有执行工具或修改计划。",
                           "trace": [{"step": 0, "type": "explicit_ordinary_fenced"}],
                           "steps": 0}
+            # Pre-Primary Host-only decisions have no semantic owner; preserve
+            # that fact durably rather than inventing a Primary proposal.
+            if result is not None and settings.primary_route_v1_active:
+                record_primary_admission(
+                    session_factory=Session, conversation_id=cid,
+                    turn_id=turn_id, preturn_plan_raw=preturn_plan_raw,
+                    semantic_attempts=0,
+                    refusal_reason="primary_v1_host_only_precheck")
             v1_plan_control = None
             v1_primary_kind = None
             # Primary v1 owns auto real-provider Unified and explicit canary requests.
@@ -352,6 +360,11 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                 if (settings.effective_routing_profile != "unified"
                         or agent_decider is not None
                         or execution_policy is not None):
+                    record_primary_admission(
+                        session_factory=Session, conversation_id=cid,
+                        turn_id=turn_id, preturn_plan_raw=preturn_plan_raw,
+                        semantic_attempts=0,
+                        refusal_reason="primary_v1_incompatible_config")
                     result = {"run_id": turn_id, "status": "partial",
                               "termination_reason": "primary_v1_canary_incompatible",
                               "answer": "当前配置未满足 v1 独立试运行准入条件，未执行工具。",
