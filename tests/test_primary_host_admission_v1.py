@@ -54,13 +54,24 @@ def test_host_rejects_untrusted_preconditions(guarded, created):
     assert admit_primary_route_v1(p, facts(guarded=guarded, created=created)).disposition == "deny"
 
 
-def test_write_tool_is_never_authorized_by_memory_consent_alone():
-    p = bound("ordinary_tool", "创建任务", "创建任务", effect="mutation_requested")
+def test_bound_create_task_requires_proposal_and_host_admission():
+    message = "创建任务：提交测试报告"
+    p = bind_route_signal(RouteSignal.model_validate({
+        "schema_version": "primary-route-v1",
+        "route_kind": "ordinary_tool", "quote": message,
+        "effect_intent": "mutation_requested", "execution_scope": "none",
+        "write_tool_name": "create_task",
+        "write_arguments": {"title": "提交测试报告"},
+    }), message, saved_plan_present=False, pending_action=None)
     d = admit_primary_route_v1(p, PrimaryHostFacts(
         checkpoint=None, pending_action=None, pending_origin_verified=False,
-        guarded_mode=True, turn_created=True, write_consent=True))
-    assert d.disposition == "restrict"
-    assert d.execution_mode == "none"
+        guarded_mode=True, turn_created=True, write_consent=False))
+    assert d.disposition == "allow"
+    assert d.reason == "primary_v1_create_task_candidate"
+    blocked = admit_primary_route_v1(p, PrimaryHostFacts(
+        checkpoint=None, pending_action="create_task", pending_origin_verified=True,
+        guarded_mode=True, turn_created=True))
+    assert blocked.disposition == "restrict"
 
 
 @pytest.mark.parametrize("kind,scope,control", [
