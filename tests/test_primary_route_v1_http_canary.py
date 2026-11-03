@@ -123,26 +123,67 @@ def test_canary_ordinary_read_only_preserves_host_mode(tmp_path, monkeypatch):
     assert calls[0]["ordinary_attempt_journal"] is not None
 
 
-def test_canary_ordinary_write_remains_unwired(tmp_path, monkeypatch):
-    async def mutation(*args, **kwargs):
+def test_canary_create_task_atomic_write_and_replay_denial(tmp_path, monkeypatch):
+    from services.db import AgentAttempt, ConversationTask
+    from sqlalchemy import select
+    message = "创建任务：提交测试报告"
+
+    async def task_route(*args, **kwargs):
         return bind_route_signal(RouteSignal.model_validate({
-            "schema_version": "primary-route-v1", "route_kind": "ordinary_tool",
-            "quote": "创建任务", "execution_scope": "none",
+            "schema_version": "primary-route-v1",
+            "route_kind": "ordinary_tool", "quote": message,
+            "execution_scope": "none",
             "effect_intent": "mutation_requested",
-        }), "创建任务", saved_plan_present=False, pending_action=None)
+            "write_tool_name": "create_task",
+            "write_arguments": {"title": "提交测试报告"},
+        }), message, saved_plan_present=False, pending_action=None)
+
+    def no_agent(*args, **kwargs):
+        raise AssertionError("write must not enter unbounded AgentLoop")
+
+    monkeypatch.setattr("apps.api.main.propose_primary_route", task_route)
+    monkeypatch.setattr("apps.api.main.AgentLoop", no_agent)
+    cfg = settings(tmp_path)
+    with TestClient(create_app(cfg)) as client:
+        cid = client.post("/conversations").json()["id"]
+        request = {"content": message, "client_request_id": "v1-task-write-001"}
+        result = client.post(f"/conversations/{cid}/agent/messages", json=request)
+        assert result.status_code == 200, result.text
+        assert result.json()["termination_reason"] == "primary_v1_task_created"
+        assert result.json()["status"] == "completed"
+        replay = client.post(f"/conversations/{cid}/agent/messages", json=request)
+        assert replay.status_code == 409
+        _, Session = database(cfg.database_url)
+        with Session() as db:
+            tasks = db.scalars(select(ConversationTask).where(
+                ConversationTask.conversation_id == cid)).all()
+            attempts = db.scalars(select(AgentAttempt).where(
+                AgentAttempt.conversation_id == cid)).all()
+            assert len(tasks) == len(attempts) == 1
+            assert tasks[0].title == "提交测试报告"
+            assert attempts[0].status == "succeeded"
+            receipt = json.loads(attempts[0].result_projection)
+            assert receipt["task_id"] == tasks[0].id
+
+
+def test_canary_unbound_write_is_not_executable(tmp_path, monkeypatch):
+    from agent.primary_route_v1 import PrimaryRouteRejected
+
+    async def invalid_write(*args, **kwargs):
+        raise PrimaryRouteRejected("primary_route_write_arguments_unbound")
 
     def forbidden(*args, **kwargs):
-        raise AssertionError("mutation must not reach AgentLoop")
+        raise AssertionError("unbound write must not run tools")
 
-    monkeypatch.setattr("apps.api.main.propose_primary_route", mutation)
+    monkeypatch.setattr("apps.api.main.propose_primary_route", invalid_write)
     monkeypatch.setattr("apps.api.main.AgentLoop", forbidden)
     cfg = settings(tmp_path)
     with TestClient(create_app(cfg)) as client:
         cid = client.post("/conversations").json()["id"]
         resp = client.post(f"/conversations/{cid}/agent/messages", json={
-            "content": "创建任务", "client_request_id": "v1-mutation-001"})
+            "content": "创建任务", "client_request_id": "v1-unbound-write-001"})
         assert resp.status_code == 200, resp.text
-        assert resp.json()["termination_reason"] == "primary_v1_admission_not_wired"
+        assert resp.json()["termination_reason"] == "primary_v1_proposal_refused"
 
 
 def test_canary_invalid_primary_cannot_fall_back(tmp_path, monkeypatch):
