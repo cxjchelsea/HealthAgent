@@ -408,6 +408,7 @@ async def propose_primary_route(provider, model: str, message: str, *,
                                 pending_action: str | None = None,
                                 pending_origin_verified: bool = False,
                                 saved_step_count: int | None = None,
+                                saved_plan_steps: list[dict] | None = None,
                                 recent_context: list | None = None
                                 ) -> BoundPrimaryProposal:
     """Exactly one model selection invocation; no legacy semantic fallback.
@@ -419,6 +420,7 @@ async def propose_primary_route(provider, model: str, message: str, *,
         raise PrimaryRouteRejected("primary_route_empty_message")
     payload = {
         "current_request": message, "saved_plan_exists": saved_plan_present,
+        "saved_plan_steps": (saved_plan_steps or [])[:8] if saved_plan_present else [],
         "pending_action": pending_action if pending_origin_verified else None,
         "recent_context": (recent_context or [])[-6:],
     }
