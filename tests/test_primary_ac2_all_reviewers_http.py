@@ -69,11 +69,12 @@ def _forbidden(*args, **kwargs):
     raise AssertionError("AC2: retired semantic reviewer was called")
 
 
+@pytest.mark.parametrize("routing_profile", ["auto", "unified"])
 @pytest.mark.parametrize("scenario", [
     "create", "cancel", "write", "respond", "reject", "pending_mcp",
 ])
-def test_auto_unified_never_invokes_any_legacy_reviewer(
-        tmp_path, monkeypatch, scenario):
+def test_unified_never_invokes_any_legacy_reviewer(
+        tmp_path, monkeypatch, scenario, routing_profile):
     for name in LEGACY_REVIEWERS:
         monkeypatch.setattr("apps.api.main." + name, _forbidden)
     # The general Understanding and policy classifiers also cannot independently
@@ -125,7 +126,7 @@ def test_auto_unified_never_invokes_any_legacy_reviewer(
 
     settings = Settings(
         database_url=f"sqlite:///{tmp_path / (scenario + '.db')}",
-        model_provider="ollama_proxy")
+        model_provider="ollama_proxy", routing_profile=routing_profile)
     assert settings.primary_route_v1_active
     with TestClient(create_app(settings)) as client:
         cid = client.post("/conversations").json()["id"]
