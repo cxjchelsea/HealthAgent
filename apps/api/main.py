@@ -327,6 +327,7 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                           "trace": [{"step": 0, "type": "explicit_ordinary_fenced"}],
                           "steps": 0}
             v1_plan_control = None
+            v1_primary_kind = None
             # Explicit v1 opt-in only. Never silently replace Unified on main.
             # The canary either uses verified Host create/cancel gates or stops
             # safely: no second semantic model, Legacy fallback, or AgentLoop.
@@ -355,6 +356,7 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                             saved_step_count=(len(existing_checkpoint.get("steps", []))
                                               if existing_checkpoint else None),
                             recent_context=context)
+                        v1_primary_kind = primary_proposal.route_kind
                         if primary_proposal.route_kind in {
                                 "plan_execute_first", "plan_resume"}:
                             requested_control = (
@@ -420,6 +422,24 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                         execution_mode="read_only",
                                         memory_write_consent=body.memory_write_consent,
                                         plan_control=requested_control)
+                        elif primary_proposal.route_kind == "respond":
+                            # Answer generation is post-admission AgentLoop work,
+                            # not another semantic route owner. Empty tools in
+                            # respond_only guarantee no business side effects.
+                            result = await AgentLoop(
+                                NativeToolDecision(settings),
+                                task_store=ConversationTaskStore(Session, cid),
+                                memory_store=MemoryStore(Session, uid,
+                                                         write_allowed=False),
+                                mcp_client=StdioMCPClient(),
+                                skill_strategy=settings.skill_strategy,
+                                skill_budget_chars=settings.skill_budget_chars,
+                            ).run(body.content, history=context,
+                                  plan_checkpoint=existing_checkpoint,
+                                  understanding_result=None,
+                                  execution_mode="respond_only",
+                                  memory_write_consent=False,
+                                  plan_control=None)
                         elif (primary_proposal.route_kind == "ordinary_tool"
                               and primary_proposal.effect_intent == "read_only"):
                             # Host restriction: AgentLoop may select among
@@ -465,6 +485,16 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                   "answer": "本轮主语义提案未通过验证，未执行工具或修改计划。",
                                   "trace": [{"step": 0, "type": "primary_route_v1_denied"}],
                                   "steps": 0}
+            # One non-sensitive entry for the bound Primary route, regardless
+            # of which existing Host executor produced the final result.
+            # This is diagnostic only, not permission or durable authority.
+            if settings.primary_route_v1_canary_enabled and v1_primary_kind is not None:
+                route_trace = {"step": 0, "type": "primary_route_v1",
+                               "schema_version": "primary-route-v1",
+                               "route_kind": v1_primary_kind}
+                if not any(t.get("type") == "primary_route_v1"
+                           for t in result.get("trace", [])):
+                    result["trace"] = [route_trace, *result.get("trace", [])]
             unified_new_plan_decision = None
             # Pending tool arguments and open clarifications belong to the
             # verified preturn origin; they cannot become a fresh plan route.
