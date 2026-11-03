@@ -50,13 +50,13 @@ def test_schema_rejects_wrong_version_alias_and_payload(wrong):
 @pytest.mark.parametrize("legacy,canonical", [
     ("create", "plan_create"), ("revise", "plan_revise"),
     ("execute_first", "plan_execute_first"), ("resume", "plan_resume"),
-    ("cancel", "plan_cancel"), ("plan_only", "plan_create"),
+    ("cancel", "plan_cancel"),
 ])
 def test_legacy_adapter_is_explicit(legacy, canonical):
     assert adapt_legacy_route(legacy) == canonical
 
 
-@pytest.mark.parametrize("unmapped", ["other", "agent_loop", "respond", "ordinary_tool", ""])
+@pytest.mark.parametrize("unmapped", ["other", "agent_loop", "respond", "ordinary_tool", "plan_only", ""])
 def test_legacy_adapter_must_not_guess(unmapped):
     with pytest.raises(PrimaryRouteRejected, match="primary_route_legacy_unmapped"):
         adapt_legacy_route(unmapped)
