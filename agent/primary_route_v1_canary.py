@@ -8,6 +8,8 @@ A model proposal is never its own authorization.
 from agent.m4_guarded_cancel import admit_guarded_plan_cancel
 from agent.m4_guarded_plan import admit_guarded_plan_create
 from agent.plan_intent import PlanRequest, build_plan_checkpoint
+from agent.plan_revision_review import RevisionProposal, apply_plan_revision
+from agent.planning import PlanLedger
 from agent.primary_route_v1 import BoundPrimaryProposal
 
 
@@ -49,6 +51,37 @@ def admit_v1_canary(proposal: BoundPrimaryProposal, *, message: str,
                 "plan_events": [{"event": "plan_created",
                                  "revision": new_checkpoint["revision"]}],
                 "plan_checkpoint": new_checkpoint}
+
+    if kind == "plan_revise":
+        if checkpoint is None:
+            return deny("primary_v1_missing_plan", "没有可修改的已保存计划。")
+        try:
+            snapshot = PlanLedger.restore(checkpoint).snapshot()
+            n = proposal.step_number
+            if type(n) is not int or not 1 <= n <= len(snapshot):
+                return deny("primary_v1_revision_unbound", "修改步骤没有通过绑定验证。")
+            old, new = proposal.revision_old_argument, proposal.revision_new_argument
+            if not old or not new:
+                return deny("primary_v1_revision_unbound", "请明确原表达式和修改后的表达式。")
+            revision = apply_plan_revision(checkpoint, message, RevisionProposal(
+                intent="revise", edit_requested=True, step_number=n,
+                expected_tool="calculate", old_argument=old,
+                new_argument=new))
+        except (ValueError, TypeError, KeyError):
+            revision = None
+        if revision is None:
+            return deny("plan_revision_conflict",
+                        "计划修改未通过步骤和原参数绑定校验；原计划保持不变。")
+        updated = revision["checkpoint"]
+        # Final durable plan CAS occurs in the Turn commit in apps/api/main.py.
+        return {"run_id": turn_id, "status": "partial",
+                "termination_reason": "plan_revised_pending_execution",
+                "answer": "已更新计划指定步骤，其余步骤保持不变；未执行工具。",
+                "trace": trace + [{"step": 0, "type": "plan_revised"}],
+                "steps": 0, "plan": updated["steps"],
+                "plan_checkpoint": updated,
+                "plan_revision": updated["revision"],
+                "plan_events": [revision["event"]]}
 
     if kind == "plan_cancel":
         if checkpoint is None:
