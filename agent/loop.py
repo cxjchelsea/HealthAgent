@@ -77,7 +77,7 @@ class AgentState(TypedDict):
 
 class AgentLoop:
     def __init__(self, decider: Any, max_steps: int = 6, clock=None, task_store=None, memory_store=None, mcp_client=None, skill_strategy='dynamic', skill_budget_chars=600, execution_guard=None, dispatch_journal=None,
-                 ordinary_attempt_journal=None, ordinary_attempt_session_factory=None, candidate_selector=None, selector_model=None):
+                 ordinary_attempt_journal=None, ordinary_attempt_session_factory=None, candidate_selector=None, selector_model=None, governed_ordinary_writes=False):
         if max_steps < 1 or max_steps > 20:
             raise ValueError("max_steps must be 1..20")
         self.decider = decider
@@ -94,6 +94,7 @@ class AgentLoop:
         self.dispatch_journal = dispatch_journal
         self.ordinary_attempt_journal = ordinary_attempt_journal
         self.ordinary_attempt_session_factory = ordinary_attempt_session_factory
+        self.governed_ordinary_writes = governed_ordinary_writes
         flow = StateGraph(AgentState)
         flow.add_node("decide", self._decide)
         flow.add_node("tools", self._tools)
@@ -314,7 +315,15 @@ class AgentLoop:
                 # Saved-plan tools use M4 dispatch exclusively (see run()).
                 journal = self.ordinary_attempt_journal
                 sessions = self.ordinary_attempt_session_factory
-                if (journal is not None and sessions is not None and name in
+                if (self.governed_ordinary_writes
+                        and name in {"create_task", "save_memory"}):
+                    # The model tool call is NOT a Primary/Host write permit.
+                    # In Unified the only effectful writers are the
+                    # source-bound, transaction-governed Host executors.
+                    # Legacy/isolated AgentLoop tests retain compatibility.
+                    result = {"ok": False,
+                              "error": "write_requires_primary_host_authorization"}
+                elif (journal is not None and sessions is not None and name in
                         {"create_task", "save_memory"} and
                         journal.has_unresolved_writes(sessions)):
                     result = {"ok": False,
