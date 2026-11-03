@@ -153,7 +153,7 @@ class AgentLoop:
             # An independently Host-admitted ordinary request does not inherit
             # the saved plan's incomplete status. Do not report the user's
             # successful unrelated tool work as a plan-execution failure.
-            pending = ([] if state["independent_ordinary"] else
+            pending = ([] if state.get("independent_ordinary", False) else
                        [s["id"] for s in state["plan"].snapshot()
                         if s["status"] != "completed"])
             superseded = [step_id for step_id in state["superseded_step_ids"]
@@ -410,7 +410,7 @@ class AgentLoop:
             if name == "recall_memory":
                 state["memory_recall_observed"] = True
             if (name not in {"propose_plan", "revise_plan", "complete_plan_step"}
-                    and not state["independent_ordinary"]):
+                    and not state.get("independent_ordinary", False)):
                 state["plan"].observe(name, result, function.get("arguments"))
                 if result.get("ok"):
                     state["last_success"] = {"name": name, **result}
