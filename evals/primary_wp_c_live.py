@@ -129,6 +129,7 @@ def main():
                     # fixed-category error code; never capture raw LLM output.
                     "primary_refusal_code": data.get("primary_v1_refusal_code"),
                     "primary_validation_issues": data.get("primary_v1_validation_issues", []),
+                    "primary_route_triple": data.get("primary_v1_route_triple"),
                     "turn_id": turn_id, "request_id": request_id,
                     "duration_s": elapsed, "categories": _categories(response.headers),
                     "model_http_attempts": response.headers.get(
