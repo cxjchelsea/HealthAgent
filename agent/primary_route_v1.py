@@ -7,7 +7,7 @@ This module deliberately has no tool, database, or AgentLoop imports.
 import json
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from agent.route_shadow import EvidenceSpan
 from agent.m5_model_call_metrics import attributed
@@ -34,6 +34,43 @@ LEGACY_ROUTE_ADAPTER = {
 
 class PrimaryRouteRejected(ValueError):
     """Safe reason codes only; no user message or raw model content."""
+
+    def __init__(self, code: str, *, validation_issues: list[dict] | None = None):
+        super().__init__(code)
+        self.validation_issues = validation_issues or []
+
+
+# Include only contractual field names and validator categories. Neither raw
+# model output nor Pydantic messages/ctx/input are allowed into diagnostics.
+_ROUTE_DIAGNOSTIC_FIELDS = frozenset({
+    "schema_version", "route_kind", "quote", "execution_scope",
+    "effect_intent", "steps", "step_number", "clarification_question",
+    "revision_old_argument", "revision_new_argument", "write_tool_name",
+    "write_arguments", "pending_write_tool_name", "goal", "tool_name",
+    "arguments",
+})
+_ROUTE_DIAGNOSTIC_TYPES = frozenset({
+    "missing", "extra_forbidden", "literal_error", "string_type",
+    "list_type", "dict_type", "model_type", "int_type", "int_parsing",
+    "greater_than_equal", "less_than_equal", "string_too_short",
+    "string_too_long", "too_long", "too_short", "value_error",
+    "json_invalid", "json_type", "none_required",
+})
+
+
+def safe_route_validation_issues(exc: ValidationError) -> list[dict]:
+    """Bounded schema diagnostics; never include values, quotes or messages."""
+    result = []
+    for error in exc.errors(include_input=False, include_url=False)[:8]:
+        loc = error.get("loc", ())
+        fields = [item for item in loc
+                  if isinstance(item, str) and item in _ROUTE_DIAGNOSTIC_FIELDS]
+        kind = error.get("type")
+        result.append({
+            "field": ".".join(fields[:3]) if fields else "root",
+            "category": kind if kind in _ROUTE_DIAGNOSTIC_TYPES else "other",
+        })
+    return result
 
 
 class StrictRouteModel(BaseModel):
@@ -290,6 +327,10 @@ async def propose_primary_route(provider, model: str, message: str, *,
         response_schema=RouteSignal.model_json_schema())
     try:
         signal = RouteSignal.model_validate_json(raw)
+    except ValidationError as exc:
+        raise PrimaryRouteRejected(
+            "primary_route_invalid_signal",
+            validation_issues=safe_route_validation_issues(exc)) from exc
     except ValueError as exc:
         raise PrimaryRouteRejected("primary_route_invalid_signal") from exc
     return bind_route_signal(
