@@ -140,3 +140,58 @@ def test_evidence_owner_scoped_and_cannot_be_mutated(tmp_path, monkeypatch):
                 preturn_plan_raw=None, refusal_reason="retry", semantic_attempts=0)
         with Session() as db:
             assert db.get(PrimaryRouteEvidence, tid).disposition == "allow"
+
+
+
+def test_provider_failure_is_durable_refusal_without_legacy(tmp_path, monkeypatch):
+    cfg = _settings(tmp_path)
+
+    async def unavailable(*args, **kwargs):
+        raise RuntimeError("simulated_model_transport_failure")
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("cannot execute or invoke second semantic owner")
+
+    monkeypatch.setattr("apps.api.main.propose_primary_route", unavailable)
+    monkeypatch.setattr("apps.api.main.propose_new_plan_route", forbidden)
+    monkeypatch.setattr("apps.api.main.execute_primary_write_v1", forbidden)
+    with TestClient(create_app(cfg)) as client:
+        cid = client.post("/conversations").json()["id"]
+        response = client.post(f"/conversations/{cid}/agent/messages", json={
+            "content": MESSAGE, "client_request_id": "primary-provider-failed-001"})
+        assert response.status_code == 503, response.text
+        tid = response.json()["detail"]["turn_id"]
+        diag = client.get(f"/conversations/{cid}/turns/{tid}/diagnostics")
+        assert diag.status_code == 200, diag.text
+        record = diag.json()["primary_route_evidence"]
+        assert record["route_kind"] is None
+        assert record["disposition"] == "refused"
+        assert record["admission_reason"] == "primary_v1_admission_unavailable"
+        with database(cfg.database_url)[1]() as db:
+            assert db.scalars(select(ConversationTask)).all() == []
+
+
+def test_exception_after_admission_never_overwrites_original_record(
+        tmp_path, monkeypatch):
+    cfg = _settings(tmp_path)
+
+    async def primary(*args, **kwargs):
+        return _proposal()
+
+    def crashed(*args, **kwargs):
+        raise RuntimeError("simulated_pre_effect_crash")
+
+    monkeypatch.setattr("apps.api.main.propose_primary_route", primary)
+    monkeypatch.setattr("apps.api.main.execute_primary_write_v1", crashed)
+    with TestClient(create_app(cfg)) as client:
+        cid = client.post("/conversations").json()["id"]
+        response = client.post(f"/conversations/{cid}/agent/messages", json={
+            "content": MESSAGE, "client_request_id": "primary-crash-after-admit-001"})
+        assert response.status_code == 503, response.text
+        tid = response.json()["detail"]["turn_id"]
+        diag = client.get(f"/conversations/{cid}/turns/{tid}/diagnostics")
+        assert diag.status_code == 200
+        assert diag.json()["primary_route_evidence"]["disposition"] == "allow"
+        with database(cfg.database_url)[1]() as db:
+            assert len(db.scalars(select(PrimaryRouteEvidence)).all()) == 1
+            assert db.scalars(select(ConversationTask)).all() == []
