@@ -5,7 +5,7 @@ it never treats the model's declared intent as authorization to mutate state.
 This module deliberately has no tool, database, or AgentLoop imports.
 """
 import json
-from typing import Literal
+from typing import Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from pydantic_core import PydanticCustomError
@@ -36,9 +36,11 @@ LEGACY_ROUTE_ADAPTER = {
 class PrimaryRouteRejected(ValueError):
     """Safe reason codes only; no user message or raw model content."""
 
-    def __init__(self, code: str, *, validation_issues: list[dict] | None = None):
+    def __init__(self, code: str, *, validation_issues: list[dict] | None = None,
+                 route_triple: dict | None = None):
         super().__init__(code)
         self.validation_issues = validation_issues or []
+        self.route_triple = route_triple
 
 
 # Include only contractual field names and validator categories. Neither raw
@@ -67,6 +69,29 @@ _ROUTE_DIAGNOSTIC_TYPES = frozenset({
     "primary_route_pending_write_invalid",
     "primary_route_clarification_mismatch",
 })
+
+
+def safe_route_triple(raw: str, issues: list[dict]) -> dict | None:
+    """Only fixed enum labels; never surface raw provider text or arguments."""
+    if not any(x["category"] == "primary_route_scope_effect_mismatch"
+               for x in issues):
+        return None
+    try:
+        proposed = json.loads(raw)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(proposed, dict):
+        return None
+    candidates = {
+        "route_kind": frozenset(get_args(RouteKind)),
+        "execution_scope": frozenset(get_args(Scope)),
+        "effect_intent": frozenset(get_args(Effect)),
+    }
+    return {
+        field: value if isinstance(value := proposed.get(field), str)
+        and value in valid else "invalid"
+        for field, valid in candidates.items()
+    }
 
 
 def safe_route_validation_issues(exc: ValidationError) -> list[dict]:
@@ -378,9 +403,11 @@ async def propose_primary_route(provider, model: str, message: str, *,
     try:
         signal = RouteSignal.model_validate_json(raw)
     except ValidationError as exc:
+        issues = safe_route_validation_issues(exc)
         raise PrimaryRouteRejected(
             "primary_route_invalid_signal",
-            validation_issues=safe_route_validation_issues(exc)) from exc
+            validation_issues=issues,
+            route_triple=safe_route_triple(raw, issues)) from exc
     except ValueError as exc:
         raise PrimaryRouteRejected("primary_route_invalid_signal") from exc
     return bind_route_signal(
