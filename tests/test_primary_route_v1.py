@@ -295,8 +295,8 @@ def test_mismatched_scope_still_fails_closed_without_repair():
 def test_scope_mismatch_exposes_only_allowlisted_enum_triple():
     secret = "dont-leak-secret-literal-724"
     provider = Provider(signal(
-        "ordinary_tool", "请计算", execution_scope="first_step",
-        effect_intent="read_only", extra_private=secret))
+        "ordinary_tool", secret, execution_scope="first_step",
+        effect_intent="read_only"))
     with pytest.raises(PrimaryRouteRejected) as caught:
         asyncio.run(propose_primary_route(
             provider, "model", "请计算 2+3", saved_plan_present=False))
