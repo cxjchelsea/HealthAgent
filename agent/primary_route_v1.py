@@ -10,6 +10,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from agent.route_shadow import EvidenceSpan
+from agent.m5_model_call_metrics import attributed
 
 ROUTE_SCHEMA_VERSION = "primary-route-v1"
 RouteKind = Literal[
@@ -214,6 +215,7 @@ _PRIMARY_SYSTEM = (
 )
 
 
+@attributed("primary")
 async def propose_primary_route(provider, model: str, message: str, *,
                                 saved_plan_present: bool,
                                 pending_action: str | None = None,
