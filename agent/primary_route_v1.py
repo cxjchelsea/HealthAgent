@@ -24,7 +24,7 @@ Effect = Literal["none", "read_only", "mutation_requested"]
 LEGACY_ROUTE_ADAPTER = {
     "create": "plan_create", "revise": "plan_revise",
     "execute_first": "plan_execute_first", "resume": "plan_resume",
-    "cancel": "plan_cancel", "plan_only": "plan_create",
+    "cancel": "plan_cancel",
     "plan_create": "plan_create", "plan_revise": "plan_revise",
     "plan_execute_first": "plan_execute_first", "plan_resume": "plan_resume",
     "plan_cancel": "plan_cancel", "plan_missing": "plan_missing",
