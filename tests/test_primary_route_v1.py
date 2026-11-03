@@ -289,3 +289,39 @@ def test_mismatched_scope_still_fails_closed_without_repair():
         "category": "primary_route_scope_effect_mismatch",
     }]
     assert provider.calls == 1
+
+
+
+def test_scope_mismatch_exposes_only_allowlisted_enum_triple():
+    secret = "dont-leak-secret-literal-724"
+    provider = Provider(signal(
+        "ordinary_tool", "请计算", execution_scope="first_step",
+        effect_intent="read_only", extra_private=secret))
+    with pytest.raises(PrimaryRouteRejected) as caught:
+        asyncio.run(propose_primary_route(
+            provider, "model", "请计算 2+3", saved_plan_present=False))
+    # Extra fields are rejected; the root mismatch still reports bounded
+    # public enum labels. Untrusted values never enter a diagnostic.
+    assert caught.value.route_triple == {
+        "route_kind": "ordinary_tool", "execution_scope": "first_step",
+        "effect_intent": "read_only"}
+    assert secret not in json.dumps(caught.value.route_triple)
+    assert provider.calls == 1
+
+
+def test_untrusted_route_triple_values_are_never_returned():
+    from agent.primary_route_v1 import safe_route_triple
+    secret = "private-part-abc-7123"
+    data = {
+        "route_kind": secret,
+        "execution_scope": "single_tool",
+        "effect_intent": secret,
+        "quote": secret,
+    }
+    issues = [{"field": "root",
+               "category": "primary_route_scope_effect_mismatch"}]
+    assert safe_route_triple(json.dumps(data), issues) == {
+        "route_kind": "invalid",
+        "execution_scope": "invalid",
+        "effect_intent": "invalid"}
+    assert safe_route_triple(json.dumps(data), []) is None
