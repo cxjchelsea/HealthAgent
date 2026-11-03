@@ -43,6 +43,10 @@ jobs:
         env:
           TEST_POSTGRES_URL: postgresql+psycopg://healthagent:ci_local_only@localhost:5432/healthagent
         run: python -m pytest -q -rs tests/test_s25_02_m3_postgres_claim_concurrency.py
+      - name: AC4 v1 PostgreSQL subprocess write crash boundaries
+        env:
+          TEST_POSTGRES_URL: postgresql+psycopg://healthagent:ci_local_only@localhost:5432/healthagent
+        run: python -m pytest -q -rs tests/test_primary_ac4_postgres_process_crash.py
       - name: M4 isolated PostgreSQL subprocess crash and recovery
         env:
           TEST_POSTGRES_URL: postgresql+psycopg://healthagent:ci_local_only@localhost:5432/healthagent
