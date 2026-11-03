@@ -9,19 +9,24 @@ class MemoryStore:
         self.owner_id = owner_id
         self.write_allowed = write_allowed
 
-    def put(self, key, value):
+    def put_in_session(self, db, key, value):
+        """Caller owns atomic consent-guarded memory + receipt transaction."""
         if not self.write_allowed:
             return {"ok": False, "error": "memory_write_requires_user_consent"}
+        item = db.scalar(select(UserMemory).where(
+            UserMemory.owner_id == self.owner_id, UserMemory.key == key))
+        if item is None:
+            item = UserMemory(id=str(uuid.uuid4()), owner_id=self.owner_id,
+                              key=key, value=value)
+            db.add(item)
+        else:
+            item.value = value
+        db.flush()
+        return {"ok": True, "key": key, "saved": True}
+
+    def put(self, key, value):
         with self.Session.begin() as db:
-            item = db.scalar(select(UserMemory).where(
-                UserMemory.owner_id == self.owner_id, UserMemory.key == key))
-            if item is None:
-                item = UserMemory(id=str(uuid.uuid4()), owner_id=self.owner_id,
-                                  key=key, value=value)
-                db.add(item)
-            else:
-                item.value = value
-            return {"ok": True, "key": key, "saved": True}
+            return self.put_in_session(db, key, value)
 
     def get(self, key):
         with self.Session() as db:
