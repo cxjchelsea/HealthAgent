@@ -58,6 +58,8 @@ class RouteSignal(StrictRouteModel):
     clarification_question: str | None = Field(default=None, min_length=1, max_length=500)
     revision_old_argument: str | None = Field(default=None, min_length=1, max_length=400)
     revision_new_argument: str | None = Field(default=None, min_length=1, max_length=400)
+    write_tool_name: Literal["create_task"] | None = None
+    write_arguments: dict | None = None
 
     @model_validator(mode="after")
     def match_operation(self):
@@ -86,6 +88,12 @@ class RouteSignal(StrictRouteModel):
         if self.route_kind != "plan_revise" and (self.revision_old_argument is not None
                 or self.revision_new_argument is not None):
             raise ValueError("primary_route_unexpected_revision_arguments")
+        if self.route_kind == "ordinary_tool" and self.effect_intent == "mutation_requested":
+            if self.write_tool_name != "create_task" or not isinstance(
+                    self.write_arguments, dict) or set(self.write_arguments) != {"title"}:
+                raise ValueError("primary_route_write_contract_missing")
+        elif self.write_tool_name is not None or self.write_arguments is not None:
+            raise ValueError("primary_route_unexpected_write_contract")
         if (self.route_kind == "clarify") != (self.clarification_question is not None):
             raise ValueError("primary_route_clarification_mismatch")
         return self
@@ -109,6 +117,8 @@ class BoundPrimaryProposal(StrictRouteModel):
     clarification_question: str | None = None
     revision_old_argument: str | None = None
     revision_new_argument: str | None = None
+    write_tool_name: Literal["create_task"] | None = None
+    write_arguments: dict | None = None
 
 
 def adapt_legacy_route(value: str) -> RouteKind:
@@ -159,6 +169,21 @@ def bind_route_signal(signal: RouteSignal, message: str, *,
         if signal.revision_old_argument.casefold() not in message.casefold() or (
                 signal.revision_new_argument.casefold() not in message.casefold()):
             raise PrimaryRouteRejected("primary_route_revision_arguments_unbound")
+    if signal.route_kind == "ordinary_tool" and signal.effect_intent == "mutation_requested":
+        from agent.tools import SCHEMAS
+        try:
+            checked = SCHEMAS["create_task"].model_validate(
+                signal.write_arguments).model_dump()
+        except (ValueError, TypeError) as exc:
+            raise PrimaryRouteRejected("primary_route_write_arguments_invalid") from exc
+        title = checked["title"]
+        if (title.casefold() not in signal.quote.casefold()
+                or title.casefold() not in message.casefold()):
+            raise PrimaryRouteRejected("primary_route_write_arguments_unbound")
+        # No grammar classifies intent here. The quote must span the proposed
+        # action and the complete bound title, rather than an unbound title only.
+        if signal.quote.strip().casefold() == title.strip().casefold():
+            raise PrimaryRouteRejected("primary_route_write_action_unbound")
     if signal.route_kind == "plan_create":
         bound_steps = []
         for step in signal.steps:
@@ -181,7 +206,9 @@ def bind_route_signal(signal: RouteSignal, message: str, *,
         evidence=root, steps=bound_steps, step_number=signal.step_number,
         clarification_question=signal.clarification_question,
         revision_old_argument=signal.revision_old_argument,
-        revision_new_argument=signal.revision_new_argument)
+        revision_new_argument=signal.revision_new_argument,
+        write_tool_name=signal.write_tool_name,
+        write_arguments=signal.write_arguments)
 
 
 _PRIMARY_SYSTEM = (
@@ -199,8 +226,12 @@ _PRIMARY_SYSTEM = (
     "plan_cancel: explicitly cancel saved plan; no tool execution. "
     "plan_missing: user explicitly refers to executing an absent saved plan; "
     "absence is provisional until Host checks it. "
-    "ordinary_tool: independent tool work, including calculations, task/memory "
-    "commands or references, even with saved plan present. No concrete tool choice. "
+    "ordinary_tool: independent tool work, including calculations and references "
+    "even with saved plan present. For a create_task WRITE only, set "
+    "effect_intent=mutation_requested, write_tool_name=create_task and "
+    "write_arguments with exactly a title quoted verbatim within the route quote. "
+    "For read-only tools set write_tool_name/write_arguments null. "
+    "Do not invent titles, do not propose save_memory as an executable write. "
     "respond: explanation only; clarify: request is ambiguous or missing a required "
     "argument, include clarification_question; clarify_response: reply to a "
     "verified pending question; reject: no supported route. "
