@@ -74,6 +74,7 @@ class AgentState(TypedDict):
     structured_mode: bool
     failed_plan_attempts: int
     user_request: str
+    independent_ordinary: bool
 
 class AgentLoop:
     def __init__(self, decider: Any, max_steps: int = 6, clock=None, task_store=None, memory_store=None, mcp_client=None, skill_strategy='dynamic', skill_budget_chars=600, execution_guard=None, dispatch_journal=None,
@@ -149,8 +150,12 @@ class AgentLoop:
                         "status": "partial", "termination_reason": "memory_recall_unverified",
                         "traces": state["traces"] + [{
                             "step": iteration, "type": "memory_recall_unverified"}]}
-            pending = [s["id"] for s in state["plan"].snapshot()
-                       if s["status"] != "completed"]
+            # An independently Host-admitted ordinary request does not inherit
+            # the saved plan's incomplete status. Do not report the user's
+            # successful unrelated tool work as a plan-execution failure.
+            pending = ([] if state["independent_ordinary"] else
+                       [s["id"] for s in state["plan"].snapshot()
+                        if s["status"] != "completed"])
             superseded = [step_id for step_id in state["superseded_step_ids"]
                           if any(s["id"] == step_id and s["status"] == "completed"
                                  and s.get("expected_tool") == "calculate"
@@ -404,7 +409,8 @@ class AgentLoop:
                 state["unavailable_tools"].append(name)
             if name == "recall_memory":
                 state["memory_recall_observed"] = True
-            if name not in {"propose_plan", "revise_plan", "complete_plan_step"}:
+            if (name not in {"propose_plan", "revise_plan", "complete_plan_step"}
+                    and not state["independent_ordinary"]):
                 state["plan"].observe(name, result, function.get("arguments"))
                 if result.get("ok"):
                     state["last_success"] = {"name": name, **result}
@@ -680,7 +686,17 @@ class AgentLoop:
             selected_tools = exposed_tools(goal, TOOL_SCHEMAS, strategy=tool_strategy)
         selected_tools += [t for t in TOOL_SCHEMAS
                            if t["function"]["name"] == "request_clarification"]
-        if resumed.revision:
+        independent_ordinary = (
+            execution_mode == "read_only" and plan_control is None
+            and understanding_result is None)
+        if independent_ordinary:
+            # Neither a successful matching observation nor a plan-control
+            # tool invocation can mutate the saved checkpoint during ordinary
+            # read-only work.
+            selected_tools = [t for t in selected_tools
+                              if t["function"]["name"] not in {
+                                  "propose_plan", "revise_plan", "complete_plan_step"}]
+        if resumed.revision and not independent_ordinary:
             names = {t["function"]["name"] for t in selected_tools}
             selected_tools += [t for t in TOOL_SCHEMAS if t["function"]["name"]
                                in {"propose_plan", "revise_plan", "complete_plan_step"}
@@ -806,7 +822,8 @@ class AgentLoop:
             "last_tool_decision": None, "repeated_tool_decisions": 0,
             "structured_mode": understanding_result is not None,
             "user_request": goal,
-            "failed_plan_attempts": 0}
+            "failed_plan_attempts": 0,
+            "independent_ordinary": independent_ordinary}
         try:
             outcome = await self.graph.ainvoke(initial, config={"recursion_limit": 2 * self.max_steps + 4})
         except Exception as exc:
