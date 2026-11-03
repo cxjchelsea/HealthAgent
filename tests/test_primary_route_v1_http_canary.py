@@ -82,7 +82,9 @@ def test_canary_create_cancel_uses_single_primary_and_host_cas(tmp_path, monkeyp
     assert calls == [False, True]
 
 
-def test_canary_unwired_ordinary_no_legacy_or_tool(tmp_path, monkeypatch):
+def test_canary_ordinary_read_only_preserves_host_mode(tmp_path, monkeypatch):
+    calls = []
+
     async def ordinary(*args, **kwargs):
         return bind_route_signal(RouteSignal.model_validate({
             "schema_version": "primary-route-v1", "route_kind": "ordinary_tool",
@@ -90,20 +92,57 @@ def test_canary_unwired_ordinary_no_legacy_or_tool(tmp_path, monkeypatch):
             "effect_intent": "read_only",
         }), "请计算 5+2", saved_plan_present=False, pending_action=None)
 
-    def forbidden(*args, **kwargs):
-        raise AssertionError("unwired route cannot invoke AgentLoop")
+    async def no_legacy(*args, **kwargs):
+        raise AssertionError("ordinary v1 must not reclassify route")
+
+    class Loop:
+        def __init__(self, *args, **kwargs):
+            calls.append(kwargs)
+
+        async def run(self, *args, **kwargs):
+            assert kwargs["execution_mode"] == "read_only"
+            assert kwargs["plan_control"] is None
+            assert kwargs["memory_write_consent"] is False
+            assert kwargs["understanding_result"] is None
+            return {"run_id": "fake", "status": "completed", "answer": "7",
+                    "termination_reason": "model_final",
+                    "trace": [{"step": 0, "type": "final"}], "steps": 0}
 
     monkeypatch.setattr("apps.api.main.propose_primary_route", ordinary)
-    monkeypatch.setattr("apps.api.main.AgentLoop", forbidden)
+    monkeypatch.setattr("apps.api.main.AgentLoop", Loop)
+    monkeypatch.setattr("apps.api.main.propose_new_plan_route", no_legacy)
+    monkeypatch.setattr("apps.api.main.decide_execution_policy_detail", no_legacy)
     cfg = settings(tmp_path)
     with TestClient(create_app(cfg)) as client:
         cid = client.post("/conversations").json()["id"]
         result = client.post(f"/conversations/{cid}/agent/messages",
                              json={"content": "请计算 5+2", "client_request_id": "v1-ordinary-001"})
         assert result.status_code == 200, result.text
-        obj = result.json()
-        assert obj["termination_reason"] == "primary_v1_admission_not_wired"
-        assert not any(t["type"] == "tool" for t in obj["trace"])
+        assert result.json()["status"] == "completed"
+    assert len(calls) == 1
+    assert calls[0]["ordinary_attempt_journal"] is not None
+
+
+def test_canary_ordinary_write_remains_unwired(tmp_path, monkeypatch):
+    async def mutation(*args, **kwargs):
+        return bind_route_signal(RouteSignal.model_validate({
+            "schema_version": "primary-route-v1", "route_kind": "ordinary_tool",
+            "quote": "创建任务", "execution_scope": "none",
+            "effect_intent": "mutation_requested",
+        }), "创建任务", saved_plan_present=False, pending_action=None)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("mutation must not reach AgentLoop")
+
+    monkeypatch.setattr("apps.api.main.propose_primary_route", mutation)
+    monkeypatch.setattr("apps.api.main.AgentLoop", forbidden)
+    cfg = settings(tmp_path)
+    with TestClient(create_app(cfg)) as client:
+        cid = client.post("/conversations").json()["id"]
+        resp = client.post(f"/conversations/{cid}/agent/messages", json={
+            "content": "创建任务", "client_request_id": "v1-mutation-001"})
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["termination_reason"] == "primary_v1_admission_not_wired"
 
 
 def test_canary_invalid_primary_cannot_fall_back(tmp_path, monkeypatch):
