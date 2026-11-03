@@ -109,13 +109,13 @@ def test_revision_must_target_pending_step():
     assert admit_primary_route_v1(p, facts(cp)).reason == "primary_v1_revision_step_unavailable"
 
 
-def test_pending_readonly_still_waits_for_shared_replay_fence():
+def test_pending_readonly_admits_only_verified_origin():
     p = bound("clarify_response", "MCP", "MCP", pending="mcp_reference_lookup",
               verified=True)
     d = admit_primary_route_v1(p, facts(
         pending="mcp_reference_lookup", verified=True))
-    assert d.disposition == "restrict"
-    assert d.reason == "primary_v1_admission_not_wired"
+    assert d.disposition == "allow"
+    assert d.reason == "primary_v1_pending_read_only"
 
 
 def test_response_scope_cannot_be_rewritten_by_host():
