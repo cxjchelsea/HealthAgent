@@ -19,7 +19,7 @@ RouteKind = Literal[
     "plan_cancel", "plan_missing", "ordinary_tool", "respond",
     "clarify", "clarify_response", "reject",
 ]
-Scope = Literal["none", "first_step", "remaining_steps", "all_steps", "single_tool"]
+Scope = Literal["none", "first_step", "remaining_steps", "all_steps"]
 Effect = Literal["none", "read_only", "mutation_requested"]
 
 # Version-specific migration ONLY: never silently reinterpret M5 'other'.
@@ -307,7 +307,7 @@ _PRIMARY_SYSTEM = (
     "Set scope/effect as follows: create/revise/cancel none+mutation_requested, "
     "execute_first first_step+read_only, resume remaining_steps+read_only, "
     "ordinary_tool none+read_only or mutation_requested, "
-    "all other routes none+none. Do not infer Host rights or execute anything."
+    "all other routes none+none. Do not infer Host rights or execute anything. "
     "CRITICAL OUTPUT CONTRACT: execution_scope is a bound on SAVED PLAN steps, "
     "NOT a tool-use flag. For an independent calculation or reference query "
     "use route_kind=ordinary_tool, execution_scope=none, effect_intent=read_only. "
