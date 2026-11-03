@@ -426,6 +426,7 @@ _PRIMARY_SYSTEM += (
         "write_tool_name": None,
         "write_arguments": None,
         "pending_write_tool_name": None,
+        "pending_read_tool_name": None,
     }, ensure_ascii=False)
     + " Never copy the example quote; copy a unique exact substring of the request."
 )
@@ -448,6 +449,7 @@ _PRIMARY_SYSTEM += (
         "write_tool_name": None,
         "write_arguments": None,
         "pending_write_tool_name": None,
+        "pending_read_tool_name": None,
     }, ensure_ascii=False)
     + " If current_request asks to run just the first saved step and "
     "saved_plan_exists=true, this example shows the output field structure "
