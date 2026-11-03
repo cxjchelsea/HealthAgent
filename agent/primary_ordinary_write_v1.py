@@ -5,6 +5,8 @@ Task row and success receipt commit in ONE local SQL transaction. A prepared
 attempt left by any crash is unknown and must not be replayed automatically.
 No claims about external exactly-once or save_memory authority are made.
 """
+import json
+
 from sqlalchemy import select, and_, or_
 from agent.tools import SCHEMAS
 from services.db import AgentAttempt, Turn
@@ -71,7 +73,7 @@ def execute_primary_task_create_v1(*, proposal, session_factory,
         record.error_code = (
             None if observed.get("ok") else str(
                 observed.get("error", "unknown"))[:80])
-        record.result_projection = __import__("json").dumps(
+        record.result_projection = json.dumps(
             bounded_projection("create_task", observed), ensure_ascii=False)
 
     if observed.get("ok"):
