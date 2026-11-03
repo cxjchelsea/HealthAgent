@@ -49,10 +49,15 @@ def main():
     p.add_argument("--endpoint", default="http://127.0.0.1:8012")
     p.add_argument("--output", default="artifacts/wp-c/phase2-live.json")
     p.add_argument("--timeout", type=float, default=240)
-    p.add_argument("--revision-only", action="store_true",
-                   help="Run fresh CREATE_B -> REVISE only; no other plan groups")
+    selector = p.add_mutually_exclusive_group()
+    selector.add_argument("--revision-only", action="store_true",
+                          help="Run fresh CREATE_B -> REVISE only")
+    selector.add_argument("--execution-only", action="store_true",
+                          help="Run fresh CREATE_A -> FIRST -> RESUME -> REPLAY only")
     args = p.parse_args()
-    cases = [x for x in CASES if x[1] == "revise"] if args.revision_only else CASES
+    selected_group = ("revise" if args.revision_only else
+                      "execute" if args.execution_only else None)
+    cases = [x for x in CASES if x[1] == selected_group] if selected_group else CASES
     url = args.endpoint.rstrip("/")
     if not url.startswith(("http://127.0.0.1:", "http://localhost:")):
         p.error("Only localhost acceptance endpoint is supported")
