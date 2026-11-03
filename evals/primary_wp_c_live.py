@@ -44,6 +44,8 @@ def main():
     parser.add_argument("--endpoint", default="http://127.0.0.1:8012")
     parser.add_argument("--timeout", type=float, default=240)
     parser.add_argument("--output", default="artifacts/wp-c/phase1-live.json")
+    parser.add_argument("--diagnostic-only", action="store_true",
+                        help="Single real calculation request + preflight; capture safe refusal code")
     args = parser.parse_args()
 
     endpoint = args.endpoint.rstrip("/")
@@ -67,7 +69,7 @@ def main():
 
     def persist():
         result["passed"] = (
-            len(result["scenarios"]) == 4
+            len(result["scenarios"]) == (2 if args.diagnostic_only else 4)
             and all(x["passed"] for x in result["scenarios"]))
         output.write_text(json.dumps(result, ensure_ascii=False, indent=2),
                           encoding="utf-8")
@@ -161,6 +163,9 @@ def main():
                          "plan_execution_authorization",
                          "plan_execution_scope")) == 0)
             record("ordinary_calculate", calc_ok, **calc)
+            if args.diagnostic_only:
+                persist()
+                return 0 if result["passed"] else 1
 
             missing_cid = fresh()
             missing = send(missing_cid, MISSING,
