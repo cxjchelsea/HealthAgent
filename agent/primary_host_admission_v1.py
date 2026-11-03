@@ -21,6 +21,7 @@ class PrimaryHostFacts:
     guarded_mode: bool
     turn_created: bool
     write_consent: bool = False
+    pending_write_authority_verified: bool = False
 
 
 @dataclass(frozen=True)
@@ -52,6 +53,9 @@ def admit_primary_route_v1(
         # create_task remains restricted until write authority is durable.
         if facts.pending_action == "mcp_reference_lookup":
             return decide("allow", "primary_v1_pending_read_only", "read_only")
+        if (facts.pending_action == "create_task"
+                and facts.pending_write_authority_verified):
+            return decide("allow", "primary_v1_pending_task_authorized")
         return decide("restrict", "primary_v1_pending_write_not_governed")
 
     if kind == "plan_missing":
