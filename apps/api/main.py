@@ -420,6 +420,38 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                         execution_mode="read_only",
                                         memory_write_consent=body.memory_write_consent,
                                         plan_control=requested_control)
+                        elif (primary_proposal.route_kind == "ordinary_tool"
+                              and primary_proposal.effect_intent == "read_only"):
+                            # Host restriction: AgentLoop may select among
+                            # registered read-only tools only. No plan control,
+                            # writes, or permission expansion is admitted.
+                            result = await AgentLoop(
+                                NativeToolDecision(settings),
+                                task_store=ConversationTaskStore(Session, cid),
+                                memory_store=MemoryStore(Session, uid,
+                                                         write_allowed=False),
+                                mcp_client=StdioMCPClient(),
+                                skill_strategy=settings.skill_strategy,
+                                skill_budget_chars=settings.skill_budget_chars,
+                                ordinary_attempt_journal=AttemptEvidenceStore(
+                                    cid, turn_id),
+                                ordinary_attempt_session_factory=Session,
+                                candidate_selector=(HTTPUnderstandingModel(
+                                    settings.model_provider, settings.model_base_url,
+                                    settings.model_api_key,
+                                    settings.model_timeout_seconds,
+                                    settings.model_max_output_tokens)
+                                    if settings.skill_strategy == "semantic_topk"
+                                    else None),
+                                selector_model=(settings.understanding_strong_model
+                                    if settings.skill_strategy == "semantic_topk"
+                                    else None),
+                            ).run(body.content, history=context,
+                                  plan_checkpoint=existing_checkpoint,
+                                  understanding_result=None,
+                                  execution_mode="read_only",
+                                  memory_write_consent=False,
+                                  plan_control=None)
                         else:
                             result = admit_v1_canary(
                                 primary_proposal, message=body.content,
