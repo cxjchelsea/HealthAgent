@@ -195,3 +195,31 @@ def test_exception_after_admission_never_overwrites_original_record(
         with database(cfg.database_url)[1]() as db:
             assert len(db.scalars(select(PrimaryRouteEvidence)).all()) == 1
             assert db.scalars(select(ConversationTask)).all() == []
+
+
+
+def test_primary_host_only_denial_is_recorded_without_semantic_model(
+        tmp_path, monkeypatch):
+    cfg = _settings(tmp_path)
+
+    async def forbidden(*args, **kwargs):
+        raise AssertionError("Host-denied request cannot invoke model")
+
+    monkeypatch.setattr("apps.api.main.propose_primary_route", forbidden)
+    with TestClient(create_app(cfg)) as client:
+        cid = client.post("/conversations").json()["id"]
+        response = client.post(f"/conversations/{cid}/agent/messages", json={
+            "content": "请计算 10**100000",
+            "selected_ordinary_operation": "calculate",
+            "client_request_id": "primary-host-only-001"})
+        assert response.status_code == 200, response.text
+        assert response.json()["termination_reason"] == (
+            "explicit_ordinary_admission_denied")
+        diag = client.get(
+            f"/conversations/{cid}/turns/{response.json()['turn_id']}/diagnostics")
+        assert diag.status_code == 200
+        record = diag.json()["primary_route_evidence"]
+        assert record["route_kind"] is None
+        assert record["disposition"] == "refused"
+        assert record["semantic_attempts"] == 0
+        assert record["admission_reason"] == "primary_v1_host_only_precheck"
