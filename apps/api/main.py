@@ -37,6 +37,7 @@ from agent.primary_route_v1 import PrimaryRouteRejected, propose_primary_route
 from agent.primary_route_v1_canary import admit_v1_canary
 from agent.primary_host_admission_v1 import PrimaryHostFacts, admit_primary_route_v1
 from agent.primary_pending_readonly_v1 import execute_pending_readonly_v1
+from agent.primary_ordinary_write_v1 import execute_primary_task_create_v1
 from evals.s25_04_route_shadow import shadow_classify
 from agent.m5_first_route import propose_first_route
 from agent.m5_unified_route import (propose_saved_plan_route, propose_new_plan_route,
@@ -468,6 +469,14 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                   execution_mode="respond_only",
                                   memory_write_consent=False,
                                   plan_control=None)
+                        elif (result is None
+                              and primary_proposal.route_kind == "ordinary_tool"
+                              and primary_proposal.effect_intent == "mutation_requested"
+                              and v1_admission.disposition == "allow"):
+                            result = execute_primary_task_create_v1(
+                                proposal=primary_proposal,
+                                session_factory=Session,
+                                conversation_id=cid, turn_id=turn_id)
                         elif (result is None and primary_proposal.route_kind == "ordinary_tool"
                               and primary_proposal.effect_intent == "read_only"):
                             # Host restriction: AgentLoop may select among
