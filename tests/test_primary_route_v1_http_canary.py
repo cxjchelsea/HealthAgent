@@ -456,7 +456,7 @@ def test_canary_pending_write_remains_restricted(tmp_path, monkeypatch):
         reply = client.post(f"/conversations/{cid}/agent/messages", json={
             "content": "提交报告", "client_request_id": "v1-pending-write-001"})
         assert reply.status_code == 200, reply.text
-        assert reply.json()["termination_reason"] == "primary_v1_admission_not_wired"
+        assert reply.json()["termination_reason"] == "primary_v1_pending_origin_unverified"
         with Session() as db:
             from services.db import ConversationTask
             from sqlalchemy import select
