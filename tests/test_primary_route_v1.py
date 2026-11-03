@@ -250,3 +250,42 @@ def test_route_invariants_produce_distinct_safe_diagnostic_codes(candidate, reas
     assert caught.value.validation_issues == [
         {"field": "root", "category": reason}]
     assert provider.calls == 1
+
+
+
+def test_qwen_prompt_matches_strict_route_scope_contract():
+    """Generation guidance must not present a tool request as plan execution."""
+    from agent.primary_route_v1 import _PRIMARY_SYSTEM
+    schema = RouteSignal.model_json_schema()
+    scope_enum = schema["properties"]["execution_scope"]["enum"]
+    assert "single_tool" not in scope_enum
+    assert "none" in scope_enum
+    assert "execution_scope=none, effect_intent=read_only" in _PRIMARY_SYSTEM
+    assert "ordinary_tool/none/read_only" in _PRIMARY_SYSTEM
+    assert "plan_create/none/mutation_requested" in _PRIMARY_SYSTEM
+    assert "respond/none/none" in _PRIMARY_SYSTEM
+    assert "plan_missing/none/none" in _PRIMARY_SYSTEM
+    # The worked sample must be parseable, correctly scoped and marked as
+    # non-authoritative; no semantic correction is performed by the parser.
+    marker = "Read-only tool OUTPUT FORMAT EXAMPLE ONLY (not a default route): "
+    fragment = _PRIMARY_SYSTEM.split(marker, 1)[1].split(
+        " Never copy the example quote", 1)[0]
+    worked = RouteSignal.model_validate_json(fragment)
+    assert worked.route_kind == "ordinary_tool"
+    assert worked.execution_scope == "none"
+    assert worked.effect_intent == "read_only"
+
+
+def test_mismatched_scope_still_fails_closed_without_repair():
+    invalid = signal(
+        "ordinary_tool", "请计算", execution_scope="first_step",
+        effect_intent="read_only")
+    provider = Provider(invalid)
+    with pytest.raises(PrimaryRouteRejected) as caught:
+        asyncio.run(propose_primary_route(
+            provider, "model", "请计算 2+3", saved_plan_present=False))
+    assert caught.value.validation_issues == [{
+        "field": "root",
+        "category": "primary_route_scope_effect_mismatch",
+    }]
+    assert provider.calls == 1
