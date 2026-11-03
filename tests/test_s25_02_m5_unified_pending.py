@@ -8,7 +8,8 @@ from agent.config import Settings
 from agent.plan_intent import PlanRequest
 from agent.understanding import HTTPUnderstandingModel
 from apps.api.main import create_app
-from services.db import ConversationPlan, Message, Turn, database
+from services.db import AgentAttempt, ConversationPlan, Message, Turn, database
+from sqlalchemy import select
 
 
 def understood():
@@ -55,8 +56,17 @@ def test_pending_origin_is_not_sent_to_fresh_plan_primary(
     monkeypatch.setattr("apps.api.main.review_plan_revision", old_plan)
     monkeypatch.setattr("apps.api.main.classify_pending_reply", pending_answer)
     monkeypatch.setattr(HTTPUnderstandingModel, "complete", fake_complete)
-    monkeypatch.setattr("apps.api.main.execute_tool",
-                        lambda *a, **kw: {"ok": True, "definition": "test definition"})
+    def no_legacy_dispatch(*args, **kwargs):
+        raise AssertionError("Unified Pending must use journaled Host executor")
+
+    monkeypatch.setattr("apps.api.main.execute_tool", no_legacy_dispatch)
+    def observed_lookup(name, arguments, *args, **kwargs):
+        assert name == "mcp_reference_lookup"
+        assert arguments == {"term": "RAG"}
+        return {"ok": True, "definition": "test definition"}
+
+    monkeypatch.setattr(
+        "agent.primary_pending_readonly_v1.execute_tool", observed_lookup)
 
     with TestClient(create_app(settings, execution_policy=policy)) as client:
         cid = client.post("/conversations").json()["id"]
@@ -89,6 +99,11 @@ def test_pending_origin_is_not_sent_to_fresh_plan_primary(
         assert payload["termination_reason"] == "verified_clarification_execution"
         assert payload["steps"] == 1
         with Session() as db:
+            evidence = db.scalars(select(AgentAttempt).where(
+                AgentAttempt.conversation_id == cid)).all()
+            assert len(evidence) == 1
+            assert evidence[0].tool_name == "mcp_reference_lookup"
+            assert evidence[0].status == "succeeded"
             saved = db.get(ConversationPlan, cid)
             if with_saved_plan:
                 assert json.loads(saved.snapshot) == original
