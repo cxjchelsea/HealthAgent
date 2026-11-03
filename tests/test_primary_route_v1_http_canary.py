@@ -240,3 +240,145 @@ def test_canary_first_denies_missing_checkpoint_without_tools(tmp_path, monkeypa
             "content": "只执行第一步", "client_request_id": "v1-missing-first-001"})
         assert resp.status_code == 200, resp.text
         assert resp.json()["termination_reason"] == "primary_v1_proposal_refused"
+
+
+def test_canary_revise_uses_primary_binding_and_cas(tmp_path, monkeypatch):
+    """CREATE -> REVISE updates only step two without legacy revision model."""
+    revision_request = "把已保存计划的第二步由8+9改成10+11，第一步不变。"
+    calls = []
+
+    async def route(*args, **kwargs):
+        calls.append(args[2])
+        if not kwargs["saved_plan_present"]:
+            return bound_create()
+        return bind_route_signal(RouteSignal.model_validate({
+            "schema_version": "primary-route-v1",
+            "route_kind": "plan_revise", "quote": "第二步由8+9改成10+11",
+            "execution_scope": "none", "effect_intent": "mutation_requested",
+            "step_number": 2, "revision_old_argument": "8+9",
+            "revision_new_argument": "10+11",
+        }), revision_request, saved_plan_present=True,
+            pending_action=None, saved_step_count=2)
+
+    async def forbidden(*args, **kwargs):
+        raise AssertionError("second revision classifier must not run")
+
+    monkeypatch.setattr("apps.api.main.propose_primary_route", route)
+    monkeypatch.setattr("apps.api.main.review_plan_revision", forbidden)
+    monkeypatch.setattr("apps.api.main.check_plan_edit_intent", forbidden)
+    monkeypatch.setattr("apps.api.main.propose_saved_plan_route", forbidden)
+
+    cfg = settings(tmp_path)
+    with TestClient(create_app(cfg)) as client:
+        cid = client.post("/conversations").json()["id"]
+        created = client.post(f"/conversations/{cid}/agent/messages", json={
+            "content": CREATE, "client_request_id": "v1-revise-create-001"})
+        assert created.status_code == 200, created.text
+        assert created.json()["termination_reason"] == "plan_created_pending_execution"
+        before = created.json()["plan"]
+        revised = client.post(f"/conversations/{cid}/agent/messages", json={
+            "content": revision_request, "client_request_id": "v1-revise-001"})
+        assert revised.status_code == 200, revised.text
+        data = revised.json()
+        assert data["termination_reason"] == "plan_revised_pending_execution"
+        assert data["plan"][0] == before[0]
+        assert data["plan"][1]["expected_arguments"] == {"expression": "10+11"}
+        assert data["plan_revision"] == 2
+        assert not any(t["type"] == "tool" for t in data["trace"])
+        _, Session = database(cfg.database_url)
+        with Session() as db:
+            saved = db.get(ConversationPlan, cid)
+            assert json.loads(saved.snapshot)["revision"] == 2
+    assert len(calls) == 2
+
+
+def test_canary_revise_conflicting_old_argument_is_not_written(tmp_path, monkeypatch):
+    request = "把已保存计划的第二步由9+9改成10+11。"
+
+    async def route(*args, **kwargs):
+        if not kwargs["saved_plan_present"]:
+            return bound_create()
+        return bind_route_signal(RouteSignal.model_validate({
+            "schema_version": "primary-route-v1",
+            "route_kind": "plan_revise", "quote": "第二步由9+9改成10+11",
+            "execution_scope": "none", "effect_intent": "mutation_requested",
+            "step_number": 2, "revision_old_argument": "9+9",
+            "revision_new_argument": "10+11",
+        }), request, saved_plan_present=True, pending_action=None,
+            saved_step_count=2)
+
+    monkeypatch.setattr("apps.api.main.propose_primary_route", route)
+    cfg = settings(tmp_path)
+    with TestClient(create_app(cfg)) as client:
+        cid = client.post("/conversations").json()["id"]
+        first = client.post(f"/conversations/{cid}/agent/messages", json={
+            "content": CREATE, "client_request_id": "v1-revise-negative-create-001"})
+        assert first.json()["termination_reason"] == "plan_created_pending_execution"
+        _, Session = database(cfg.database_url)
+        with Session() as db:
+            original = db.get(ConversationPlan, cid).snapshot
+        reply = client.post(f"/conversations/{cid}/agent/messages", json={
+            "content": request, "client_request_id": "v1-revise-negative-001"})
+        assert reply.status_code == 200, reply.text
+        assert reply.json()["termination_reason"] == "plan_revision_conflict"
+        with Session() as db:
+            assert db.get(ConversationPlan, cid).snapshot == original
+
+
+def test_canary_pending_primary_does_not_invoke_old_classifier_or_tool(tmp_path, monkeypatch):
+    """A durable pending origin can be read by Primary but cannot bypass AC4."""
+    from services.db import Message, Turn
+    from agent.primary_route_v1 import PrimaryRouteRejected
+
+    async def pending_primary(*args, **kwargs):
+        assert kwargs["pending_action"] == "mcp_reference_lookup"
+        assert kwargs["pending_origin_verified"] is True
+        return bind_route_signal(RouteSignal.model_validate({
+            "schema_version": "primary-route-v1",
+            "route_kind": "clarify_response", "quote": "MCP",
+        }), "MCP", saved_plan_present=False,
+            pending_action="mcp_reference_lookup", pending_origin_verified=True)
+
+    async def forbidden(*args, **kwargs):
+        raise AssertionError("pending must not invoke legacy reviewer")
+
+    def no_tool(*args, **kwargs):
+        raise AssertionError("pending direct tool execution is still gated")
+
+    monkeypatch.setattr("apps.api.main.propose_primary_route", pending_primary)
+    monkeypatch.setattr("apps.api.main.classify_pending_reply", forbidden)
+    monkeypatch.setattr("apps.api.main.execute_tool", no_tool)
+    cfg = settings(tmp_path)
+    with TestClient(create_app(cfg)) as client:
+        cid = client.post("/conversations").json()["id"]
+        _, Session = database(cfg.database_url)
+        with Session.begin() as db:
+            assistant = Message(conversation_id=cid, role="assistant",
+                                content="请提供词条", status="partial")
+            db.add(assistant)
+            db.flush()
+            db.add(Turn(conversation_id=cid,
+                        request_id="v1-pending-prior-001",
+                        state="partial", assistant_message_id=assistant.id,
+                        failure_code="needs_input:mcp_reference_lookup"))
+        reply = client.post(f"/conversations/{cid}/agent/messages", json={
+            "content": "MCP", "client_request_id": "v1-pending-response-001"})
+        assert reply.status_code == 200, reply.text
+        assert reply.json()["termination_reason"] == "primary_v1_admission_not_wired"
+        assert not any(t.get("type") == "tool" for t in reply.json()["trace"])
+
+
+def test_canary_pending_origin_missing_fails_closed(tmp_path, monkeypatch):
+    from agent.primary_route_v1 import PrimaryRouteRejected
+
+    async def reject(*args, **kwargs):
+        raise PrimaryRouteRejected("primary_route_untrusted_pending_origin")
+
+    monkeypatch.setattr("apps.api.main.propose_primary_route", reject)
+    cfg = settings(tmp_path)
+    with TestClient(create_app(cfg)) as client:
+        cid = client.post("/conversations").json()["id"]
+        reply = client.post(f"/conversations/{cid}/agent/messages", json={
+            "content": "MCP", "client_request_id": "v1-pending-untrusted-001"})
+        assert reply.status_code == 200, reply.text
+        assert reply.json()["termination_reason"] == "primary_v1_proposal_refused"
