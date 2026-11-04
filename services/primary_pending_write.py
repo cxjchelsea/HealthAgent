@@ -116,16 +116,16 @@ def consume_pending_task_write_v1(
 
     if explicitly_withdraws_pending_task_write(reply):
         return deny("pending_write_reply_withdrawn")
-    # Executor-level defense in depth: the Host classification alone is
-    # insufficient to interpret a conversational instruction as a title.
-    if not standalone_pending_task_title(reply):
-        return deny("pending_write_title_not_standalone")
-
     try:
         arguments = SCHEMAS["create_task"].model_validate(
             {"title": reply.strip()}).model_dump()
     except ValueError:
         return deny("pending_write_invalid_title")
+    # Validate the shape AFTER the existing argument-schema contract: an
+    # empty/oversized title must retain its historical invalid-title reason.
+    # The additional gate only narrows otherwise well-formed write requests.
+    if not standalone_pending_task_title(reply):
+        return deny("pending_write_title_not_standalone")
     if not user_supplied_value("create_task", arguments, reply):
         return deny("pending_write_title_not_supplied")
 
