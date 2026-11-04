@@ -22,6 +22,7 @@ from services.evidence_store import arguments_digest, bounded_projection
 from services.task_store import ConversationTaskStore
 from agent.tools import SCHEMAS
 from agent.argument_provenance import user_supplied_value
+from agent.pending_write_withdrawal_guard import explicitly_withdraws_pending_task_write
 from services.write_effect_fence import write_fence_in_session
 
 
@@ -88,6 +89,9 @@ def consume_pending_task_write_v1(
                 "answer": "补充的任务名称未通过原始授权核验，未创建任务。",
                 "trace": [{"step": 0, "type": "pending_write_fenced"}],
                 "steps": 0}
+
+    if explicitly_withdraws_pending_task_write(reply):
+        return deny("pending_write_reply_withdrawn")
 
     try:
         arguments = SCHEMAS["create_task"].model_validate(
