@@ -527,3 +527,59 @@ def test_primary_revise_preserves_explicit_do_not_touch_step(tmp_path, monkeypat
             persisted = json.loads(db.get(ConversationPlan, cid).snapshot)
             assert persisted["steps"][0] == original[0]
             assert persisted["steps"][1]["expected_arguments"] == {"expression": "10+11"}
+
+
+def test_primary_bound_cancel_accepts_nonlegacy_plan_noun_with_host_and_cas(
+        tmp_path, monkeypatch):
+    """Known v2 Qwen failure: route was plan_cancel/allow but legacy noun gate denied."""
+    from agent.m4_guarded_cancel import admit_guarded_plan_cancel
+
+    text = "这份保存的两步计算安排作废，删除计划，不执行。"
+    # Legacy mode must retain the old narrow gate. The opt-in is only for
+    # an already bound Primary v1 proposal with deterministic Host checks.
+    checkpoint = {"revision": 1, "steps": [
+        {"id": 1, "status": "pending"},
+        {"id": 2, "status": "pending"},
+    ]}
+    assert not admit_guarded_plan_cancel(
+        message=text, conversation_id="demo", request_id="legacy",
+        checkpoint=checkpoint, turn_created=True, semantic_confirmed=True)
+    assert admit_guarded_plan_cancel(
+        message=text, conversation_id="demo", request_id="primary",
+        checkpoint=checkpoint, turn_created=True, semantic_confirmed=True,
+        primary_bound=True)
+
+    async def primary(*args, **kwargs):
+        if not kwargs["saved_plan_present"]:
+            return bound_create()
+        return bind_route_signal(RouteSignal.model_validate({
+            "schema_version": "primary-route-v1",
+            "route_kind": "plan_cancel",
+            "quote": "这份保存的两步计算安排作废",
+            "execution_scope": "none",
+            "effect_intent": "mutation_requested",
+        }), text, saved_plan_present=True, pending_action=None,
+            saved_step_count=2)
+
+    async def forbidden(*args, **kwargs):
+        raise AssertionError("Legacy semantic reviewer not permitted")
+
+    monkeypatch.setattr("apps.api.main.propose_primary_route", primary)
+    monkeypatch.setattr("apps.api.main.review_plan_cancellation", forbidden)
+    cfg = settings(tmp_path)
+    with TestClient(create_app(cfg)) as client:
+        cid = client.post("/conversations").json()["id"]
+        url = f"/conversations/{cid}/agent/messages"
+        created = client.post(url, json={
+            "content": CREATE, "client_request_id": "bound-cancel-create"})
+        assert created.status_code == 200
+        assert created.json()["termination_reason"] == "plan_created_pending_execution"
+        cancelled = client.post(url, json={
+            "content": text, "client_request_id": "bound-cancel-request"})
+        assert cancelled.status_code == 200, cancelled.text
+        assert cancelled.json()["termination_reason"] == "plan_cancelled"
+        assert not any(x.get("type") == "tool"
+                       for x in cancelled.json()["trace"])
+        _, Session = database(cfg.database_url)
+        with Session() as db:
+            assert db.get(ConversationPlan, cid) is None
