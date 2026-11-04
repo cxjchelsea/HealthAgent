@@ -64,6 +64,8 @@ class PendingWriteAuthority(Base):
     candidate_title: Mapped[str | None] = mapped_column(String(120), nullable=True)
     candidate_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
     confirmation_nonce: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    candidate_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
