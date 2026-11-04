@@ -431,6 +431,44 @@ _PRIMARY_SYSTEM = (
     "Model guesses never authorize execution. "
 )
 
+# Pending is context, NOT an instruction to force continuation. Keep this
+# contrastive priority above output examples so an example clarify_response
+# does not silently become the default for every Pending Turn.
+_PRIMARY_SYSTEM += (
+    " PENDING CURRENT-TURN PRIORITY (apply before choosing route_kind): "
+    "Interpret current_request as a NEW autonomous user message first. "
+    "The pending_question is historical context, not a command to fill its slot. "
+    "First decide whether the USER is continuing that exact missing-value "
+    "request or issuing another conversational request. "
+    "Only a reply that supplies the requested parameter AS ITS PURPOSE may "
+    "choose clarify_response. A sentence that instructs the assistant to "
+    "explain, summarize, compare, answer, find information, or do independent "
+    "work is a fresh request, even when a Pending task-title question exists. "
+    "Do not store such a sentence as a task title or assume that any "
+    "nonempty text is a title. A direct standalone title can be a noun "
+    "phrase or an imperative describing future work, but the user is not "
+    "asking for that work to be performed immediately in the current Turn. "
+    "When the current message requests a new answer, use respond; when it "
+    "requests an independent available tool, use ordinary_tool; when it refers "
+    "to a nonexistent saved plan use plan_missing; when it declines the "
+    "pending write, use respond. Always judge current intent in its full "
+    "conversational context rather than matching literal trigger words. "
+    "CONTRAST A: prior question asks for a task title, current reply is "
+    "'核验样机编号' => clarify_response, the requested parameter itself. "
+    "CONTRAST B: same prior question, current reply is "
+    "'现在请介绍一下什么是远程过程调用' => respond, an independent "
+    "information request, NOT a title. "
+    "CONTRAST C: same prior question, current reply is "
+    "'请计算 17+24' => ordinary_tool/read_only, a new immediate "
+    "calculation rather than a title for later. "
+    "CONTRAST D: same prior question, current reply is "
+    "'整理不再续订服务的记录' => clarify_response, this is a possible "
+    "standalone title even though its subject mentions stopping a service. "
+    "CONTRAST E: same prior question, current reply is "
+    "'我不想创建这项待办了' => respond, a withdrawal. "
+    "These examples are semantic contrasts, never outputs to copy. "
+)
+
 # The example is rendered as valid JSON rather than handwritten escaped text.
 # It is a format example only; the model must bind the quote to the request.
 _PRIMARY_SYSTEM += (
