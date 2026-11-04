@@ -381,7 +381,7 @@ def test_primary_includes_bounded_trusted_plan_steps_for_revision():
             self.calls = 0
         async def complete(self, *, model, messages, response_schema):
             self.calls += 1
-            self.payload = json.loads(messages[1]["content"])
+            self.payload = json.loads(messages[-1]["content"])
             return json.dumps(signal(
                 "plan_revise", "第二步由计算 5*6 改为计算 7*8",
                 effect_intent="mutation_requested", step_number=2,
@@ -473,18 +473,18 @@ def test_primary_first_snapshot_is_readonly_input_and_output_steps_must_be_empty
 
 
 def test_verified_pending_reply_context_and_output_contract_are_distinct():
-    from agent.primary_route_v1 import _PRIMARY_SYSTEM
-    marker = "Verified Pending reply OUTPUT FORMAT EXAMPLE ONLY: "
-    encoded = _PRIMARY_SYSTEM.split(marker, 1)[1].split(
-        " This is ONLY an output example", 1)[0]
-    parsed = RouteSignal.model_validate_json(encoded)
-    assert parsed.route_kind == "clarify_response"
-    assert parsed.steps == []
-    assert parsed.pending_read_tool_name is None
-    assert parsed.pending_write_tool_name is None
-    assert parsed.clarification_question is None
+    from agent.primary_route_v1 import (
+        _PRIMARY_SYSTEM, _PENDING_CURRENT_TURN_SYSTEM,
+    )
+    # The old full clarify_response JSON exemplar was a possible recency
+    # bias; the schema remains unchanged, while a separate current-turn
+    # semantic instruction gives the model a fresh-vs-continuation contrast.
+    assert "Verified Pending reply OUTPUT FORMAT EXAMPLE ONLY: " not in _PRIMARY_SYSTEM
     assert "pending_origin_verified=true" in _PRIMARY_SYSTEM
     assert "pending_question" in _PRIMARY_SYSTEM
+    assert "clarify_response" in _PENDING_CURRENT_TURN_SYSTEM
+    assert "respond/none/none" in _PENDING_CURRENT_TURN_SYSTEM
+    assert "ordinary_tool/none/read_only" in _PENDING_CURRENT_TURN_SYSTEM
 
 
 @pytest.mark.parametrize("action", ["create_task", "mcp_reference_lookup"])
