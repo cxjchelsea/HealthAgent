@@ -313,3 +313,24 @@ def test_consumed_authority_cannot_dispatch_again(tmp_path):
         with Session() as db:
             assert len(db.scalars(select(ConversationTask)).all()) == 1
             assert len(db.scalars(select(AgentAttempt)).all()) == 1
+
+
+def test_pending_direct_executor_rejects_compound_topic_switch_before_db_access():
+    """A direct caller cannot use the stale permit to bypass the Host shape fence."""
+    from services.primary_pending_write import consume_pending_task_write_v1
+
+    class ForbiddenDatabase:
+        @staticmethod
+        def begin():
+            raise AssertionError("ambiguous Pending write must not access DB")
+
+    denied = consume_pending_task_write_v1(
+        session_factory=ForbiddenDatabase,
+        conversation_id="synthetic-conversation",
+        current_turn_id="synthetic-current",
+        origin_turn_id="synthetic-original",
+        authority_id="synthetic-permit",
+        reply="我们换个话题，简单介绍一下模型上下文协议是什么。")
+    assert denied["status"] == "partial"
+    assert denied["termination_reason"] == "pending_write_title_not_standalone"
+    assert not any(t.get("type") == "tool" for t in denied["trace"])
