@@ -79,6 +79,28 @@ def pending_write_authority_for_origin(
     return record
 
 
+
+def revoke_pending_task_authority_in_session(
+        db, *, conversation_id: str, origin_turn_id: str,
+        authority_id: str) -> None:
+    """Durably invalidate a withdrawn, still-unconsumed write permit.
+
+    Caller owns the same transaction that finalizes the withdrawing Turn.
+    No user text or model output grants authority. A stale/consumed authority
+    is never silently treated as a successful cancellation.
+    """
+    changed = db.execute(update(PendingWriteAuthority).where(
+        PendingWriteAuthority.id == authority_id,
+        PendingWriteAuthority.conversation_id == conversation_id,
+        PendingWriteAuthority.origin_turn_id == origin_turn_id,
+        PendingWriteAuthority.tool_name == "create_task",
+        PendingWriteAuthority.status == "pending",
+        PendingWriteAuthority.consumed_turn_id.is_(None),
+    ).values(status="revoked"))
+    if changed.rowcount != 1:
+        raise RuntimeError("pending_write_revoke_conflict")
+
+
 def consume_pending_task_write_v1(
         *, session_factory, conversation_id: str, current_turn_id: str,
         origin_turn_id: str, authority_id: str, reply: str) -> dict:
