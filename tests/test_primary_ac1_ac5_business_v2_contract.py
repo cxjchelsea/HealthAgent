@@ -80,3 +80,69 @@ def test_replay_rejects_any_database_mutation_or_semantic_call():
                          [], [], {}, ok)
     assert not v2.assess("PENDING_TASK_REPLAY", 409, data, None, {"primary": 1},
                          "0", [], [], {}, ok)
+
+
+def test_confirm_physical_audit_requires_exact_completed_turn_and_receipt():
+    import sqlite3
+    import json
+
+    db = sqlite3.connect(":memory:")
+    db.row_factory = sqlite3.Row
+    db.executescript("""
+        CREATE TABLE turns (
+            id TEXT, conversation_id TEXT, state TEXT
+        );
+        CREATE TABLE primary_route_evidence (
+            turn_id TEXT, conversation_id TEXT, schema_version TEXT,
+            semantic_attempts INTEGER, preturn_snapshot_digest TEXT
+        );
+        CREATE TABLE pending_write_authorities (
+            id TEXT, conversation_id TEXT, status TEXT,
+            consumed_turn_id TEXT, candidate_turn_id TEXT,
+            candidate_digest TEXT, confirmation_nonce TEXT,
+            candidate_expires_at TEXT
+        );
+        CREATE TABLE conversation_tasks (
+            id TEXT, conversation_id TEXT
+        );
+        CREATE TABLE agent_attempts (
+            id TEXT, conversation_id TEXT, turn_id TEXT,
+            tool_name TEXT, status TEXT
+        );
+        CREATE TABLE conversation_plans (
+            conversation_id TEXT, snapshot TEXT
+        );
+        CREATE TABLE user_memories (
+            key TEXT, value TEXT
+        );
+    """)
+    cid = "synthetic-c"
+    db.executemany(
+        "INSERT INTO turns VALUES (?,?,?)",
+        [("origin", cid, "partial"), ("candidate", cid, "partial"),
+         ("confirm", cid, "completed")])
+    db.executemany(
+        "INSERT INTO primary_route_evidence VALUES (?,?,?,?,?)",
+        [("origin", cid, "primary-route-v1", 1, "a" * 64),
+         ("candidate", cid, "primary-route-v1", 1, "b" * 64)])
+    db.execute(
+        "INSERT INTO pending_write_authorities VALUES (?,?,?,?,?,?,?,?)",
+        ("authority", cid, "consumed", "confirm", "candidate",
+         "digest", "nonce", "future"))
+    db.execute("INSERT INTO conversation_tasks VALUES (?,?)", ("task", cid))
+    db.execute(
+        "INSERT INTO agent_attempts VALUES (?,?,?,?,?)",
+        ("attempt", cid, "confirm", "create_task", "succeeded"))
+    assert v2.physical_audit(db, cid, "PENDING_TASK_CONFIRM", "confirm")[
+        "effect_ok"]
+    db.execute(
+        "UPDATE agent_attempts SET turn_id = 'candidate' WHERE id='attempt'")
+    assert not v2.physical_audit(
+        db, cid, "PENDING_TASK_CONFIRM", "confirm")["effect_ok"]
+    db.execute(
+        "UPDATE agent_attempts SET turn_id = 'confirm' WHERE id='attempt'")
+    db.execute(
+        "UPDATE turns SET state='running' WHERE id='confirm'")
+    assert not v2.physical_audit(
+        db, cid, "PENDING_TASK_CONFIRM", "confirm")["effect_ok"]
+    db.close()
