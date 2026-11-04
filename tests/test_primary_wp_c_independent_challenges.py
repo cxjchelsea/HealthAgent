@@ -74,3 +74,30 @@ def test_unknown_plan_and_memory_denial_are_not_generic_refusals():
                       {"primary": 1}, "1", [])
         assert not assess(case, 200, data, evidence("reject", "restrict"),
                           {"primary": 1}, "1", [])
+
+
+
+def test_followup_math_accepts_equivalent_number_forms_not_wrong_answer():
+    from evals.primary_wp_c_independent_challenges import correct_followup_math_answer
+    for text in ("七乘八等于五十六。", "答案是 56。", "7×8=56"):
+        assert correct_followup_math_answer(text)
+    for text in ("七乘八等于五十七。", "结果是 156。", "不是56",
+                 "不等于五十六", "", None):
+        assert not correct_followup_math_answer(text)
+
+
+def test_followup_still_requires_correct_answer_and_no_tool_side_effect():
+    base = {"status": "completed", "termination_reason": "model_final"}
+    for answer in ("七乘八等于五十六。", "56"):
+        assert assess("TASK_CANCEL_FOLLOWUP", 200, {**base, "answer": answer},
+                      evidence("respond", "allow"), {"primary": 1}, "2", [])
+    assert not assess("TASK_CANCEL_FOLLOWUP", 200,
+                      {**base, "answer": "七乘八等于五十七。"},
+                      evidence("respond", "allow"), {"primary": 1}, "2", [])
+    assert not assess("TASK_CANCEL_FOLLOWUP", 200,
+                      {**base, "answer": "56"},
+                      evidence("respond", "allow"), {"primary": 1}, "2",
+                      [{"name": "create_task", "ok": True}])
+    assert not assess("TASK_CANCEL_FOLLOWUP", 200,
+                      {**base, "answer": "56"},
+                      evidence("clarify_response", "allow"), {"primary": 1}, "2", [])
