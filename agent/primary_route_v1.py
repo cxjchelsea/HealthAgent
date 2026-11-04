@@ -465,6 +465,7 @@ async def propose_primary_route(provider, model: str, message: str, *,
                                 saved_plan_present: bool,
                                 pending_action: str | None = None,
                                 pending_origin_verified: bool = False,
+                                pending_question: str | None = None,
                                 saved_step_count: int | None = None,
                                 saved_plan_steps: list[dict] | None = None,
                                 recent_context: list | None = None
@@ -480,6 +481,8 @@ async def propose_primary_route(provider, model: str, message: str, *,
         "current_request": message, "saved_plan_exists": saved_plan_present,
         "saved_plan_steps": (saved_plan_steps or [])[:8] if saved_plan_present else [],
         "pending_action": pending_action if pending_origin_verified else None,
+        "pending_origin_verified": bool(pending_action and pending_origin_verified),
+        "pending_question": (pending_question[:500] if pending_question and pending_origin_verified else None),
         "recent_context": (recent_context or [])[-6:],
     }
     raw = await provider.complete(
