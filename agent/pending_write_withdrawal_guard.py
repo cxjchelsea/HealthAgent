@@ -17,7 +17,7 @@ _WITHDRAW = (
     re.compile(r"(?:不创建|不要创建|不用创建|别创建|不建立|不新建)"
                r".{0,4}(?:待办|任务)"),
     re.compile(r"^(?:never mind|cancel the task|do not create the task)"
-               r"(?:[.!\s]|$)"),
+               r"(?:[.,!\s]|$)"),
 )
 
 
