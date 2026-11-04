@@ -496,7 +496,7 @@ def test_primary_passes_only_host_verified_pending_question(action):
             self.calls = 0
         async def complete(self, *, model, messages, response_schema):
             self.calls += 1
-            self.payload = json.loads(messages[1]["content"])
+            self.payload = json.loads(messages[-1]["content"])
             return json.dumps(signal("clarify_response", reply),
                               ensure_ascii=False)
 
