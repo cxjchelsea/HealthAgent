@@ -362,6 +362,18 @@ _PRIMARY_SYSTEM = (
     "MUST be clarify_response with scope=none effect=none and steps=[]. "
     "Never choose clarify again for a valid answer to the pending question. "
     "The quote must uniquely match the CURRENT reply. "
+    "PENDING CONTEXT RULE: If pending_origin_verified=true and "
+    "pending_action is create_task or mcp_reference_lookup, use the trusted "
+    "pending_question as context for interpreting current_request. A short "
+    "standalone answer that supplies the requested title or search term is "
+    "clarify_response/none/none, even when it lacks a verb such as create or "
+    "search. A reply that explicitly cancels, changes the subject, or still "
+    "omits the requested value is not an executable clarification response. "
+    "For clarify_response, clarification_question=null, pending_write_tool_name=null, "
+    "pending_read_tool_name=null, write_tool_name=null, write_arguments=null, "
+    "steps=[], step_number=null; output only a quote anchored to CURRENT reply. "
+    "A pending_read_tool_name or pending_write_tool_name is permitted only "
+    "when first asking a NEW clarifying question, NEVER in clarify_response. "
     "If the Host says pending_action=null, do not infer pending authority "
     "from recent_context. "
     "Always copy a UNIQUE contiguous verbatim quote from current_request as evidence. "
@@ -457,6 +469,31 @@ _PRIMARY_SYSTEM += (
     "only; replace quote with an exact unique substring of current_request. "
     "For RESUME similarly use plan_resume/remaining_steps/read_only and "
     "steps=[] regardless of the number of saved steps."
+)
+
+_PRIMARY_SYSTEM += (
+    " Verified Pending reply OUTPUT FORMAT EXAMPLE ONLY: "
+    + json.dumps({
+        "schema_version": ROUTE_SCHEMA_VERSION,
+        "route_kind": "clarify_response",
+        "quote": "虚构数据核对表",
+        "execution_scope": "none",
+        "effect_intent": "none",
+        "steps": [],
+        "step_number": None,
+        "clarification_question": None,
+        "revision_old_argument": None,
+        "revision_new_argument": None,
+        "write_tool_name": None,
+        "write_arguments": None,
+        "pending_write_tool_name": None,
+        "pending_read_tool_name": None,
+    }, ensure_ascii=False)
+    + " This is ONLY an output example when the Host input says a Pending "
+    "origin is verified and current_request supplies the missing value. "
+    "The example quote is not a default value; replace it with a unique "
+    "verbatim substring of current_request. Model output must not invent "
+    "or consume any Pending authorization; Host performs the durable checks."
 )
 
 
