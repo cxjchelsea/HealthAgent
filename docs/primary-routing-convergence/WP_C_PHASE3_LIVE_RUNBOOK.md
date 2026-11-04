@@ -84,3 +84,27 @@ WP-C Phase 1/2 PASS；Phase 3 NOT RUN；Phase 4 NOT RUN；AC1–AC5 最终复核
 ```powershell
 python -m evals.primary_wp_c_phase3_live --endpoint http://127.0.0.1:8012 --groups plan_ordinary pending_task pending_mcp --output artifacts/wp-c/phase3-targeted-v2.json --timeout 240
 ```
+
+
+## Phase 3 第二轮定向验收与整改（2026-11-04）
+
+本机真实 Qwen3:14b 证据为用户上传的 `phase3-targeted-v2.json`，测试代码 HEAD `75d519bd8a9555bc9ae3610ff4fad012b8a6576e`，ollama_proxy、unified。运行 `--groups plan_ordinary pending_task pending_mcp`。结果：**5 PASS、2 FAIL、2 BLOCKED**（包含 preflight）。
+
+- PLAN_SETUP 与 ORDINARY_WITH_PLAN 均 PASS：独立 ordinary 工具返回 completed/model_final，calculate 成功，计划两步仍 pending，验证了 AgentLoop 隔离整改。
+- PENDING_TASK_ORIGIN PASS；PENDING_TASK_ANSWER FAIL：HTTP 200，Primary route_kind=clarify/Host=clarify，reason=needs_input，未执行 create_task；重放 BLOCKED。任务续答尚未正确路由为 clarify_response，不能把澄清当成功。
+- PENDING_MCP_ORIGIN PASS：成功形成 needs_input；PENDING_MCP_ANSWER FAIL：Primary 拒绝，`primary_route_invalid_signal`，validation_issues 仅 `root/other`。上一代码版本未列出新加入的 `primary_route_pending_read_invalid` 错误码，故无法直接断定具体字段。重放 BLOCKED。
+
+本轮修复严格限定在单一 Primary 路由的**可信 Pending 上下文与输出合同**：
+1. 把经过 Host 检查的 `pending_origin_verified` 布尔值和 `pending_question`（最多 500 字）与 `pending_action` 一并传给唯一 Primary 模型；不带未经认证的 Pending 上下文。
+2. 明确非取消、非变更主题且已补齐缺失参数的回复使用 `clarify_response`；其全部 optional 字段（包括 `pending_read_tool_name`、`pending_write_tool_name`）必须为 null。加入完整可被 Schema 校验的 Pending 输出结构示例。
+3. 诊断白名单列出 `primary_route_pending_read_invalid` 并标记 `pending_read_tool_name`，但仍不输出原始模型参数、消息、提示词或敏感内容；方便区分实际错误而非盲目降低 Schema。
+4. 单元回归检查一次模型调用、认证和未认证上下文的隔离、无权限放大、合法 Pending JSON 示例。
+
+**此版本还没有进行新一轮真实 Qwen 物理验收**，既有 2 FAIL 不能标成通过。Pending 续执行仍由持久原始授权与 Host 负责，既不新增语义模型裁决，也不因 Schema 失败而回退 Legacy。原始测试挑战已被用于定位，下一阶段需要另建陌生测试集验证泛化。
+
+定向本机复验：
+```powershell
+python -m evals.primary_wp_c_phase3_live --endpoint http://127.0.0.1:8012 --groups pending_task pending_mcp --output artifacts/wp-c/phase3-pending-v3.json --timeout 240
+```
+
+只有通过真实复验再进入 Phase 3 完整非回归；AC5 仍 HOLD，禁止未经用户明确授权合并。
