@@ -414,7 +414,8 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                     pending_write_authority_id is not None),
                                 guarded_mode=settings.route_admission_mode == "guarded",
                                 turn_created=True,
-                                write_consent=body.memory_write_consent))
+                                write_consent=body.memory_write_consent,
+                                current_request=body.content))
                         # AC1/AC3: durable, immutable proposal+Host evidence
                         # must commit before any tool, task, memory or plan effect.
                         counter = model_call_counter.get() or {}
