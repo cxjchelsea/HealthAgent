@@ -592,3 +592,58 @@ def test_single_model_receives_host_bounded_schema_for_real_pending_reply():
     assert provider.seen["properties"]["quote"]["const"] == "RAG"
     assert provider.seen["properties"]["pending_read_tool_name"]["type"] == "null"
     assert provider.seen["properties"]["pending_write_tool_name"]["type"] == "null"
+
+
+def test_verified_pending_task_generation_disallows_fresh_write_contract():
+    from agent.primary_route_v1 import primary_route_generation_schema
+    message = "整理虚构实验设备清单"
+    schema = primary_route_generation_schema(message, pending_origin_verified=True)
+    assert schema["properties"]["quote"]["const"] == message
+    for field in ("pending_write_tool_name", "pending_read_tool_name",
+                  "write_tool_name", "write_arguments"):
+        assert schema["properties"][field]["type"] == "null"
+    assert schema["properties"]["route_kind"] == RouteSignal.model_json_schema()["properties"]["route_kind"]
+    # No permissions are added to the normal path, where a separately
+    # Host-admitted ordinary task may still carry explicit tool arguments.
+    non_pending = primary_route_generation_schema(message)
+    for field in ("write_tool_name", "write_arguments"):
+        assert non_pending["properties"][field] == (
+            RouteSignal.model_json_schema()["properties"][field])
+
+
+def test_pending_task_source_bound_reply_only_one_model_call_and_no_host_repair():
+    class Observe:
+        def __init__(self, bad):
+            self.calls = 0
+            self.schema = None
+            self.bad = bad
+
+        async def complete(self, *, model, messages, response_schema):
+            self.calls += 1
+            self.schema = response_schema
+            value = signal("clarify_response", "整理虚构实验设备清单")
+            if self.bad:
+                value["write_tool_name"] = "create_task"
+                value["write_arguments"] = {"title": "整理虚构实验设备清单"}
+            return json.dumps(value, ensure_ascii=False)
+
+    message = "整理虚构实验设备清单"
+    good = Observe(False)
+    route = asyncio.run(propose_primary_route(
+        good, "test", message, saved_plan_present=False,
+        pending_action="create_task", pending_origin_verified=True,
+        pending_question="请提供待办事项名称。"))
+    assert route.route_kind == "clarify_response"
+    assert good.calls == 1
+    assert good.schema["properties"]["write_tool_name"]["type"] == "null"
+    assert good.schema["properties"]["write_arguments"]["type"] == "null"
+
+    bad = Observe(True)
+    with pytest.raises(PrimaryRouteRejected, match="primary_route_invalid_signal") as ex:
+        asyncio.run(propose_primary_route(
+            bad, "test", message, saved_plan_present=False,
+            pending_action="create_task", pending_origin_verified=True,
+            pending_question="请提供待办事项名称。"))
+    assert bad.calls == 1
+    assert ex.value.validation_issues == [{
+        "field": "root", "category": "primary_route_unexpected_write_contract"}]
