@@ -36,6 +36,8 @@ CASES = (
      "把保存安排的第二步从 16+23 调整为 20+21，第一步不要动。", False),
     ("PLAN_CANCEL_B", "plan_b",
      "这份保存的两步计算安排作废，删除计划，不执行。", False),
+    ("ORDINARY_CALCULATE", "ordinary_calculation",
+     "请使用计算工具求 (31+11)*2 的结果。", False),
     ("TASK_WRITE", "task",
      "给当前会话添加一项待办，名称是“检查合成环境的测试标签”。", False),
     ("TASK_REPLAY", "task",
@@ -55,6 +57,10 @@ CASES = (
      "先帮我准备新增一项待办，但标题尚未决定，请先问我。", False),
     ("PENDING_CANCEL_REPLY", "pending_cancel",
      "取消刚才那条待办的创建请求，别替我新增任务。", False),
+    ("PENDING_TOPIC_ORIGIN", "pending_topic",
+     "我想新增待办但还没决定名称，请先问我标题。", False),
+    ("PENDING_TOPIC_REPLY", "pending_topic",
+     "请介绍一下服务网格能解决什么问题", False),
     ("PENDING_MCP_ORIGIN", "pending_mcp",
      "我想从技术术语表查释义，但是还没提供具体术语，请先追问。", False),
     ("PENDING_MCP_ANSWER", "pending_mcp", "MCP", False),
@@ -74,12 +80,15 @@ ROUTES = {
     "PLAN_CREATE_B": ("plan_create", "allow", "plan_created_pending_execution"),
     "PLAN_REVISE_B": ("plan_revise", "allow", "plan_revised_pending_execution"),
     "PLAN_CANCEL_B": ("plan_cancel", "allow", "plan_cancelled"),
+    "ORDINARY_CALCULATE": ("ordinary_tool", "allow", "model_final"),
     "TASK_WRITE": ("ordinary_tool", "allow", "primary_v1_task_created"),
     "MEMORY_DENY": ("ordinary_tool", "deny", "primary_v1_memory_consent_required"),
     "MEMORY_ALLOW": ("ordinary_tool", "allow", "primary_v1_memory_saved"),
     "PENDING_TASK_ORIGIN": ("clarify", "clarify", "needs_input"),
     "PENDING_TASK_ANSWER": ("clarify_response", "allow", "pending_write_confirmation_required"),
     "PENDING_CANCEL_ORIGIN": ("clarify", "clarify", "needs_input"),
+    "PENDING_TOPIC_ORIGIN": ("clarify", "clarify", "needs_input"),
+    "PENDING_TOPIC_REPLY": ("respond", "allow", "model_final"),
     "PENDING_MCP_ORIGIN": ("clarify", "clarify", "needs_input"),
     "PENDING_MCP_ANSWER": ("clarify_response", "allow", "verified_clarification_execution"),
     "UNKNOWN_PLAN": ("plan_missing", "restrict", "primary_v1_missing_plan_status"),
@@ -133,6 +142,7 @@ def physical_audit(db, cid, name, turn_id):
         # persist one durable AgentAttempt per completed step.
         "PLAN_FIRST_A": (0, 1, []),
         "PLAN_RESUME_A": (0, 2, []),
+        "ORDINARY_CALCULATE": (0, 1, []),
         "TASK_WRITE": (1, 1, []),
         "MEMORY_DENY": (0, 0, []),
         "MEMORY_ALLOW": (0, 1, []),
@@ -140,6 +150,8 @@ def physical_audit(db, cid, name, turn_id):
         "PENDING_TASK_ANSWER": (0, 0, ["awaiting_confirmation"]),
         "PENDING_TASK_CONFIRM": (1, 1, ["consumed"]),
         "PENDING_CANCEL_ORIGIN": (0, 0, ["pending"]),
+        "PENDING_TOPIC_ORIGIN": (0, 0, ["pending"]),
+        "PENDING_TOPIC_REPLY": (0, 0, ["revoked"]),
         "PENDING_CANCEL_REPLY": (0, 0, ["revoked"]),
         "PENDING_MCP_ORIGIN": (0, 0, []),
         "PENDING_MCP_ANSWER": (0, 1, []),
@@ -154,7 +166,7 @@ def physical_audit(db, cid, name, turn_id):
     else:
         result["effect_ok"] = len(tasks) == 0 and len(attempts) == 0
 
-    if name in {"PLAN_FIRST_A", "PLAN_RESUME_A"}:
+    if name in {"PLAN_FIRST_A", "PLAN_RESUME_A", "ORDINARY_CALCULATE"}:
         result["effect_ok"] &= all(
             a["tool_name"] == "calculate" and a["status"] == "succeeded"
             for a in attempts)
@@ -171,7 +183,7 @@ def physical_audit(db, cid, name, turn_id):
             and len(attempts) == 1
             and attempts[0]["tool_name"] == "create_task"
             and attempts[0]["status"] == "succeeded")
-    if name == "PENDING_CANCEL_REPLY":
+    if name in {"PENDING_CANCEL_REPLY", "PENDING_TOPIC_REPLY"}:
         result["effect_ok"] &= auth[0]["consumed_turn_id"] is None
     if name == "TASK_WRITE":
         result["effect_ok"] &= (
@@ -229,6 +241,11 @@ def assess(name, http_status, body, evidence, categories, attempts, events,
     if name == "PLAN_RESUME_A":
         return ([s.get("status") for s in plan] == ["completed", "completed"]
                 and events == [{"name": "calculate", "ok": True}])
+    if name == "ORDINARY_CALCULATE":
+        return (events == [{"name": "calculate", "ok": True}]
+                and "84" in str(body.get("answer", "")))
+    if name == "PENDING_TOPIC_REPLY":
+        return body.get("status") == "completed" and not events
     if name == "PLAN_REVISE_B":
         return (len(plan) == 2
                 and [s.get("status") for s in plan] == ["pending", "pending"]
@@ -249,7 +266,8 @@ def assess(name, http_status, body, evidence, categories, attempts, events,
     if name == "PENDING_MCP_ANSWER":
         return events == [{"name": "mcp_reference_lookup", "ok": True}]
     if name in {"PENDING_TASK_ORIGIN", "PENDING_CANCEL_ORIGIN",
-                "PENDING_MCP_ORIGIN", "MEMORY_DENY", "UNKNOWN_PLAN"}:
+                "PENDING_TOPIC_ORIGIN", "PENDING_MCP_ORIGIN",
+                "MEMORY_DENY", "UNKNOWN_PLAN"}:
         return not events
     return False
 
@@ -387,7 +405,7 @@ def main():
                     else:
                         physical = physical_audit(db, cid, name, tid)
                 plan = body.get("plan") or []
-                attempts = ("0" if name == "PENDING_TASK_CONFIRM"
+                attempts = ("0" if name in {"PENDING_TASK_CONFIRM", "PENDING_TASK_REPLAY"}
                             else response.headers.get("X-HealthAgent-Model-HTTP-Attempts"))
                 ok = assess(name, response.status_code, body, evidence,
                             categories, attempts, events, plan, prior, physical)
