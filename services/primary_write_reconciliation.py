@@ -89,6 +89,8 @@ def inspect_pending_write_authorities(
                 assessment = "consumed_completed"
             elif item.status == "consumed":
                 assessment = "consumed_turn_unfinalized"
+            elif item.status == "revoked" and item.consumed_turn_id is None:
+                assessment = "revoked_unconsumed"
             else:
                 assessment = "authority_state_conflict"
             findings.append({
