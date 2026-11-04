@@ -31,3 +31,25 @@ def explicitly_withdraws_pending_task_write(message: str) -> bool:
         return False
     value = unicodedata.normalize("NFKC", message).casefold().strip()
     return bool(value and any(p.search(value) for p in _WITHDRAW))
+
+# This is a conservative *shape* check for direct title replies, not an
+# intent recognizer. A full conversational instruction must not be treated
+# as a task title merely because the model chose clarify_response.
+# Ambiguous compound utterances require clarification rather than mutation.
+_NON_TITLE_DELIMITERS = frozenset("，,。.!！?？；;：:\\r\\n")
+
+
+def standalone_pending_task_title(message: str) -> bool:
+    """Permit only a short, single-phrase reply to an unanswered title prompt.
+
+    This negative guard is deliberately not semantic proof that the user
+    intends a task. The Primary proposal and durable permit are still needed.
+    """
+    if not isinstance(message, str):
+        return False
+    value = unicodedata.normalize("NFKC", message).strip()
+    return bool(
+        value and len(value) <= 80
+        and not any(ch in _NON_TITLE_DELIMITERS for ch in value)
+        and not explicitly_withdraws_pending_task_write(value)
+    )
