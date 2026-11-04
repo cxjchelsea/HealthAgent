@@ -50,7 +50,7 @@ def populate(db, group):
     if group in {"task", "cancel"}:
         db.execute("INSERT INTO pending_write_authorities VALUES (?,?,?,?,?,?)",
                    ("permit", CID, ORIGIN, "create_task",
-                    "consumed" if group == "task" else "pending",
+                    "consumed" if group == "task" else "revoked",
                     SECOND if group == "task" else None))
     if group == "task":
         db.execute("INSERT INTO conversation_tasks VALUES (?,?,?)",
