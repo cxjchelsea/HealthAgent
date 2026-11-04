@@ -36,12 +36,14 @@ from agent.s25_04_explicit_ordinary import admit_explicit_ordinary_calculation
 from agent.primary_route_v1 import PrimaryRouteRejected, propose_primary_route
 from agent.primary_route_v1_canary import admit_v1_canary
 from agent.primary_host_admission_v1 import PrimaryHostFacts, admit_primary_route_v1
+from agent.pending_write_withdrawal_guard import explicitly_withdraws_pending_task_write
 from agent.primary_pending_readonly_v1 import execute_pending_readonly_v1
 from agent.primary_ordinary_write_v1 import execute_primary_write_v1
 from services.primary_pending_write import (
     pending_write_authority_for_origin,
     mint_pending_write_authority_in_session,
     consume_pending_task_write_v1,
+    revoke_pending_task_authority_in_session,
 )
 from evals.s25_04_route_shadow import shadow_classify
 from agent.m5_first_route import propose_first_route
@@ -1598,6 +1600,17 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                         db, conversation_id=cid, origin_turn_id=turn_id,
                         origin_user_message_id=user_message.id,
                         source_message=body.content, tool_name="create_task")
+                # Phase 4-B: a withdrawing user Turn closes its original
+                # Pending write authority in the SAME commit as the Turn.
+                # Unlike an HTTP-only 'no tool' response, this prevents
+                # later direct executor calls from consuming stale rights.
+                if (pending_write_authority_id is not None
+                        and pending_write_origin_turn_id is not None
+                        and explicitly_withdraws_pending_task_write(body.content)):
+                    revoke_pending_task_authority_in_session(
+                        db, conversation_id=cid,
+                        origin_turn_id=pending_write_origin_turn_id,
+                        authority_id=pending_write_authority_id)
                 response.content = answer
                 response.status = status
                 turn.state = status
