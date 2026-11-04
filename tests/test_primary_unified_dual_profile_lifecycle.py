@@ -74,7 +74,8 @@ def test_create_first_resume_same_primary_and_m4(routing_profile, tmp_path, monk
         monkeypatch.setattr("apps.api.main." + name, forbidden)
     config = Settings(
         database_url=f"sqlite:///{tmp_path / 'lifecycle.db'}",
-        routing_profile=routing_profile, model_provider="ollama_proxy")
+        routing_profile=routing_profile, model_provider="ollama_proxy",
+        _env_file=None)
     assert config.primary_route_v1_active
     with TestClient(create_app(config)) as client:
         cid = client.post("/conversations").json()["id"]
@@ -123,7 +124,8 @@ def test_create_revise_cancel_same_primary_and_cas(routing_profile, tmp_path, mo
     monkeypatch.setattr("apps.api.main.review_plan_cancellation", forbidden)
     cfg = Settings(
         database_url=f"sqlite:///{tmp_path / 'revise_cancel.db'}",
-        routing_profile=routing_profile, model_provider="ollama_proxy")
+        routing_profile=routing_profile, model_provider="ollama_proxy",
+        _env_file=None)
     with TestClient(create_app(cfg)) as client:
         cid = client.post("/conversations").json()["id"]
 
