@@ -42,6 +42,7 @@ from agent.primary_ordinary_write_v1 import execute_primary_write_v1
 from services.primary_pending_confirmation import (
     stage_pending_task_candidate, commit_confirmed_pending_task,
     reject_pending_task_candidate,
+    replace_pending_task_candidate, revoke_staged_candidates_on_new_turn,
 )
 from services.primary_pending_write import (
     pending_write_authority_for_origin,
@@ -91,6 +92,10 @@ class PendingTaskConfirmationIn(BaseModel):
     confirmation_nonce: str = Field(min_length=36, max_length=40)
     candidate_digest: str = Field(min_length=64, max_length=64)
     client_request_id: str = Field(min_length=8, max_length=120)
+
+
+class PendingTaskReplaceIn(PendingTaskConfirmationIn):
+    new_title: str = Field(min_length=1, max_length=120)
 
 
 class GoalIn(BaseModel):
@@ -239,6 +244,22 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
             raise HTTPException(409, result["reason"])
         return result
 
+    @app.post("/conversations/{cid}/pending-task/replace")
+    def replace_pending_task(cid: str, body: PendingTaskReplaceIn,
+                             uid=Depends(user_id)):
+        if not settings.pending_write_confirmation_active:
+            raise HTTPException(403, "pending_confirmation_disabled")
+        with Session() as db:
+            get_owned(db, cid, uid)
+        result = replace_pending_task_candidate(
+            session_factory=Session, conversation_id=cid,
+            authority_id=body.authority_id,
+            confirmation_nonce=body.confirmation_nonce,
+            candidate_digest=body.candidate_digest, new_title=body.new_title)
+        if result["status"] != "awaiting_confirmation":
+            raise HTTPException(409, result["reason"])
+        return result
+
     @app.post("/conversations/{cid}/agent/messages")
     async def send_agent_in_conversation(cid: str, body: ChatIn, uid=Depends(user_id)):
         """S2-B1: reuse S1 ownership, persisted turns and completed conversation context."""
@@ -249,10 +270,19 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
         try:
             with Session.begin() as db:
                 get_owned(db, cid, uid)
+                # Serialize new chats with confirm/reject on the shared owner
+                # conversation row; no stale candidate can race a new Turn.
+                db.scalar(select(Conversation.id).where(
+                    Conversation.id == cid).with_for_update())
                 prior = db.scalar(select(Turn).where(
                     Turn.conversation_id == cid, Turn.request_id == body.client_request_id))
                 if prior:
                     raise HTTPException(409, "duplicate_request_id")
+                # Every fresh message abandons staged candidates. A client
+                # wishing to edit the candidate uses the structured replace
+                # action and receives a fresh, bound one-time nonce.
+                if settings.pending_write_confirmation_active:
+                    revoke_staged_candidates_on_new_turn(db, cid)
                 latest_turn = db.scalar(select(Turn).join(
                     Message, Message.id == Turn.assistant_message_id).where(
                     Turn.conversation_id == cid, Turn.state != "running")
