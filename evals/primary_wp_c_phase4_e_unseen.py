@@ -128,6 +128,10 @@ def physical_audit(db, cid, name, turn_id):
     # Per-conversation cumulative effects. Exact expected numbers are fixed
     # by the frozen CASES; an HTTP trace cannot substitute for these checks.
     expected = {
+        # Plan FIRST/RESUME execute read-only calculate tools and legitimately
+        # persist one durable AgentAttempt per completed step.
+        "PLAN_FIRST_A": (0, 1, []),
+        "PLAN_RESUME_A": (0, 2, []),
         "TASK_WRITE": (1, 1, []),
         "MEMORY_DENY": (0, 0, []),
         "MEMORY_ALLOW": (0, 1, []),
@@ -148,6 +152,10 @@ def physical_audit(db, cid, name, turn_id):
     else:
         result["effect_ok"] = len(tasks) == 0 and len(attempts) == 0
 
+    if name in {"PLAN_FIRST_A", "PLAN_RESUME_A"}:
+        result["effect_ok"] &= all(
+            a["tool_name"] == "calculate" and a["status"] == "succeeded"
+            for a in attempts)
     if name == "PENDING_TASK_ANSWER":
         result["effect_ok"] &= (
             auth[0]["consumed_turn_id"] == turn_id
