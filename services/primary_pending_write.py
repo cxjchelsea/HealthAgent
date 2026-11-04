@@ -22,7 +22,9 @@ from services.evidence_store import arguments_digest, bounded_projection
 from services.task_store import ConversationTaskStore
 from agent.tools import SCHEMAS
 from agent.argument_provenance import user_supplied_value
-from agent.pending_write_withdrawal_guard import explicitly_withdraws_pending_task_write
+from agent.pending_write_withdrawal_guard import (
+    explicitly_withdraws_pending_task_write, standalone_pending_task_title,
+)
 from services.write_effect_fence import write_fence_in_session
 
 
@@ -114,6 +116,10 @@ def consume_pending_task_write_v1(
 
     if explicitly_withdraws_pending_task_write(reply):
         return deny("pending_write_reply_withdrawn")
+    # Executor-level defense in depth: the Host classification alone is
+    # insufficient to interpret a conversational instruction as a title.
+    if not standalone_pending_task_title(reply):
+        return deny("pending_write_title_not_standalone")
 
     try:
         arguments = SCHEMAS["create_task"].model_validate(
