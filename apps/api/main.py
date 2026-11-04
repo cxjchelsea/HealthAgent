@@ -385,6 +385,11 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                 pending_action and clarification_id and pending_question
                                 and (pending_action != "create_task"
                                      or pending_write_authority_id is not None)),
+                            pending_question=(pending_question if (
+                                pending_action and clarification_id and pending_question
+                                and (pending_action != "create_task"
+                                     or pending_write_authority_id is not None))
+                                else None),
                             saved_step_count=(len(existing_checkpoint.get("steps", []))
                                               if existing_checkpoint else None),
                             saved_plan_steps=([
