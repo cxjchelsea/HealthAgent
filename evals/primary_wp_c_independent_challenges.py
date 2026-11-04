@@ -59,6 +59,24 @@ def git_head():
         return "unknown"
 
 
+def correct_followup_math_answer(answer: object) -> bool:
+    """Recognize equivalent numeral scripts without treating denial as correct.
+
+    This is an answer-quality assertion, not a semantic authorization check.
+    It cannot replace inspecting genuinely unexpected responses.
+    """
+    import re
+    if not isinstance(answer, str):
+        return False
+    value = answer.strip()
+    if not value or len(value) > 10000:
+        return False
+    if re.search(r"(?:不是|不等于|并非|并不是|not|isn't|is not)\\s*(?:56|五十六)", value, re.I):
+        return False
+    return (re.search(r"(?<![0-9])56(?![0-9])", value) is not None
+            or "五十六" in value)
+
+
 def assess(name, status, body, evidence, categories, attempts, tool_events):
     if name.endswith("REPLAY_N"):
         return (status == 409 and body.get("detail") == "duplicate_request_id"
@@ -86,7 +104,7 @@ def assess(name, status, body, evidence, categories, attempts, tool_events):
     if name == "TASK_CANCEL_FOLLOWUP":
         return (route == "respond" and disposition == "allow"
                 and body.get("status") == "completed"
-                and not tool_events and "56" in str(body.get("answer", "")))
+                and not tool_events and correct_followup_math_answer(body.get("answer")))
     return False
 
 
@@ -205,6 +223,8 @@ def main():
                        model_call_categories=categories,
                        model_http_attempts=attempts,
                        tool_events=events,
+                       answer_check=("correct" if correct_followup_math_answer(data.get("answer"))
+                                     else "not_confirmed") if name == "TASK_CANCEL_FOLLOWUP" else None,
                        duration_s=round(time.monotonic()-start, 2))
                 if not passed:
                     blocked.add(group)
