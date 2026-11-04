@@ -126,7 +126,8 @@ def test_unified_never_invokes_any_legacy_reviewer(
 
     settings = Settings(
         database_url=f"sqlite:///{tmp_path / (scenario + '.db')}",
-        model_provider="ollama_proxy", routing_profile=routing_profile)
+        model_provider="ollama_proxy", routing_profile=routing_profile,
+        _env_file=None)
     assert settings.primary_route_v1_active
     with TestClient(create_app(settings)) as client:
         cid = client.post("/conversations").json()["id"]
