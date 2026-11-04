@@ -35,6 +35,10 @@ jobs:
         env:
           TEST_POSTGRES_URL: postgresql+psycopg://healthagent:ci_local_only@localhost:5432/healthagent
         run: python -m pytest -q -rs tests/test_primary_pending_write_postgres.py
+      - name: Pending confirmation PostgreSQL CAS and expiry lifecycle
+        env:
+          TEST_POSTGRES_URL: postgresql+psycopg://healthagent:ci_local_only@localhost:5432/healthagent
+        run: python -m pytest -q -rs tests/test_primary_pending_confirmation_postgres.py
       - name: AC4 cross-entry ordinary Pending PostgreSQL write fence
         env:
           TEST_POSTGRES_URL: postgresql+psycopg://healthagent:ci_local_only@localhost:5432/healthagent
