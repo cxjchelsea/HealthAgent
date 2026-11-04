@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from agent.primary_route_v1 import BoundPrimaryProposal
+from agent.pending_write_withdrawal_guard import explicitly_withdraws_pending_task_write
 from agent.plan_intent import READ_TOOLS
 from agent.planning import PlanLedger
 from agent.tools import SCHEMAS
@@ -22,6 +23,7 @@ class PrimaryHostFacts:
     turn_created: bool
     write_consent: bool = False
     pending_write_authority_verified: bool = False
+    current_request: str = ""
 
 
 @dataclass(frozen=True)
@@ -53,9 +55,11 @@ def admit_primary_route_v1(
         # create_task remains restricted until write authority is durable.
         if facts.pending_action == "mcp_reference_lookup":
             return decide("allow", "primary_v1_pending_read_only", "read_only")
-        if (facts.pending_action == "create_task"
-                and facts.pending_write_authority_verified):
-            return decide("allow", "primary_v1_pending_task_authorized")
+        if facts.pending_action == "create_task":
+            if explicitly_withdraws_pending_task_write(facts.current_request):
+                return decide("restrict", "primary_v1_pending_task_withdrawn")
+            if facts.pending_write_authority_verified:
+                return decide("allow", "primary_v1_pending_task_authorized")
         return decide("restrict", "primary_v1_pending_write_not_governed")
 
     if kind == "plan_missing":
