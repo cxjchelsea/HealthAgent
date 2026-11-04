@@ -8,7 +8,9 @@ from dataclasses import dataclass
 from typing import Literal
 
 from agent.primary_route_v1 import BoundPrimaryProposal
-from agent.pending_write_withdrawal_guard import explicitly_withdraws_pending_task_write
+from agent.pending_write_withdrawal_guard import (
+    explicitly_withdraws_pending_task_write, standalone_pending_task_title,
+)
 from agent.plan_intent import READ_TOOLS
 from agent.planning import PlanLedger
 from agent.tools import SCHEMAS
@@ -59,6 +61,8 @@ def admit_primary_route_v1(
             if explicitly_withdraws_pending_task_write(facts.current_request):
                 return decide("restrict", "primary_v1_pending_task_withdrawn")
             if facts.pending_write_authority_verified:
+                if not standalone_pending_task_title(facts.current_request):
+                    return decide("restrict", "primary_v1_pending_title_not_standalone")
                 return decide("allow", "primary_v1_pending_task_authorized")
         return decide("restrict", "primary_v1_pending_write_not_governed")
 
