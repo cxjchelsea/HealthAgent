@@ -15,7 +15,8 @@ def upgrade():
     with op.batch_alter_table("pending_write_authorities") as batch:
         batch.add_column(sa.Column(
             "candidate_turn_id", sa.String(40),
-            sa.ForeignKey("turns.id"), nullable=True))
+            sa.ForeignKey("turns.id", name="fk_pending_authority_candidate_turn"),
+            nullable=True))
         batch.add_column(sa.Column(
             "candidate_title", sa.String(120), nullable=True))
         batch.add_column(sa.Column(
