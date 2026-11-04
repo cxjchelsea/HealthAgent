@@ -129,19 +129,13 @@ def commit_confirmed_pending_task(
                 or source.role != "user"
                 or source_digest(source.content) != auth.source_digest):
             return {"status": "denied", "reason": "confirmation_origin_untrusted"}
-        # A later conversational Turn invalidates an old candidate.
-        last = db.scalar(select(Turn).where(
-            Turn.conversation_id == conversation_id)
-            .order_by(Turn.id.desc()))
-        # Turn UUID ordering is not chronological; instead require no other
-        # Turn in conversation after candidate's assistant message timestamp.
-        candidate_answer = db.get(Message, candidate.assistant_message_id)
-        newer = db.scalar(select(Turn).join(
+        # The candidate Turn must still be the LATEST Turn. A later user
+        # request supersedes candidate consent; UUID order is not chronology.
+        latest_turn_id = db.scalar(select(Turn.id).join(
             Message, Turn.assistant_message_id == Message.id).where(
-            Turn.conversation_id == conversation_id,
-            Message.created_at > candidate_answer.created_at,
-        ))
-        if newer is not None:
+            Turn.conversation_id == conversation_id)
+            .order_by(Message.created_at.desc(), Message.id.desc()).limit(1))
+        if latest_turn_id != candidate.id:
             return {"status": "denied", "reason": "confirmation_superseded"}
         fence = write_fence_in_session(db, conversation_id)
         if fence is not None:
