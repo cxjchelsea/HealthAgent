@@ -478,3 +478,52 @@ def test_canary_pending_origin_missing_fails_closed(tmp_path, monkeypatch):
             "content": "MCP", "client_request_id": "v1-pending-untrusted-001"})
         assert reply.status_code == 200, reply.text
         assert reply.json()["termination_reason"] == "primary_v1_proposal_refused"
+
+
+def test_primary_revise_preserves_explicit_do_not_touch_step(tmp_path, monkeypatch):
+    """Known regression after first unseen-v1: a preserve clause is not another edit."""
+    request = "把已保存计划的第二步由8+9改成10+11，第一步不要动。"
+
+    async def primary(*args, **kwargs):
+        if not kwargs["saved_plan_present"]:
+            return bound_create()
+        return bind_route_signal(RouteSignal.model_validate({
+            "schema_version": "primary-route-v1",
+            "route_kind": "plan_revise",
+            "quote": "第二步由8+9改成10+11",
+            "execution_scope": "none",
+            "effect_intent": "mutation_requested",
+            "step_number": 2,
+            "revision_old_argument": "8+9",
+            "revision_new_argument": "10+11",
+        }), request, saved_plan_present=True, pending_action=None,
+            saved_step_count=2)
+
+    async def no_legacy(*args, **kwargs):
+        raise AssertionError("no second semantic review permitted")
+
+    monkeypatch.setattr("apps.api.main.propose_primary_route", primary)
+    monkeypatch.setattr("apps.api.main.review_plan_revision", no_legacy)
+    cfg = settings(tmp_path)
+    with TestClient(create_app(cfg)) as client:
+        cid = client.post("/conversations").json()["id"]
+        endpoint = f"/conversations/{cid}/agent/messages"
+        created = client.post(endpoint, json={
+            "content": CREATE, "client_request_id": "preserve-create-001"})
+        assert created.status_code == 200, created.text
+        assert created.json()["termination_reason"] == "plan_created_pending_execution"
+        original = created.json()["plan"]
+        revised = client.post(endpoint, json={
+            "content": request, "client_request_id": "preserve-revise-001"})
+        assert revised.status_code == 200, revised.text
+        body = revised.json()
+        assert body["termination_reason"] == "plan_revised_pending_execution"
+        assert body["plan"][0] == original[0]
+        assert body["plan"][1]["expected_arguments"] == {"expression": "10+11"}
+        assert all(step["status"] == "pending" for step in body["plan"])
+        assert not any(e.get("type") == "tool" for e in body.get("trace", []))
+        _, Session = database(cfg.database_url)
+        with Session() as db:
+            persisted = json.loads(db.get(ConversationPlan, cid).snapshot)
+            assert persisted["steps"][0] == original[0]
+            assert persisted["steps"][1]["expected_arguments"] == {"expression": "10+11"}
