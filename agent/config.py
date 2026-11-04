@@ -115,5 +115,11 @@ class Settings(BaseSettings):
         )
 
     @property
+    def pending_write_confirmation_active(self) -> bool:
+        """Required for real-model Primary; opt-in for deterministic fixtures."""
+        return self.pending_write_confirmation_enabled or (
+            self.primary_route_v1_active and self.model_provider != "fake")
+
+    @property
     def provider_ready(self) -> bool:
         return self.model_provider in ("fake", "ollama_proxy") or bool(self.model_api_key)
