@@ -16,6 +16,10 @@ _WITHDRAW = (
                r"不建立|不新建|无需创建)"),
     re.compile(r"(?:不创建|不要创建|不用创建|别创建|不建立|不新建)"
                r".{0,4}(?:待办|任务)"),
+    # An explicit cancellation of a prior task-creation request is a veto,
+    # never positive evidence for an executable task title.
+    re.compile(r"^(?:请|帮我)?(?:取消|撤销).{0,20}(?:待办|任务)"
+               r".{0,20}(?:创建|新增)"),
     re.compile(r"^(?:never mind|cancel the task|do not create the task)"
                r"(?:[.,!\s]|$)"),
 )
