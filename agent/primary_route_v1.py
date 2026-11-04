@@ -504,7 +504,7 @@ def primary_route_generation_schema(message: str, *,
     For a short request the whole request is already a unique source span.
     The provider must copy it exactly; the existing Host binding still
     checks it. Verified Pending contexts forbid reusing the origin's
-    missing-tool marker as an output permission claim. Do not preselect
+    missing-tool marker or a new write contract as output permission. Do not preselect
     route_kind: a user can withdraw or change a Pending request.
     """
     schema = RouteSignal.model_json_schema()
@@ -515,10 +515,11 @@ def primary_route_generation_schema(message: str, *,
             "description": "Exact complete current_request; source evidence, not authority",
         }
     if pending_origin_verified:
-        for field in ("pending_write_tool_name", "pending_read_tool_name"):
+        for field in ("pending_write_tool_name", "pending_read_tool_name",
+                      "write_tool_name", "write_arguments"):
             schema["properties"][field] = {
                 "type": "null",
-                "description": "Origin belongs to Host; a reply cannot reissue a pending intent",
+                "description": "Verified Pending origin belongs to Host; this reply cannot propose new write or pending authority",
             }
     return schema
 
