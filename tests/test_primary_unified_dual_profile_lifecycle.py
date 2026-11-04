@@ -13,6 +13,29 @@ from agent.primary_route_v1 import RouteSignal, bind_route_signal
 from apps.api.main import create_app
 from services.db import ConversationPlan, database
 
+
+@pytest.fixture(autouse=True)
+def forbid_retired_reviewers_for_primary_http(monkeypatch):
+    # The same function-level fail-on-call list is used for successful
+    # plan lifecycles and pending write cancellation, not only refusals.
+    retired = (
+        "review_plan_cancellation", "propose_first_route",
+        "review_plan_intent", "check_plan_edit_intent",
+        "classify_pending_reply", "review_pending_reference_lookup",
+        "review_unsupported_capability", "review_read_only_clarification",
+        "reconcile_execution_policy", "review_plan_creation_reference",
+        "review_missing_plan_reference", "review_plan_execution_authorization",
+        "review_plan_execution_scope",
+    )
+    def forbidden(*args, **kwargs):
+        raise AssertionError("AC2: retired reviewer reached from Primary HTTP")
+    for name in retired:
+        monkeypatch.setattr("apps.api.main." + name, forbidden)
+    monkeypatch.setattr("apps.api.main.UnderstandingService", forbidden)
+    monkeypatch.setattr("apps.api.main.decide_execution_policy_detail", forbidden)
+    monkeypatch.setattr("apps.api.main.propose_new_plan_route", forbidden)
+    monkeypatch.setattr("apps.api.main.propose_saved_plan_route", forbidden)
+
 CREATE = "请创建一个两步可执行计划：第一步计算 3+4，第二步计算 8+9。只保存，不执行。"
 REVISE = "把已保存计划的第二步由8+9改成10+11，第一步不变。"
 FIRST = "只执行已保存计划的第一步"
