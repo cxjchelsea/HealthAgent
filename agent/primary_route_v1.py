@@ -519,29 +519,47 @@ _PRIMARY_SYSTEM += (
     "steps=[] regardless of the number of saved steps."
 )
 
-_PRIMARY_SYSTEM += (
-    " Verified Pending reply OUTPUT FORMAT EXAMPLE ONLY: "
-    + json.dumps({
-        "schema_version": ROUTE_SCHEMA_VERSION,
-        "route_kind": "clarify_response",
-        "quote": "虚构数据核对表",
-        "execution_scope": "none",
-        "effect_intent": "none",
-        "steps": [],
-        "step_number": None,
-        "clarification_question": None,
-        "revision_old_argument": None,
-        "revision_new_argument": None,
-        "write_tool_name": None,
-        "write_arguments": None,
-        "pending_write_tool_name": None,
-        "pending_read_tool_name": None,
-    }, ensure_ascii=False)
-    + " This is ONLY an output example when the Host input says a Pending "
-    "origin is verified and current_request supplies the missing value. "
-    "The example quote is not a default value; replace it with a unique "
-    "verbatim substring of current_request. Model output must not invent "
-    "or consume any Pending authorization; Host performs the durable checks."
+# Do not put a full clarify_response JSON example at the end of the global
+# system instruction: it can anchor a small model to choose continuation
+# whenever a Pending origin is present, even for a fresh independent request.
+
+
+_PENDING_CURRENT_TURN_SYSTEM = (
+    "PENDING CURRENT-TURN SEMANTIC DECISION (single route proposal, no new "
+    "model call, no keyword classifier): "
+    "The Host's pending_action and pending_question describe the PREVIOUS "
+    "assistant's unresolved task, not the user's CURRENT goal. "
+    "Before choosing route_kind, interpret current_request on its own: "
+    "What is the user asking the assistant to accomplish RIGHT NOW? "
+    "A fresh request for an explanation, comparison, answer, calculation, "
+    "lookup, or other immediate action keeps its own route even if it is "
+    "a short Chinese phrase without punctuation or a subject-change phrase. "
+    "For a fresh informational answer use respond/none/none; for an "
+    "independent available read-only tool use ordinary_tool/none/read_only. "
+    "For a withdrawal use respond/none/none. "
+    "Only when the CURRENT user message is supplying a missing field of "
+    "the prior pending request, rather than asking the assistant to do "
+    "new work now, choose clarify_response/none/none. "
+    "A task title is typically a proposed label for FUTURE work. "
+    "A message that asks YOU to perform work NOW is not automatically a title. "
+    "Do not determine this from one imperative verb, punctuation, length, "
+    "or the mere existence of pending_action; decide by conversational "
+    "purpose. A legitimate title may itself be phrased as an imperative. "
+    "Counterfactual check: if pending_question were absent, would this "
+    "message still be an actionable new user request to answer or execute? "
+    "If yes, keep that independent intent. If it would merely supply the "
+    "missing task title, it is clarify_response. "
+    "Examples illustrating the distinction, not exact-match rules: "
+    "pending title + '核对检测设备编号' -> clarify_response; "
+    "pending title + '给我讲讲分布式系统中的一致性模型' -> respond; "
+    "pending title + '请说明事件驱动架构的作用' -> respond; "
+    "pending title + '整理不再续订服务的记录' -> clarify_response; "
+    "pending title + '这条待办先不创建了' -> respond. "
+    "If user intent truly cannot be distinguished, choose clarify and "
+    "ask a neutral question rather than silently treating unrelated "
+    "text as a task-title answer. "
+    "All output fields must obey the same primary-route-v1 schema. "
+    "Do not propose a new write or reuse the original Pending authorization."
 )
 
 
@@ -597,10 +615,19 @@ async def propose_primary_route(provider, model: str, message: str, *,
         "pending_question": (pending_question[:500] if pending_question and pending_origin_verified else None),
         "recent_context": (recent_context or [])[-6:],
     }
+    # A separate trailing system instruction is used ONLY for a verified
+    # Pending context. It is adjacent to the current request in the model
+    # context; it does not add a second model invocation or post-hoc route edit.
+    messages = [{"role": "system", "content": _PRIMARY_SYSTEM}]
+    if pending_origin_verified and pending_action in {
+            "create_task", "mcp_reference_lookup"}:
+        messages.append({"role": "system",
+                         "content": _PENDING_CURRENT_TURN_SYSTEM})
+    messages.append({"role": "user",
+                     "content": json.dumps(payload, ensure_ascii=False)})
     raw = await provider.complete(
         model=model,
-        messages=[{"role": "system", "content": _PRIMARY_SYSTEM},
-                  {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}],
+        messages=messages,
         response_schema=primary_route_generation_schema(
             message, pending_origin_verified=bool(
                 pending_action and pending_origin_verified)))
