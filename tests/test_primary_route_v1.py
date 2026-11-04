@@ -533,3 +533,62 @@ def test_pending_mcp_validator_error_is_reported_as_safe_category():
     issues = safe_route_validation_issues(caught.value)
     assert {"field": "root", "category": "primary_route_pending_read_invalid"} in issues
     assert "RAG" not in str(issues)
+
+
+
+def test_context_schema_binds_root_quote_without_rewriting_proposal():
+    from agent.primary_route_v1 import primary_route_generation_schema
+    request = "替我建立一个待办事项，不过我还没有决定标题，请先问我名称。"
+    schema = primary_route_generation_schema(request)
+    assert schema["properties"]["quote"]["const"] == request
+    assert schema["properties"]["route_kind"] == RouteSignal.model_json_schema()["properties"]["route_kind"]
+    assert schema["properties"]["pending_read_tool_name"] == (
+        RouteSignal.model_json_schema()["properties"]["pending_read_tool_name"])
+    assert "const" not in primary_route_generation_schema("a" * 401)["properties"]["quote"]
+    # Host still rejects a fabricated or mismatched quote.
+    with pytest.raises(PrimaryRouteRejected, match="primary_route_quote_not_found"):
+        bind_route_signal(RouteSignal.model_validate(
+            signal("clarify", "虚构短句", clarification_question="标题是什么？",
+                   pending_write_tool_name="create_task")),
+            request, saved_plan_present=False, pending_action=None)
+
+
+@pytest.mark.parametrize("action", ["create_task", "mcp_reference_lookup"])
+def test_verified_pending_schema_forbids_copying_origin_intent(action):
+    from agent.primary_route_v1 import primary_route_generation_schema
+    schema = primary_route_generation_schema(
+        "RAG", pending_origin_verified=True)
+    assert schema["properties"]["quote"]["const"] == "RAG"
+    assert schema["properties"]["pending_read_tool_name"]["type"] == "null"
+    assert schema["properties"]["pending_write_tool_name"]["type"] == "null"
+    assert schema["properties"]["route_kind"] == RouteSignal.model_json_schema()["properties"]["route_kind"]
+    # The original runtime model remains fail closed if any provider ignores it.
+    bad = signal("clarify_response", "RAG",
+                 **({"pending_read_tool_name": action} if action == "mcp_reference_lookup"
+                    else {"pending_write_tool_name": action}))
+    with pytest.raises(ValidationError):
+        RouteSignal.model_validate(bad)
+
+
+def test_single_model_receives_host_bounded_schema_for_real_pending_reply():
+    from agent.primary_route_v1 import primary_route_generation_schema
+    class ObserveSchema:
+        def __init__(self):
+            self.calls = 0
+            self.seen = None
+        async def complete(self, *, model, messages, response_schema):
+            self.calls += 1
+            self.seen = response_schema
+            return json.dumps(signal("clarify_response", "RAG"))
+
+    provider = ObserveSchema()
+    route = asyncio.run(propose_primary_route(
+        provider, "test", "RAG", saved_plan_present=False,
+        pending_action="mcp_reference_lookup",
+        pending_origin_verified=True,
+        pending_question="查哪个术语？"))
+    assert route.route_kind == "clarify_response"
+    assert provider.calls == 1
+    assert provider.seen["properties"]["quote"]["const"] == "RAG"
+    assert provider.seen["properties"]["pending_read_tool_name"]["type"] == "null"
+    assert provider.seen["properties"]["pending_write_tool_name"]["type"] == "null"
