@@ -49,7 +49,7 @@ _ROUTE_DIAGNOSTIC_FIELDS = frozenset({
     "schema_version", "route_kind", "quote", "execution_scope",
     "effect_intent", "steps", "step_number", "clarification_question",
     "revision_old_argument", "revision_new_argument", "write_tool_name",
-    "write_arguments", "pending_write_tool_name", "goal", "tool_name",
+    "write_arguments", "pending_write_tool_name", "pending_read_tool_name", "goal", "tool_name",
     "arguments",
 })
 _ROUTE_DIAGNOSTIC_TYPES = frozenset({
@@ -67,6 +67,7 @@ _ROUTE_DIAGNOSTIC_TYPES = frozenset({
     "primary_route_write_contract_missing",
     "primary_route_unexpected_write_contract",
     "primary_route_pending_write_invalid",
+    "primary_route_pending_read_invalid",
     "primary_route_clarification_mismatch",
 })
 
