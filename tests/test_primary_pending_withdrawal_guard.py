@@ -66,3 +66,28 @@ def test_unverified_pending_stays_denied_despite_good_title():
         guarded_mode=True, turn_created=True, current_request=utterance))
     assert decision.disposition == "deny"
     assert decision.reason == "primary_v1_pending_origin_unverified"
+
+
+@pytest.mark.parametrize("utterance", [
+    "算了，这个待办不创建了。",
+    "不要创建任务",
+    "取消这个待办",
+])
+def test_write_executor_must_reject_withdrawal_before_db_access(utterance):
+    from services.primary_pending_write import consume_pending_task_write_v1
+
+    class NeverBegin:
+        @staticmethod
+        def begin():
+            raise AssertionError("withdrawal must not access or mutate database")
+
+    outcome = consume_pending_task_write_v1(
+        session_factory=NeverBegin,
+        conversation_id="synthetic-conversation",
+        current_turn_id="synthetic-turn",
+        origin_turn_id="synthetic-origin",
+        authority_id="synthetic-authority",
+        reply=utterance)
+    assert outcome["status"] == "partial"
+    assert outcome["termination_reason"] == "pending_write_reply_withdrawn"
+    assert not any(t.get("type") == "tool" for t in outcome["trace"])
