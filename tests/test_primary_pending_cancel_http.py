@@ -9,6 +9,29 @@ from apps.api.main import create_app
 from services.db import AgentAttempt, ConversationTask, Message, PendingWriteAuthority, Turn, database
 
 
+@pytest.fixture(autouse=True)
+def forbid_retired_reviewers_for_primary_http(monkeypatch):
+    # The same function-level fail-on-call list is used for successful
+    # plan lifecycles and pending write cancellation, not only refusals.
+    retired = (
+        "review_plan_cancellation", "propose_first_route",
+        "review_plan_intent", "check_plan_edit_intent",
+        "classify_pending_reply", "review_pending_reference_lookup",
+        "review_unsupported_capability", "review_read_only_clarification",
+        "reconcile_execution_policy", "review_plan_creation_reference",
+        "review_missing_plan_reference", "review_plan_execution_authorization",
+        "review_plan_execution_scope",
+    )
+    def forbidden(*args, **kwargs):
+        raise AssertionError("AC2: retired reviewer reached from Primary HTTP")
+    for name in retired:
+        monkeypatch.setattr("apps.api.main." + name, forbidden)
+    monkeypatch.setattr("apps.api.main.UnderstandingService", forbidden)
+    monkeypatch.setattr("apps.api.main.decide_execution_policy_detail", forbidden)
+    monkeypatch.setattr("apps.api.main.propose_new_plan_route", forbidden)
+    monkeypatch.setattr("apps.api.main.propose_saved_plan_route", forbidden)
+
+
 @pytest.mark.parametrize("cancel", [
     "算了，这个待办不创建了。",
     "取消刚才那条待办的创建请求，别替我新增任务。",
