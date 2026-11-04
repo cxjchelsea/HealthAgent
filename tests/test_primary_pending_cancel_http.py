@@ -1,4 +1,5 @@
 """HTTP regression for a model that mislabels task cancellation as title."""
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
@@ -8,9 +9,12 @@ from apps.api.main import create_app
 from services.db import AgentAttempt, ConversationTask, Message, PendingWriteAuthority, Turn, database
 
 
-def test_wrong_primary_pending_cancel_must_not_create_task(tmp_path, monkeypatch):
+@pytest.mark.parametrize("cancel", [
+    "算了，这个待办不创建了。",
+    "取消刚才那条待办的创建请求，别替我新增任务。",
+])
+def test_wrong_primary_pending_cancel_must_not_create_task(tmp_path, monkeypatch, cancel):
     origin = "我准备创建一个待办事项，但没有想好标题；请先询问标题。"
-    cancel = "算了，这个待办不创建了。"
     unrelated = "请继续执行之前存档的计算计划，别重新创建。"
 
     async def fake_primary(*args, **kwargs):
