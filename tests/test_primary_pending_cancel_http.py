@@ -250,3 +250,98 @@ def test_abandoned_pending_write_is_revoked_after_non_continuation(
                 ConversationTask.conversation_id == cid)).all() == []
             assert db.scalars(select(AgentAttempt).where(
                 AgentAttempt.conversation_id == cid)).all() == []
+
+
+def test_qwen_switch_misrouted_as_pending_title_is_fenced_and_revoked(
+        tmp_path, monkeypatch):
+    """Real final-head failure: an unrelated sentence cannot become a task."""
+    origin = "准备新增一项待办，任务名称暂时没有定，请先问我。"
+    switch = "我们换个话题，简单介绍一下模型上下文协议是什么。"
+
+    async def primary(*args, **kwargs):
+        message = args[2]
+        if message == origin:
+            signal = {"schema_version": "primary-route-v1",
+                      "route_kind": "clarify", "quote": origin,
+                      "clarification_question": "请告诉我待办标题。",
+                      "pending_write_tool_name": "create_task"}
+        else:
+            assert message == switch
+            assert kwargs["pending_action"] == "create_task"
+            assert kwargs["pending_origin_verified"]
+            # Exact observed erroneous Qwen route from final-live-v1.
+            signal = {"schema_version": "primary-route-v1",
+                      "route_kind": "clarify_response", "quote": switch}
+        return bind_route_signal(
+            RouteSignal.model_validate(signal), message,
+            saved_plan_present=False,
+            pending_action=kwargs["pending_action"],
+            pending_origin_verified=kwargs["pending_origin_verified"])
+
+    monkeypatch.setattr("apps.api.main.propose_primary_route", primary)
+    cfg = Settings(
+        database_url=f"sqlite:///{tmp_path / 'pending_switch_guard.db'}",
+        model_provider="fake", routing_profile="unified",
+        primary_route_v1_canary_enabled=True, _env_file=None)
+    with TestClient(create_app(cfg)) as client:
+        cid = client.post("/conversations").json()["id"]
+        endpoint = f"/conversations/{cid}/agent/messages"
+        first = client.post(endpoint, json={
+            "content": origin, "client_request_id": "switch-misroute-origin"})
+        assert first.status_code == 200, first.text
+        assert first.json()["termination_reason"] == "needs_input"
+
+        second = client.post(endpoint, json={
+            "content": switch, "client_request_id": "switch-misroute-followup"})
+        assert second.status_code == 200, second.text
+        body = second.json()
+        assert body["status"] == "partial"
+        assert body["termination_reason"] == "primary_v1_pending_title_not_standalone"
+        assert not any(x.get("type") == "tool" for x in body.get("trace", []))
+
+        _, Session = database(cfg.database_url)
+        with Session() as db:
+            authorities = db.scalars(select(PendingWriteAuthority).where(
+                PendingWriteAuthority.conversation_id == cid)).all()
+            assert len(authorities) == 1
+            assert authorities[0].status == "revoked"
+            assert authorities[0].consumed_turn_id is None
+            assert db.scalars(select(ConversationTask).where(
+                ConversationTask.conversation_id == cid)).all() == []
+            assert db.scalars(select(AgentAttempt).where(
+                AgentAttempt.conversation_id == cid)).all() == []
+
+
+def test_pending_title_shape_gate_is_not_a_semantic_classifier():
+    from agent.pending_write_withdrawal_guard import standalone_pending_task_title
+    from agent.primary_host_admission_v1 import (
+        PrimaryHostFacts, admit_primary_route_v1,
+    )
+
+    for title in (
+        "核对虚构样机的校准编号", "整理取消订单的记录",
+        "Review Q4 synthetic log (phase-2)",
+    ):
+        assert standalone_pending_task_title(title)
+
+    for utterance in (
+        "我们换个话题，简单介绍一下模型上下文协议是什么。",
+        "检查仪器，然后告诉我发生了什么。",
+        "提交报告？", "任务一\\n任务二",
+        "取消这个待办",
+    ):
+        assert not standalone_pending_task_title(utterance)
+
+    message = "我们换个话题，简单介绍一下模型上下文协议是什么。"
+    proposal = bind_route_signal(RouteSignal.model_validate({
+        "schema_version": "primary-route-v1",
+        "route_kind": "clarify_response", "quote": message,
+    }), message, saved_plan_present=False,
+        pending_action="create_task", pending_origin_verified=True)
+    decision = admit_primary_route_v1(proposal, PrimaryHostFacts(
+        checkpoint=None, pending_action="create_task",
+        pending_origin_verified=True,
+        pending_write_authority_verified=True,
+        guarded_mode=True, turn_created=True, current_request=message))
+    assert decision.disposition == "restrict"
+    assert decision.reason == "primary_v1_pending_title_not_standalone"
