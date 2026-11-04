@@ -39,6 +39,9 @@ from agent.primary_host_admission_v1 import PrimaryHostFacts, admit_primary_rout
 from agent.pending_write_withdrawal_guard import explicitly_withdraws_pending_task_write
 from agent.primary_pending_readonly_v1 import execute_pending_readonly_v1
 from agent.primary_ordinary_write_v1 import execute_primary_write_v1
+from services.primary_pending_confirmation import (
+    stage_pending_task_candidate, commit_confirmed_pending_task,
+)
 from services.primary_pending_write import (
     pending_write_authority_for_origin,
     mint_pending_write_authority_in_session,
@@ -81,6 +84,13 @@ class ChatIn(BaseModel):
     selected_ordinary_operation: str | None = None  # explicitly selected by client
     goal_confirmation: str | None = None
     expected_goal_version: int | None = None
+
+class PendingTaskConfirmationIn(BaseModel):
+    authority_id: str = Field(min_length=36, max_length=40)
+    confirmation_nonce: str = Field(min_length=36, max_length=40)
+    candidate_digest: str = Field(min_length=64, max_length=64)
+    client_request_id: str = Field(min_length=8, max_length=120)
+
 
 class GoalIn(BaseModel):
     content: str = Field(min_length=1)
@@ -194,6 +204,23 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
         if not MemoryStore(Session, uid).delete(key):
             raise HTTPException(404, "memory_not_found")
         return {"deleted": True}
+
+    @app.post("/conversations/{cid}/pending-task/confirm")
+    def confirm_pending_task(cid: str, body: PendingTaskConfirmationIn,
+                             uid=Depends(user_id)):
+        if not settings.pending_write_confirmation_active:
+            raise HTTPException(403, "pending_confirmation_disabled")
+        with Session() as db:
+            get_owned(db, cid, uid)
+        result = commit_confirmed_pending_task(
+            session_factory=Session, conversation_id=cid,
+            authority_id=body.authority_id,
+            confirmation_nonce=body.confirmation_nonce,
+            candidate_digest=body.candidate_digest,
+            request_id=body.client_request_id)
+        if result["status"] != "completed":
+            raise HTTPException(409, result["reason"])
+        return result
 
     @app.post("/conversations/{cid}/agent/messages")
     async def send_agent_in_conversation(cid: str, body: ChatIn, uid=Depends(user_id)):
@@ -465,7 +492,10 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                 and pending_action == "create_task"
                                 and pending_write_authority_id is not None
                                 and pending_write_origin_turn_id is not None):
-                            result = consume_pending_task_write_v1(
+                            handler = (stage_pending_task_candidate
+                                       if settings.pending_write_confirmation_active
+                                       else consume_pending_task_write_v1)
+                            result = handler(
                                 session_factory=Session,
                                 conversation_id=cid, current_turn_id=turn_id,
                                 origin_turn_id=pending_write_origin_turn_id,
@@ -1063,7 +1093,10 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                     "trace": [{"step": 0, "type": "pending_write_fenced"}],
                                     "steps": 0}
                             else:
-                                result = consume_pending_task_write_v1(
+                                handler = (stage_pending_task_candidate
+                                           if settings.pending_write_confirmation_active
+                                           else consume_pending_task_write_v1)
+                                result = handler(
                                     session_factory=Session,
                                     conversation_id=cid, current_turn_id=turn_id,
                                     origin_turn_id=pending_write_origin_turn_id,
@@ -1455,6 +1488,10 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                           plan_control=plan_control)
             if result["status"] in {"completed", "partial"}:
                 answer, status = result["answer"], result["status"]
+                if (status == "partial"
+                        and result.get("termination_reason") ==
+                        "pending_write_confirmation_required"):
+                    failure_code = "pending_write_confirmation_required"
                 if status == "partial" and (
                     result.get("termination_reason") == "needs_input"
                     or any(t.get("type") == "goal_clarification"
