@@ -41,6 +41,7 @@ from agent.primary_pending_readonly_v1 import execute_pending_readonly_v1
 from agent.primary_ordinary_write_v1 import execute_primary_write_v1
 from services.primary_pending_confirmation import (
     stage_pending_task_candidate, commit_confirmed_pending_task,
+    reject_pending_task_candidate,
 )
 from services.primary_pending_write import (
     pending_write_authority_for_origin,
@@ -219,6 +220,22 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
             candidate_digest=body.candidate_digest,
             request_id=body.client_request_id)
         if result["status"] != "completed":
+            raise HTTPException(409, result["reason"])
+        return result
+
+    @app.post("/conversations/{cid}/pending-task/reject")
+    def reject_pending_task(cid: str, body: PendingTaskConfirmationIn,
+                            uid=Depends(user_id)):
+        if not settings.pending_write_confirmation_active:
+            raise HTTPException(403, "pending_confirmation_disabled")
+        with Session() as db:
+            get_owned(db, cid, uid)
+        result = reject_pending_task_candidate(
+            session_factory=Session, conversation_id=cid,
+            authority_id=body.authority_id,
+            confirmation_nonce=body.confirmation_nonce,
+            candidate_digest=body.candidate_digest)
+        if result["status"] != "revoked":
             raise HTTPException(409, result["reason"])
         return result
 
