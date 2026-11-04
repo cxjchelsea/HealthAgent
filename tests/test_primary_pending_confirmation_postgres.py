@@ -210,3 +210,71 @@ def test_postgres_confirmation_transaction_crash_rolls_back_all(monkeypatch):
         assert _audit(Session, cid)[2:] == (1, 1)
     finally:
         engine.dispose()
+
+
+def test_postgres_confirmation_competes_with_new_chat_revoke():
+    """Either confirmation precedes the chat, or the new chat revokes it.
+
+    Both operations must serialize on the same Conversation parent row.
+    Neither order can produce a task after candidate revocation.
+    """
+    from services.primary_pending_confirmation import (
+        revoke_staged_candidates_on_new_turn,
+    )
+    engine, Session = database(os.environ["TEST_POSTGRES_URL"])
+    Base.metadata.create_all(engine)
+    try:
+        cid, token = _prepared(Session)
+        barrier = threading.Barrier(2)
+
+        def confirm():
+            barrier.wait(timeout=15)
+            return commit_confirmed_pending_task(
+                session_factory=Session, conversation_id=cid,
+                authority_id=token["authority_id"],
+                confirmation_nonce=token["confirmation_nonce"],
+                candidate_digest=token["candidate_digest"],
+                request_id="confirm-chat-race-" + str(uuid.uuid4()))
+
+        def new_chat():
+            barrier.wait(timeout=15)
+            with Session.begin() as db:
+                db.scalar(select(Conversation.id).where(
+                    Conversation.id == cid).with_for_update())
+                revoked = revoke_staged_candidates_on_new_turn(db, cid)
+                answer = Message(conversation_id=cid, role="assistant",
+                                 content="新聊天", status="completed")
+                db.add(answer)
+                db.flush()
+                db.add(Turn(
+                    conversation_id=cid,
+                    request_id="chat-race-" + str(uuid.uuid4()),
+                    assistant_message_id=answer.id, state="completed"))
+                return revoked
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            first = pool.submit(confirm)
+            second = pool.submit(new_chat)
+            result = first.result(timeout=30)
+            revoked = second.result(timeout=30)
+        state, consumed_turn_id, tasks, attempts = _audit(Session, cid)
+        assert tasks == attempts
+        assert tasks in (0, 1)
+        if tasks == 1:
+            assert result["status"] == "completed"
+            assert state == "consumed" and consumed_turn_id
+            assert revoked == 0
+        else:
+            assert result["status"] == "denied"
+            assert state == "revoked" and not consumed_turn_id
+            assert revoked == 1
+        retry = commit_confirmed_pending_task(
+            session_factory=Session, conversation_id=cid,
+            authority_id=token["authority_id"],
+            confirmation_nonce=token["confirmation_nonce"],
+            candidate_digest=token["candidate_digest"],
+            request_id="chat-race-retry-" + str(uuid.uuid4()))
+        assert retry["status"] == "denied"
+        assert _audit(Session, cid)[2:] == (tasks, attempts)
+    finally:
+        engine.dispose()
