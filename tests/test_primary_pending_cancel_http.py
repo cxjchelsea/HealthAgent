@@ -130,3 +130,100 @@ def test_wrong_primary_pending_cancel_must_not_create_task(tmp_path, monkeypatch
                 ConversationTask.conversation_id == cid)).all() == []
             assert db.scalars(select(AgentAttempt).where(
                 AgentAttempt.conversation_id == cid)).all() == []
+
+
+@pytest.mark.parametrize("route,followup", [
+    ("respond", "换个话题，帮我概括一下合成测试项目。"),
+    ("reject", "请执行一个不存在的外部命令。"),
+    ("plan_missing", "继续执行此前保存的计算计划。"),
+])
+def test_abandoned_pending_write_is_revoked_after_non_continuation(
+        tmp_path, monkeypatch, route, followup):
+    """A fresh unrelated Turn must not leave an old one-use write permit alive."""
+    origin = "我想创建一项待办，但标题没想好，请先问标题。"
+
+    async def primary(*args, **kwargs):
+        message = args[2]
+        if message == origin:
+            spec = {"schema_version": "primary-route-v1",
+                    "route_kind": "clarify", "quote": origin,
+                    "clarification_question": "请提供任务名称。",
+                    "pending_write_tool_name": "create_task"}
+        else:
+            assert message == followup
+            assert kwargs["pending_action"] == "create_task"
+            spec = {"schema_version": "primary-route-v1",
+                    "route_kind": route, "quote": followup}
+        return bind_route_signal(
+            RouteSignal.model_validate(spec), message,
+            saved_plan_present=False, pending_action=kwargs["pending_action"],
+            pending_origin_verified=kwargs["pending_origin_verified"])
+
+    class AnswerOnlyLoop:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def run(self, goal, **kwargs):
+            assert kwargs["execution_mode"] == "respond_only"
+            return {"run_id": "test", "status": "completed",
+                    "termination_reason": "model_final",
+                    "answer": "项目概况。", "trace": [], "steps": 0}
+
+    monkeypatch.setattr("apps.api.main.propose_primary_route", primary)
+    if route == "respond":
+        monkeypatch.setattr("apps.api.main.AgentLoop", AnswerOnlyLoop)
+
+    cfg = Settings(database_url=f"sqlite:///{tmp_path / 'abandoned.db'}",
+                   model_provider="fake", routing_profile="unified",
+                   primary_route_v1_canary_enabled=True, _env_file=None)
+    with TestClient(create_app(cfg)) as client:
+        cid = client.post("/conversations").json()["id"]
+        endpoint = f"/conversations/{cid}/agent/messages"
+        first = client.post(endpoint, json={
+            "content": origin, "client_request_id": "abandon-origin"})
+        assert first.status_code == 200, first.text
+        assert first.json()["termination_reason"] == "needs_input"
+
+        other = client.post(endpoint, json={
+            "content": followup, "client_request_id": "abandon-other"})
+        assert other.status_code == 200, other.text
+        assert other.json()["termination_reason"] != "pending_task_created"
+
+        _, Session = database(cfg.database_url)
+        with Session() as db:
+            auth = db.scalars(select(PendingWriteAuthority).where(
+                PendingWriteAuthority.conversation_id == cid)).all()
+            assert len(auth) == 1
+            assert auth[0].status == "revoked"
+            assert auth[0].consumed_turn_id is None
+            origin_id, authority_id = auth[0].origin_turn_id, auth[0].id
+            assert db.scalars(select(ConversationTask).where(
+                ConversationTask.conversation_id == cid)).all() == []
+            assert db.scalars(select(AgentAttempt).where(
+                AgentAttempt.conversation_id == cid)).all() == []
+
+        # Direct executor access with stale IDs must remain denied.
+        from services.primary_pending_write import consume_pending_task_write_v1
+        with Session.begin() as db:
+            assistant = Message(conversation_id=cid, role="assistant",
+                                content="", status="pending")
+            db.add(assistant)
+            db.flush()
+            synthetic = Turn(conversation_id=cid,
+                             request_id="abandon-stale-executor",
+                             assistant_message_id=assistant.id, state="running")
+            db.add(synthetic)
+            db.flush()
+            synthetic_turn_id = synthetic.id
+        denied = consume_pending_task_write_v1(
+            session_factory=Session, conversation_id=cid,
+            current_turn_id=synthetic_turn_id,
+            origin_turn_id=origin_id, authority_id=authority_id,
+            reply="虚构测试任务")
+        assert denied["termination_reason"] == "pending_write_authority_conflict"
+        with Session() as db:
+            assert db.get(PendingWriteAuthority, authority_id).status == "revoked"
+            assert db.scalars(select(ConversationTask).where(
+                ConversationTask.conversation_id == cid)).all() == []
+            assert db.scalars(select(AgentAttempt).where(
+                AgentAttempt.conversation_id == cid)).all() == []
