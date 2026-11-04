@@ -36,7 +36,7 @@ def explicitly_withdraws_pending_task_write(message: str) -> bool:
 # intent recognizer. A full conversational instruction must not be treated
 # as a task title merely because the model chose clarify_response.
 # Ambiguous compound utterances require clarification rather than mutation.
-_NON_TITLE_DELIMITERS = frozenset("，,。.!！?？；;：:\\r\\n")
+_NON_TITLE_DELIMITERS = frozenset("，,。.!！?？；;：:") | {"\\r", "\\n"}
 
 
 def standalone_pending_task_title(message: str) -> bool:
