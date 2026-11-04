@@ -11,7 +11,7 @@ from services.db import ConversationTask, PendingWriteAuthority, database
 def test_wrong_primary_pending_cancel_must_not_create_task(tmp_path, monkeypatch):
     origin = "我准备创建一个待办事项，但没有想好标题；请先询问标题。"
     cancel = "算了，这个待办不创建了。"
-    unrelated = "刚才那个任务不用了，给我一句简短答复即可。"
+    unrelated = "请继续执行之前存档的计算计划，别重新创建。"
 
     async def fake_primary(*args, **kwargs):
         message = args[2]
@@ -29,7 +29,7 @@ def test_wrong_primary_pending_cancel_must_not_create_task(tmp_path, monkeypatch
             assert message == unrelated
             assert kwargs["pending_action"] is None
             spec = {"schema_version": "primary-route-v1",
-                    "route_kind": "respond", "quote": unrelated}
+                    "route_kind": "plan_missing", "quote": unrelated}
         return bind_route_signal(
             RouteSignal.model_validate(spec), message,
             saved_plan_present=False,
@@ -69,7 +69,8 @@ def test_wrong_primary_pending_cancel_must_not_create_task(tmp_path, monkeypatch
         followup = client.post(endpoint, json={
             "content": unrelated, "client_request_id": "cancel-followup"})
         assert followup.status_code == 200, followup.text
-        assert followup.json()["status"] == "completed"
+        assert followup.json()["status"] == "partial"
+        assert followup.json()["termination_reason"] == "primary_v1_missing_plan_status"
         with Session() as db:
             assert db.scalars(select(ConversationTask).where(
                 ConversationTask.conversation_id == cid)).all() == []
