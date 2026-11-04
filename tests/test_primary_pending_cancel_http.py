@@ -42,6 +42,22 @@ def test_wrong_primary_pending_cancel_must_not_create_task(tmp_path, monkeypatch
             pending_origin_verified=kwargs["pending_origin_verified"])
 
     monkeypatch.setattr("apps.api.main.propose_primary_route", fake_primary)
+
+    # This suite validates Primary admission + durable revoke, not natural-
+    # language answer generation. Fake Provider cannot complete respond_only.
+    class AnswerOnlyLoop:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def run(self, goal, **kwargs):
+            assert kwargs["execution_mode"] == "respond_only"
+            assert kwargs["memory_write_consent"] is False
+            return {"run_id": "test-answer", "status": "completed",
+                    "termination_reason": "model_final",
+                    "answer": "已停止创建。", "trace": [], "steps": 0}
+
+    if cancel_route == "respond":
+        monkeypatch.setattr("apps.api.main.AgentLoop", AnswerOnlyLoop)
     cfg = Settings(database_url=f"sqlite:///{tmp_path / 'cancel_guard.db'}",
                    model_provider="fake", routing_profile="unified",
                    primary_route_v1_canary_enabled=True)
