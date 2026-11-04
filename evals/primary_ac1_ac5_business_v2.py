@@ -122,6 +122,10 @@ def physical_audit(db, cid, name, turn_id):
     auth = read_rows(db, "pending_write_authorities", cid)
     tasks = read_rows(db, "conversation_tasks", cid)
     attempts = read_rows(db, "agent_attempts", cid)
+    plan_records = read_rows(db, "conversation_plans", cid)
+    memories = db.execute(
+        "SELECT key, value FROM user_memories WHERE key = ?",
+        ("synthetic_marker",)).fetchall()
     by_turn = [e for e in evidence if e["turn_id"] == turn_id]
     by_auth_status = sorted(a["status"] for a in auth)
     result = {
@@ -130,6 +134,8 @@ def physical_audit(db, cid, name, turn_id):
         "task_count": len(tasks),
         "attempt_count": len(attempts),
         "authority_statuses": by_auth_status,
+        "plan_rows": len(plan_records),
+        "memory_rows": len(memories),
         "turn_evidence_ok": (len(by_turn) == 1
                             and by_turn[0]["schema_version"] == "primary-route-v1"
                             and by_turn[0]["semantic_attempts"] == 1
@@ -166,6 +172,31 @@ def physical_audit(db, cid, name, turn_id):
     else:
         result["effect_ok"] = len(tasks) == 0 and len(attempts) == 0
 
+    if name in {"PLAN_CREATE_A", "PLAN_FIRST_A", "PLAN_RESUME_A",
+                "PLAN_CREATE_B", "PLAN_REVISE_B"}:
+        result["effect_ok"] &= len(plan_records) == 1
+        if len(plan_records) == 1:
+            snapshot = json.loads(plan_records[0]["snapshot"])
+            statuses = [x.get("status") for x in snapshot.get("steps", [])]
+            required = {
+                "PLAN_CREATE_A": ["pending", "pending"],
+                "PLAN_FIRST_A": ["completed", "pending"],
+                "PLAN_RESUME_A": ["completed", "completed"],
+                "PLAN_CREATE_B": ["pending", "pending"],
+                "PLAN_REVISE_B": ["pending", "pending"],
+            }
+            result["effect_ok"] &= statuses == required[name]
+            if name == "PLAN_REVISE_B":
+                result["effect_ok"] &= (snapshot["steps"][1].get(
+                    "expected_arguments") == {"expression": "20+21"})
+    if name == "PLAN_CANCEL_B":
+        result["effect_ok"] &= not plan_records or not json.loads(
+            plan_records[0]["snapshot"]).get("steps")
+    if name == "MEMORY_DENY":
+        result["effect_ok"] &= len(memories) == 0
+    if name == "MEMORY_ALLOW":
+        result["effect_ok"] &= (len(memories) == 1
+                                 and memories[0]["value"] == "RUNT-93")
     if name in {"PLAN_FIRST_A", "PLAN_RESUME_A", "ORDINARY_CALCULATE"}:
         result["effect_ok"] &= all(
             a["tool_name"] == "calculate" and a["status"] == "succeeded"
@@ -225,11 +256,9 @@ def assess(name, http_status, body, evidence, categories, attempts, events,
     disposition = evidence.get("disposition")
     reason = body.get("termination_reason")
     if name == "PENDING_CANCEL_REPLY":
-        # A cancellation must never consume the original write authority.
-        # The exact non-write route may vary, but the DB must be revoked.
-        return (route in {"respond", "reject", "clarify", "clarify_response"}
-                and disposition in {"allow", "restrict", "clarify"}
-                and reason != "pending_task_created" and not events)
+        # Safety-only cancellation is insufficient: semantics must be correct.
+        return (route == "respond" and disposition == "allow"
+                and reason == "model_final" and not events)
     if (route, disposition, reason) != ROUTES.get(name):
         return False
     if name in {"PLAN_CREATE_A", "PLAN_CREATE_B"}:
