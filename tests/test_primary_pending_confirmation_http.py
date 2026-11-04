@@ -135,3 +135,26 @@ def test_wrong_semantic_reply_can_only_stage_not_write(
         auths, tasks, attempts = _counts(cfg, cid)
         assert auths[0].status == "awaiting_confirmation"
         assert tasks == [] and attempts == []
+
+
+def test_explicit_reject_revokes_candidate_without_write(tmp_path, monkeypatch):
+    _routes(monkeypatch)
+    cfg = _settings(tmp_path)
+    with TestClient(create_app(cfg)) as client:
+        cid = client.post("/conversations").json()["id"]
+        assert _send(client, cid, ORIGIN, "confirmation-origin-003").status_code == 200
+        staged = _send(client, cid, TITLE, "confirmation-reply-003")
+        assert staged.status_code == 200, staged.text
+        token = staged.json()["confirmation"]
+        reject = client.post(
+            f"/conversations/{cid}/pending-task/reject",
+            json={**token, "client_request_id": "confirmation-reject-003"})
+        assert reject.status_code == 200, reject.text
+        assert reject.json()["status"] == "revoked"
+        confirm = client.post(
+            f"/conversations/{cid}/pending-task/confirm",
+            json={**token, "client_request_id": "confirmation-commit-003"})
+        assert confirm.status_code == 409
+        auths, tasks, attempts = _counts(cfg, cid)
+        assert auths[0].status == "revoked"
+        assert tasks == [] and attempts == []
