@@ -438,7 +438,7 @@ def test_primary_first_snapshot_is_readonly_input_and_output_steps_must_be_empty
 
         async def complete(self, *, model, messages, response_schema):
             self.calls += 1
-            self.payload = json.loads(messages[1]["content"])
+            self.payload = json.loads(messages[-1]["content"])
             return json.dumps(signal(
                 "plan_execute_first", "只执行已保存计划的第一步",
                 execution_scope="first_step", effect_intent="read_only",
