@@ -60,6 +60,10 @@ class PendingWriteAuthority(Base):
     source_digest: Mapped[str] = mapped_column(String(64))
     status: Mapped[str] = mapped_column(String(24), default="pending")
     consumed_turn_id: Mapped[str | None] = mapped_column(ForeignKey("turns.id"), nullable=True)
+    candidate_turn_id: Mapped[str | None] = mapped_column(ForeignKey("turns.id"), nullable=True)
+    candidate_title: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    candidate_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    confirmation_nonce: Mapped[str | None] = mapped_column(String(40), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
