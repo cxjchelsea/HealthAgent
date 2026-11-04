@@ -48,6 +48,7 @@ def _prepared(Session):
             source_message=source.content, tool_name="create_task")
         origin.state = "partial"
         origin.failure_code = "needs_input:create_task"
+        origin_id = origin.id
     with Session.begin() as db:
         user = Message(conversation_id=cid, role="user",
                        content="核对虚构传感器登记表")
@@ -62,7 +63,7 @@ def _prepared(Session):
         candidate_id = candidate.id
     staged = stage_pending_task_candidate(
         session_factory=Session, conversation_id=cid,
-        current_turn_id=candidate_id, origin_turn_id=origin.id,
+        current_turn_id=candidate_id, origin_turn_id=origin_id,
         authority_id=authority_id, reply="核对虚构传感器登记表")
     assert staged["termination_reason"] == "pending_write_confirmation_required"
     with Session.begin() as db:
