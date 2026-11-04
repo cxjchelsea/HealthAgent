@@ -13,7 +13,8 @@ from services.db import AgentAttempt, ConversationTask, Message, PendingWriteAut
     "算了，这个待办不创建了。",
     "取消刚才那条待办的创建请求，别替我新增任务。",
 ])
-def test_wrong_primary_pending_cancel_must_not_create_task(tmp_path, monkeypatch, cancel):
+@pytest.mark.parametrize("cancel_route", ["clarify_response", "respond"])
+def test_wrong_primary_pending_cancel_must_not_create_task(tmp_path, monkeypatch, cancel, cancel_route):
     origin = "我准备创建一个待办事项，但没有想好标题；请先询问标题。"
     unrelated = "请继续执行之前存档的计算计划，别重新创建。"
 
@@ -28,7 +29,7 @@ def test_wrong_primary_pending_cancel_must_not_create_task(tmp_path, monkeypatch
             assert kwargs["pending_action"] == "create_task"
             # Simulate real Qwen's incorrect successful-write semantic proposal.
             spec = {"schema_version": "primary-route-v1",
-                    "route_kind": "clarify_response", "quote": cancel}
+                    "route_kind": cancel_route, "quote": cancel}
         else:
             assert message == unrelated
             assert kwargs["pending_action"] is None
@@ -55,8 +56,12 @@ def test_wrong_primary_pending_cancel_must_not_create_task(tmp_path, monkeypatch
         second = client.post(endpoint, json={
             "content": cancel, "client_request_id": "cancel-reply"})
         assert second.status_code == 200, second.text
-        assert second.json()["status"] == "partial"
-        assert second.json()["termination_reason"] == "primary_v1_pending_task_withdrawn"
+        if cancel_route == "clarify_response":
+            assert second.json()["status"] == "partial"
+            assert second.json()["termination_reason"] == "primary_v1_pending_task_withdrawn"
+        else:
+            assert second.json()["status"] in {"completed", "partial"}
+            assert second.json()["termination_reason"] != "pending_task_created"
         assert not any(event.get("name") == "create_task"
                        for event in second.json().get("trace", []))
 
