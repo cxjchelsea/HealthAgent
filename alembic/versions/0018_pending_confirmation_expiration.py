@@ -2,7 +2,7 @@
 from alembic import op
 import sqlalchemy as sa
 
-revision = "0018_pending_confirmation_expiration"
+revision = "0018_pending_expiry"
 down_revision = "0017_pending_write_confirmation"
 branch_labels = None
 depends_on = None
