@@ -176,7 +176,7 @@ def commit_confirmed_pending_task(
             PendingWriteAuthority.confirmation_nonce == confirmation_nonce,
             PendingWriteAuthority.candidate_digest == candidate_digest,
             PendingWriteAuthority.candidate_expires_at > datetime.now(timezone.utc),
-        ).values(status="consumed"))
+        ).values(status="consumed").execution_options(synchronize_session=False))
         if changed.rowcount != 1:
             return {"status": "denied", "reason": "confirmation_already_used"}
         title = auth.candidate_title
@@ -284,7 +284,8 @@ def replace_pending_task_candidate(
             PendingWriteAuthority.consumed_turn_id.is_(None),
             PendingWriteAuthority.candidate_expires_at > datetime.now(timezone.utc),
         ).values(candidate_title=title, candidate_digest=_digest(title),
-                 confirmation_nonce=nonce, candidate_expires_at=expiry))
+                 confirmation_nonce=nonce, candidate_expires_at=expiry
+        ).execution_options(synchronize_session=False))
         if changed.rowcount != 1:
             return {"status": "denied", "reason": "confirmation_replaced"}
     return {"status": "awaiting_confirmation",
