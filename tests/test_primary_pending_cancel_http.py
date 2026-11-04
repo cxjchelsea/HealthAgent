@@ -66,7 +66,8 @@ def test_wrong_primary_pending_cancel_must_not_create_task(tmp_path, monkeypatch
             assert db.scalars(select(AgentAttempt).where(
                 AgentAttempt.conversation_id == cid)).all() == []
             assert len(authorities) == 1
-            assert authorities[0].status == "pending"
+            assert authorities[0].status == "revoked"
+            assert authorities[0].consumed_turn_id is None
 
         followup = client.post(endpoint, json={
             "content": unrelated, "client_request_id": "cancel-followup"})
