@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     m5_first_route_enabled: bool = False  # explicit FIRST-only experiment
     m5_unified_route_enabled: bool = False  # opt-in shared saved-plan route experiment
     primary_route_v1_canary_enabled: bool = False  # opt-in HTTP v1; never implicit
+    pending_write_confirmation_enabled: bool = False  # explicit rollout; no model-based confirmation
     understanding_strategy: str = "direct"  # direct or structured; benchmark before default switch
     model_api_key: str = ""
     model_timeout_seconds: float = Field(default=45, gt=0)
