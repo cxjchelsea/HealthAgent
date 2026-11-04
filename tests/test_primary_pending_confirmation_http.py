@@ -231,6 +231,17 @@ def test_new_chat_revokes_staged_candidate_before_any_confirmation(
                 "route_kind": "respond", "quote": msg,
             }), msg, saved_plan_present=False, pending_action=None)
         monkeypatch.setattr("apps.api.main.propose_primary_route", fresh)
+
+        class RespondLoop:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def run(self, *args, **kwargs):
+                return {"status": "completed", "answer": "测试回答",
+                        "termination_reason": "model_final", "trace": [],
+                        "steps": 0, "run_id": "fake"}
+
+        monkeypatch.setattr("apps.api.main.AgentLoop", RespondLoop)
         new_turn = _send(client, cid, "现在请重新回答另一个问题",
                          "abandon-candidate-new-turn")
         assert new_turn.status_code == 200, new_turn.text
