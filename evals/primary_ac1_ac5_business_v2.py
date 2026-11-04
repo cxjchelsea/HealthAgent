@@ -345,7 +345,7 @@ def main():
                             "conversation_tasks", "agent_attempts",
                             "pending_write_authorities")
                     }
-                if name == "PENDING_TASK_CONFIRM":
+                if name in {"PENDING_TASK_CONFIRM", "PENDING_TASK_REPLAY"}:
                     if group not in tokens:
                         add(name, "BLOCKED", failure="candidate_token_missing")
                         blocked.add(group)
