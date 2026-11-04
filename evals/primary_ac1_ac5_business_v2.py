@@ -21,7 +21,7 @@ from urllib.parse import urlparse
 import httpx
 
 
-# Frozen v1. Do not rewrite a case after seeing model results.
+# Frozen v2 before first model run. Never rewrite observed cases in place.
 # Case keys are also the order of execution within their isolated conversation.
 CASES = (
     ("PLAN_CREATE_A", "plan_a",
@@ -209,9 +209,14 @@ def physical_audit(db, cid, name, turn_id):
             and bool(auth[0]["confirmation_nonce"])
             and bool(auth[0]["candidate_expires_at"]))
     if name == "PENDING_TASK_CONFIRM":
+        confirmed_turn = [t for t in turns if t["id"] == turn_id]
         result["effect_ok"] &= (
-            len(auth) == 1 and auth[0]["consumed_turn_id"] == turn_id
+            bool(turn_id) and len(confirmed_turn) == 1
+            and confirmed_turn[0]["state"] == "completed"
+            and len(evidence) == 2 and len(turns) == 3
+            and len(auth) == 1 and auth[0]["consumed_turn_id"] == turn_id
             and len(attempts) == 1
+            and attempts[0]["turn_id"] == turn_id
             and attempts[0]["tool_name"] == "create_task"
             and attempts[0]["status"] == "succeeded")
     if name in {"PENDING_CANCEL_REPLY", "PENDING_TOPIC_REPLY"}:
@@ -387,10 +392,12 @@ def main():
                 with sqlite3.connect(path.as_uri() + "?mode=ro", uri=True) as db:
                     db.row_factory = sqlite3.Row
                     before = {
-                        t: len(read_rows(db, t, cid)) for t in (
-                            "turns", "primary_route_evidence",
-                            "conversation_tasks", "agent_attempts",
-                            "pending_write_authorities")
+                        t: sorted(read_rows(db, t, cid),
+                                  key=lambda row: row.get("id", row.get("turn_id", "")))
+                        for t in ("turns", "primary_route_evidence",
+                                  "conversation_tasks", "agent_attempts",
+                                  "pending_write_authorities",
+                                  "conversation_plans")
                     }
                 if name in {"PENDING_TASK_CONFIRM", "PENDING_TASK_REPLAY"}:
                     if group not in tokens:
@@ -429,7 +436,9 @@ def main():
                     db.row_factory = sqlite3.Row
                     if replay:
                         after = {
-                            t: len(read_rows(db, t, cid)) for t in before}
+                            t: sorted(read_rows(db, t, cid),
+                                      key=lambda row: row.get("id", row.get("turn_id", "")))
+                            for t in before}
                         physical = {"unchanged": before == after}
                     else:
                         physical = physical_audit(db, cid, name, tid)
