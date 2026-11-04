@@ -5,7 +5,7 @@ from sqlalchemy import select
 from agent.config import Settings
 from agent.primary_route_v1 import RouteSignal, bind_route_signal
 from apps.api.main import create_app
-from services.db import AgentAttempt, ConversationTask, PendingWriteAuthority, database
+from services.db import AgentAttempt, ConversationTask, Message, PendingWriteAuthority, Turn, database
 
 
 def test_wrong_primary_pending_cancel_must_not_create_task(tmp_path, monkeypatch):
@@ -77,3 +77,31 @@ def test_wrong_primary_pending_cancel_must_not_create_task(tmp_path, monkeypatch
         with Session() as db:
             assert db.scalars(select(ConversationTask).where(
                 ConversationTask.conversation_id == cid)).all() == []
+
+        # A caller holding old permit IDs must never reactivate withdrawn rights.
+        from services.primary_pending_write import consume_pending_task_write_v1
+        with Session.begin() as db:
+            permit = db.scalar(select(PendingWriteAuthority).where(
+                PendingWriteAuthority.conversation_id == cid))
+            origin_id, permit_id = permit.origin_turn_id, permit.id
+            assistant = Message(conversation_id=cid, role="assistant",
+                                content="", status="pending")
+            db.add(assistant)
+            db.flush()
+            synthetic = Turn(conversation_id=cid,
+                             request_id="attempt-stale-revoked-permit",
+                             assistant_message_id=assistant.id, state="running")
+            db.add(synthetic)
+            db.flush()
+            stale_turn_id = synthetic.id
+        replay = consume_pending_task_write_v1(
+            session_factory=Session, conversation_id=cid,
+            current_turn_id=stale_turn_id, origin_turn_id=origin_id,
+            authority_id=permit_id, reply="模拟仪器复核")
+        assert replay["termination_reason"] == "pending_write_authority_conflict"
+        with Session() as db:
+            assert db.get(PendingWriteAuthority, permit_id).status == "revoked"
+            assert db.scalars(select(ConversationTask).where(
+                ConversationTask.conversation_id == cid)).all() == []
+            assert db.scalars(select(AgentAttempt).where(
+                AgentAttempt.conversation_id == cid)).all() == []
