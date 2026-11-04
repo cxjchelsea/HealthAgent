@@ -1606,7 +1606,10 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                 # later direct executor calls from consuming stale rights.
                 if (pending_write_authority_id is not None
                         and pending_write_origin_turn_id is not None
-                        and explicitly_withdraws_pending_task_write(body.content)):
+                        and (explicitly_withdraws_pending_task_write(body.content)
+                             or (settings.primary_route_v1_active
+                                 and v1_primary_kind is not None
+                                 and v1_primary_kind != "clarify_response"))):
                     revoke_pending_task_authority_in_session(
                         db, conversation_id=cid,
                         origin_turn_id=pending_write_origin_turn_id,
