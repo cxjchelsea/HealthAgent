@@ -8,6 +8,7 @@ confirmation Turn are committed by one database transaction.
 import hashlib
 import json
 import uuid
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select, update
 
@@ -16,12 +17,28 @@ from agent.pending_write_withdrawal_guard import (
     explicitly_withdraws_pending_task_write, standalone_pending_task_title,
 )
 from services.db import (
-    AgentAttempt, ConversationTask, Message, PendingWriteAuthority, Turn,
+    AgentAttempt, Message, PendingWriteAuthority, Turn, Conversation,
 )
 from services.evidence_store import arguments_digest, bounded_projection
 from services.primary_pending_write import source_digest
 from services.task_store import ConversationTaskStore
 from services.write_effect_fence import write_fence_in_session
+
+
+CANDIDATE_TTL = timedelta(minutes=15)
+
+
+def _expired(value):
+    if value is None:
+        return True
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value <= datetime.now(timezone.utc)
+
+
+def _lock_conversation(db, cid):
+    return db.scalar(select(Conversation.id).where(
+        Conversation.id == cid).with_for_update()) is not None
 
 
 def _digest(title: str) -> str:
@@ -49,7 +66,10 @@ def stage_pending_task_candidate(
     if not standalone_pending_task_title(title):
         return deny("pending_write_title_not_standalone")
     nonce = str(uuid.uuid4())
+    expiry = datetime.now(timezone.utc) + CANDIDATE_TTL
     with session_factory.begin() as db:
+        if not _lock_conversation(db, conversation_id):
+            return deny("pending_confirmation_conversation_missing")
         current = db.get(Turn, current_turn_id)
         origin = db.get(Turn, origin_turn_id)
         auth = db.get(PendingWriteAuthority, authority_id)
@@ -78,7 +98,7 @@ def stage_pending_task_candidate(
         ).values(
             status="awaiting_confirmation", candidate_turn_id=current_turn_id,
             candidate_title=title, candidate_digest=_digest(title),
-            confirmation_nonce=nonce))
+            confirmation_nonce=nonce, candidate_expires_at=expiry))
         if changed.rowcount != 1:
             return deny("pending_confirmation_stage_conflict")
     return {
@@ -100,6 +120,8 @@ def commit_confirmed_pending_task(
         request_id: str) -> dict:
     """Host action: no model classification; single atomic task commit."""
     with session_factory.begin() as db:
+        if not _lock_conversation(db, conversation_id):
+            return {"status": "denied", "reason": "confirmation_conversation_missing"}
         previous = db.scalar(select(Turn).where(
             Turn.conversation_id == conversation_id,
             Turn.request_id == request_id))
@@ -115,6 +137,12 @@ def commit_confirmed_pending_task(
                 or not auth.candidate_title
                 or _digest(auth.candidate_title) != candidate_digest):
             return {"status": "denied", "reason": "confirmation_binding_conflict"}
+        if _expired(auth.candidate_expires_at):
+            db.execute(update(PendingWriteAuthority).where(
+                PendingWriteAuthority.id == authority_id,
+                PendingWriteAuthority.status == "awaiting_confirmation"
+            ).values(status="expired"))
+            return {"status": "denied", "reason": "confirmation_expired"}
         origin = db.get(Turn, auth.origin_turn_id)
         candidate = db.get(Turn, auth.candidate_turn_id)
         source = db.get(Message, auth.origin_user_message_id)
@@ -147,6 +175,7 @@ def commit_confirmed_pending_task(
             PendingWriteAuthority.consumed_turn_id.is_(None),
             PendingWriteAuthority.confirmation_nonce == confirmation_nonce,
             PendingWriteAuthority.candidate_digest == candidate_digest,
+            PendingWriteAuthority.candidate_expires_at > datetime.now(timezone.utc),
         ).values(status="consumed"))
         if changed.rowcount != 1:
             return {"status": "denied", "reason": "confirmation_already_used"}
@@ -192,6 +221,8 @@ def reject_pending_task_candidate(
         confirmation_nonce: str, candidate_digest: str) -> dict:
     """Structured cancellation, no model call and no write effect."""
     with session_factory.begin() as db:
+        if not _lock_conversation(db, conversation_id):
+            return {"status": "denied", "reason": "confirmation_conversation_missing"}
         changed = db.execute(update(PendingWriteAuthority).where(
             PendingWriteAuthority.id == authority_id,
             PendingWriteAuthority.conversation_id == conversation_id,
