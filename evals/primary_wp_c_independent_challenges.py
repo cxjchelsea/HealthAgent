@@ -71,7 +71,7 @@ def correct_followup_math_answer(answer: object) -> bool:
     value = answer.strip()
     if not value or len(value) > 10000:
         return False
-    if re.search(r"(?:不是|不等于|并非|并不是|not|isn't|is not)\\s*(?:56|五十六)", value, re.I):
+    if re.search(r"(?:不是|不等于|并非|并不是|not|isn't|is not)\s*(?:56|五十六)", value, re.I):
         return False
     return (re.search(r"(?<![0-9])56(?![0-9])", value) is not None
             or "五十六" in value)
