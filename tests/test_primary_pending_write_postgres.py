@@ -18,6 +18,7 @@ from services.db import (
 )
 from services.primary_pending_write import (
     consume_pending_task_write_v1, mint_pending_write_authority_in_session,
+    revoke_pending_task_authority_in_session,
 )
 from services.primary_write_reconciliation import (
     inspect_pending_write_authorities,
@@ -131,6 +132,155 @@ def test_postgres_pending_authority_competing_workers_and_unfinalized_audit(
             Session, cid)[0]["assessment"] == "consumed_completed"
     finally:
         # Scoped teardown; never truncate shared CI database.
+        with Session.begin() as db:
+            db.execute(delete(AgentAttempt).where(
+                AgentAttempt.conversation_id == cid))
+            db.execute(delete(ConversationTask).where(
+                ConversationTask.conversation_id == cid))
+            db.execute(delete(PendingWriteAuthority).where(
+                PendingWriteAuthority.conversation_id == cid))
+            db.execute(delete(Turn).where(Turn.conversation_id == cid))
+            db.execute(delete(Message).where(Message.conversation_id == cid))
+            db.execute(delete(Conversation).where(Conversation.id == cid))
+        engine.dispose()
+
+
+@pytest.mark.skipif(not os.getenv("TEST_POSTGRES_URL"),
+                    reason="requires TEST_POSTGRES_URL")
+@pytest.mark.parametrize("winner", ["revoke", "consume"])
+def test_postgres_pending_revoke_consume_race_has_one_committed_winner(
+        monkeypatch, winner):
+    """Deterministic opposing writers, distinct PostgreSQL connections.
+
+    The first transaction pauses AFTER the authority row is conditionally
+    updated but BEFORE commit. The loser starts against the still-uncommitted
+    row. PostgreSQL must serialize the opposing CAS, never commit a task
+    under a revoked authorization, and never report both operations successful.
+    """
+    engine, Session = database(os.environ["TEST_POSTGRES_URL"])
+    Base.metadata.create_all(engine)
+    with Session.begin() as db:
+        conversation = Conversation(owner_id="primary-pending-race-" + winner)
+        db.add(conversation)
+        db.flush()
+        cid = conversation.id
+        source_text = "请创建任务，我还没有标题"
+        source = Message(conversation_id=cid, role="user",
+                         content=source_text)
+        prompt = Message(conversation_id=cid, role="assistant",
+                         content="请补充标题", status="partial")
+        db.add_all([source, prompt])
+        db.flush()
+        origin = Turn(conversation_id=cid, request_id="race-origin-" + winner,
+                      state="running", assistant_message_id=prompt.id)
+        db.add(origin)
+        db.flush()
+        origin_id = origin.id
+        authority_id = mint_pending_write_authority_in_session(
+            db, conversation_id=cid, origin_turn_id=origin_id,
+            origin_user_message_id=source.id,
+            source_message=source_text, tool_name="create_task")
+        origin.state = "partial"
+        origin.failure_code = "needs_input:create_task"
+    with Session.begin() as db:
+        answer = Message(conversation_id=cid, role="assistant",
+                         content="", status="pending")
+        db.add(answer)
+        db.flush()
+        reply_turn = Turn(conversation_id=cid,
+                          request_id="race-reply-" + winner,
+                          assistant_message_id=answer.id, state="running")
+        db.add(reply_turn)
+        db.flush()
+        current_id = reply_turn.id
+
+    first_updated = threading.Event()
+    release_first = threading.Event()
+    second_started = threading.Event()
+    results = {}
+    original_create = ConversationTaskStore.create_in_session
+
+    def paused_create(self, db, title):
+        # The consumption CAS has already changed the authorization row.
+        if winner == "consume":
+            first_updated.set()
+            assert release_first.wait(timeout=15), "consume pause timed out"
+        return original_create(self, db, title)
+
+    if winner == "consume":
+        monkeypatch.setattr(ConversationTaskStore, "create_in_session",
+                            paused_create)
+
+    def revoke():
+        try:
+            with Session.begin() as db:
+                revoke_pending_task_authority_in_session(
+                    db, conversation_id=cid, origin_turn_id=origin_id,
+                    authority_id=authority_id)
+                if winner == "revoke":
+                    first_updated.set()
+                    assert release_first.wait(timeout=15), "revoke pause timed out"
+            results["revoke"] = "committed"
+        except Exception as exc:
+            results["revoke"] = type(exc).__name__ + ":" + str(exc)
+
+    def consume():
+        try:
+            result = consume_pending_task_write_v1(
+                session_factory=Session, conversation_id=cid,
+                current_turn_id=current_id, origin_turn_id=origin_id,
+                authority_id=authority_id, reply="周五提交测试报告")
+            results["consume"] = result["termination_reason"]
+        except Exception as exc:
+            results["consume"] = type(exc).__name__ + ":" + str(exc)
+
+    def second():
+        second_started.set()
+        (consume if winner == "revoke" else revoke)()
+
+    first = threading.Thread(
+        target=revoke if winner == "revoke" else consume, daemon=True)
+    loser = threading.Thread(target=second, daemon=True)
+    try:
+        first.start()
+        assert first_updated.wait(timeout=15), "winner did not enter CAS"
+        loser.start()
+        assert second_started.wait(timeout=10), "loser did not start"
+        # Hold the row update while the opposing transaction is in flight;
+        # the exact order is controlled by the first transaction's pause.
+        time.sleep(0.2)
+    finally:
+        release_first.set()
+    first.join(timeout=15)
+    loser.join(timeout=15)
+    try:
+        assert not first.is_alive() and not loser.is_alive(), results
+        assert set(results) == {"revoke", "consume"}, results
+        with Session() as db:
+            permit = db.get(PendingWriteAuthority, authority_id)
+            tasks = db.scalars(select(ConversationTask).where(
+                ConversationTask.conversation_id == cid)).all()
+            attempts = db.scalars(select(AgentAttempt).where(
+                AgentAttempt.conversation_id == cid)).all()
+            if winner == "revoke":
+                assert results["revoke"] == "committed", results
+                assert results["consume"] in {
+                    "pending_write_authority_conflict",
+                    "pending_write_already_consumed",
+                }, results
+                assert permit.status == "revoked"
+                assert permit.consumed_turn_id is None
+                assert len(tasks) == len(attempts) == 0
+            else:
+                assert results["consume"] == "pending_task_created", results
+                assert results["revoke"] == (
+                    "RuntimeError:pending_write_revoke_conflict"), results
+                assert permit.status == "consumed"
+                assert permit.consumed_turn_id == current_id
+                assert len(tasks) == len(attempts) == 1
+                assert attempts[0].status == "succeeded"
+                assert attempts[0].tool_name == "create_task"
+    finally:
         with Session.begin() as db:
             db.execute(delete(AgentAttempt).where(
                 AgentAttempt.conversation_id == cid))
