@@ -158,3 +158,85 @@ def test_explicit_reject_revokes_candidate_without_write(tmp_path, monkeypatch):
         auths, tasks, attempts = _counts(cfg, cid)
         assert auths[0].status == "revoked"
         assert tasks == [] and attempts == []
+
+
+def test_replacement_rotates_token_and_old_candidate_cannot_write(tmp_path, monkeypatch):
+    _routes(monkeypatch)
+    cfg = _settings(tmp_path)
+    with TestClient(create_app(cfg)) as client:
+        cid = client.post("/conversations").json()["id"]
+        _send(client, cid, ORIGIN, "replacement-origin-001")
+        staged = _send(client, cid, TITLE, "replacement-reply-001")
+        original = staged.json()["confirmation"]
+        endpoint = f"/conversations/{cid}/pending-task"
+        revised = client.post(endpoint + "/replace", json={
+            **original, "client_request_id": "replacement-request-001",
+            "new_title": "更新合成实验台的测试记录"})
+        assert revised.status_code == 200, revised.text
+        updated = revised.json()["confirmation"]
+        assert updated["confirmation_nonce"] != original["confirmation_nonce"]
+        assert updated["candidate_digest"] != original["candidate_digest"]
+        assert client.post(endpoint + "/confirm", json={
+            **original, "client_request_id": "replacement-old-confirm"}).status_code == 409
+        auths, tasks, attempts = _counts(cfg, cid)
+        assert auths[0].status == "awaiting_confirmation"
+        assert not tasks and not attempts
+        final = client.post(endpoint + "/confirm", json={
+            **updated, "client_request_id": "replacement-new-confirm"})
+        assert final.status_code == 200, final.text
+        auths, tasks, attempts = _counts(cfg, cid)
+        assert len(tasks) == len(attempts) == 1
+        assert tasks[0].title == updated["candidate_title"]
+
+
+def test_expired_candidate_is_durably_denied_without_task(tmp_path, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    _routes(monkeypatch)
+    cfg = _settings(tmp_path)
+    with TestClient(create_app(cfg)) as client:
+        cid = client.post("/conversations").json()["id"]
+        _send(client, cid, ORIGIN, "expiry-origin-001")
+        staged = _send(client, cid, TITLE, "expiry-reply-001")
+        token = staged.json()["confirmation"]
+        _, Session = database(cfg.database_url)
+        with Session.begin() as db:
+            authority = db.scalar(select(PendingWriteAuthority).where(
+                PendingWriteAuthority.conversation_id == cid))
+            authority.candidate_expires_at = (
+                datetime.now(timezone.utc) - timedelta(seconds=1))
+        denied = client.post(f"/conversations/{cid}/pending-task/confirm",
+                             json={**token, "client_request_id": "expiry-confirm-001"})
+        assert denied.status_code == 409, denied.text
+        assert denied.json()["detail"] == "confirmation_expired"
+        auths, tasks, attempts = _counts(cfg, cid)
+        assert auths[0].status == "expired"
+        assert tasks == [] and attempts == []
+
+
+def test_new_chat_revokes_staged_candidate_before_any_confirmation(
+        tmp_path, monkeypatch):
+    _routes(monkeypatch)
+    cfg = _settings(tmp_path)
+    with TestClient(create_app(cfg)) as client:
+        cid = client.post("/conversations").json()["id"]
+        _send(client, cid, ORIGIN, "abandon-candidate-origin")
+        staged = _send(client, cid, TITLE, "abandon-candidate-title")
+        token = staged.json()["confirmation"]
+
+        async def fresh(*args, **kwargs):
+            msg = args[2]
+            assert msg == "现在请重新回答另一个问题"
+            return bind_route_signal(RouteSignal.model_validate({
+                "schema_version": "primary-route-v1",
+                "route_kind": "respond", "quote": msg,
+            }), msg, saved_plan_present=False, pending_action=None)
+        monkeypatch.setattr("apps.api.main.propose_primary_route", fresh)
+        new_turn = _send(client, cid, "现在请重新回答另一个问题",
+                         "abandon-candidate-new-turn")
+        assert new_turn.status_code == 200, new_turn.text
+        auths, tasks, attempts = _counts(cfg, cid)
+        assert auths[0].status == "revoked"
+        assert tasks == [] and attempts == []
+        denied = client.post(f"/conversations/{cid}/pending-task/confirm",
+                             json={**token, "client_request_id": "abandon-confirm"})
+        assert denied.status_code == 409
