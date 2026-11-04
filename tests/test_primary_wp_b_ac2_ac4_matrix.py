@@ -108,7 +108,8 @@ def test_ac2_ac4_non_effectful_routes_have_no_legacy_or_mutations(
     monkeypatch.setattr("apps.api.main.AgentLoop", NoToolLoop)
     cfg = Settings(
         database_url=f"sqlite:///{tmp_path / (scenario + '-' + routing_profile + '.db')}",
-        model_provider="ollama_proxy", routing_profile=routing_profile)
+        model_provider="ollama_proxy", routing_profile=routing_profile,
+        _env_file=None)
     with TestClient(create_app(cfg)) as client:
         cid = client.post("/conversations").json()["id"]
         data = {"content": message, "client_request_id": "wp-b-" + scenario}
@@ -163,7 +164,8 @@ def test_ac2_host_restrict_is_terminal_with_durable_proposal(
                             "restrict", "wp_b_host_restricted", "ordinary_tool"))
     cfg = Settings(
         database_url=f"sqlite:///{tmp_path / 'restrict.db'}",
-        model_provider="ollama_proxy", routing_profile=routing_profile)
+        model_provider="ollama_proxy", routing_profile=routing_profile,
+        _env_file=None)
     with TestClient(create_app(cfg)) as client:
         cid = client.post("/conversations").json()["id"]
         reply = client.post(f"/conversations/{cid}/agent/messages", json={
