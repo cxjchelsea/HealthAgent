@@ -497,6 +497,32 @@ _PRIMARY_SYSTEM += (
 )
 
 
+def primary_route_generation_schema(message: str, *,
+                                    pending_origin_verified: bool = False) -> dict:
+    """Constrain generation, never rewrite or authorize a model proposal.
+
+    For a short request the whole request is already a unique source span.
+    The provider must copy it exactly; the existing Host binding still
+    checks it. Verified Pending contexts forbid reusing the origin's
+    missing-tool marker as an output permission claim. Do not preselect
+    route_kind: a user can withdraw or change a Pending request.
+    """
+    schema = RouteSignal.model_json_schema()
+    if 1 <= len(message) <= 400:
+        schema["properties"]["quote"] = {
+            "type": "string", "const": message,
+            "minLength": 1, "maxLength": 400,
+            "description": "Exact complete current_request; source evidence, not authority",
+        }
+    if pending_origin_verified:
+        for field in ("pending_write_tool_name", "pending_read_tool_name"):
+            schema["properties"][field] = {
+                "type": "null",
+                "description": "Origin belongs to Host; a reply cannot reissue a pending intent",
+            }
+    return schema
+
+
 @attributed("primary")
 async def propose_primary_route(provider, model: str, message: str, *,
                                 saved_plan_present: bool,
@@ -526,7 +552,9 @@ async def propose_primary_route(provider, model: str, message: str, *,
         model=model,
         messages=[{"role": "system", "content": _PRIMARY_SYSTEM},
                   {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}],
-        response_schema=RouteSignal.model_json_schema())
+        response_schema=primary_route_generation_schema(
+            message, pending_origin_verified=bool(
+                pending_action and pending_origin_verified)))
     try:
         signal = RouteSignal.model_validate_json(raw)
     except ValidationError as exc:
