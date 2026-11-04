@@ -185,3 +185,22 @@ def commit_confirmed_pending_task(
         return {"status": "completed",
                 "termination_reason": "pending_confirmed_task_created",
                 "turn_id": turn.id, "task_id": observed["task_id"]}
+
+
+def reject_pending_task_candidate(
+        *, session_factory, conversation_id: str, authority_id: str,
+        confirmation_nonce: str, candidate_digest: str) -> dict:
+    """Structured cancellation, no model call and no write effect."""
+    with session_factory.begin() as db:
+        changed = db.execute(update(PendingWriteAuthority).where(
+            PendingWriteAuthority.id == authority_id,
+            PendingWriteAuthority.conversation_id == conversation_id,
+            PendingWriteAuthority.tool_name == "create_task",
+            PendingWriteAuthority.status == "awaiting_confirmation",
+            PendingWriteAuthority.consumed_turn_id.is_(None),
+            PendingWriteAuthority.confirmation_nonce == confirmation_nonce,
+            PendingWriteAuthority.candidate_digest == candidate_digest,
+        ).values(status="revoked"))
+        if changed.rowcount != 1:
+            return {"status": "denied", "reason": "confirmation_binding_conflict"}
+        return {"status": "revoked", "reason": "pending_candidate_rejected"}
