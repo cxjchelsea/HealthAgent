@@ -49,3 +49,71 @@ def test_host_cannot_rewrite_wrong_pending_route_into_semantic_success():
     assert proposal.route_kind == "clarify_response"
     assert decision.route_kind == "clarify_response"
     assert decision.disposition == "restrict"
+
+
+def test_verified_pending_context_gets_single_current_turn_semantic_instruction():
+    import asyncio
+    import json
+
+    from agent.primary_route_v1 import propose_primary_route, _PENDING_CURRENT_TURN_SYSTEM
+
+    class Provider:
+        def __init__(self):
+            self.calls = []
+
+        async def complete(self, *, model, messages, response_schema):
+            self.calls.append((model, messages, response_schema))
+            msg = json.loads(messages[-1]["content"])["current_request"]
+            return json.dumps({
+                "schema_version": "primary-route-v1",
+                "route_kind": "respond",
+                "quote": msg,
+                "execution_scope": "none",
+                "effect_intent": "none",
+            }, ensure_ascii=False)
+
+    p = Provider()
+    message = "给我介绍一下知识图谱的作用"
+    result = asyncio.run(propose_primary_route(
+        p, "synthetic", message, saved_plan_present=False,
+        pending_action="create_task", pending_origin_verified=True,
+        pending_question="请补充待办任务名称。",
+        recent_context=[{"role": "assistant", "content": "请补充待办任务名称。"}]))
+    assert result.route_kind == "respond"
+    assert len(p.calls) == 1
+    model, messages, schema = p.calls[0]
+    assert len(messages) == 3
+    assert messages[1]["role"] == "system"
+    assert messages[1]["content"] == _PENDING_CURRENT_TURN_SYSTEM
+    assert "counterfactual" in messages[1]["content"].lower()
+    assert json.loads(messages[2]["content"])["current_request"] == message
+    assert schema["properties"]["quote"]["const"] == message
+    assert "clarify_response" in schema["properties"]["route_kind"]["enum"]
+
+
+def test_no_verified_pending_keeps_original_one_system_one_user_contract():
+    import asyncio
+    import json
+    from agent.primary_route_v1 import propose_primary_route
+
+    class Provider:
+        def __init__(self):
+            self.calls = []
+
+        async def complete(self, *, model, messages, response_schema):
+            self.calls.append(messages)
+            msg = json.loads(messages[-1]["content"])["current_request"]
+            return json.dumps({
+                "schema_version": "primary-route-v1",
+                "route_kind": "respond",
+                "quote": msg,
+            }, ensure_ascii=False)
+
+    p = Provider()
+    result = asyncio.run(propose_primary_route(
+        p, "synthetic", "解释多智能体通信",
+        saved_plan_present=False, pending_action=None,
+        pending_origin_verified=False))
+    assert result.route_kind == "respond"
+    assert len(p.calls) == 1
+    assert [x["role"] for x in p.calls[0]] == ["system", "user"]
