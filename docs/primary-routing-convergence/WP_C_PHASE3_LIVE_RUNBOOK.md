@@ -128,3 +128,17 @@ python -m evals.primary_wp_c_phase3_live --endpoint http://127.0.0.1:8012 --grou
 ```powershell
 python -m evals.primary_wp_c_phase3_live --endpoint http://127.0.0.1:8012 --groups pending_task pending_mcp --output artifacts/wp-c/phase3-pending-v4.json --timeout 240
 ```
+
+
+## Phase 3 Pending v4 结果及任务写入合同修复（2026-11-04）
+
+真实 Qwen3:14b 报告 `phase3-pending-v4.json`，精确测试 HEAD `1259a5fd7dcff6dc3fdd6f89ba9fea5ac4328e79`。**5 PASS、1 FAIL、1 BLOCKED**（含预检）：Task 首次澄清成功；Task 回复 `primary_route_invalid_signal`，具体 `primary_route_unexpected_write_contract`，未执行工具；其 REPLAY BLOCKED。MCP 首次澄清、补参后 `clarify_response` 查询及 REPLAY HTTP 409 全部 PASS，0 次重放模型/工具调用。
+
+本轮只补齐已认证 Pending 回复中**重新生成新写入合同**的缺口。在 `primary_route_generation_schema` 的 `pending_origin_verified=true` 路径下，除了 `pending_read_tool_name`、`pending_write_tool_name`，模型生成 `write_tool_name` 和 `write_arguments` 也必须为 JSON null。该约束只影响带有 Host 验证 Pending 来源的模型输入：普通当前轮明确要求新建任务/保存记忆的生成 Schema 不变。唯一 Primary 模型仍选择路由，Host 仍读取原始待办授权并从当前用户回复验证标题；如果模型违反约束，`RouteSignal` 仍拒绝，不修补、不重试、不转给 Legacy。
+
+添加生成 Schema 边界、单次模型调用、正确续答及恶意/错误字段 fail-closed 的回归。**该整改尚无真实模型通过证明**；v4 的单次合法 MCP PASS 不代表 Pending Task 已通过，Phase 3 继续 HOLD。
+
+定向新数据库复验：
+```powershell
+python -m evals.primary_wp_c_phase3_live --endpoint http://127.0.0.1:8012 --groups pending_task pending_mcp --output artifacts/wp-c/phase3-pending-v5.json --timeout 240
+```
