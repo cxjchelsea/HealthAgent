@@ -551,7 +551,7 @@ _PENDING_CURRENT_TURN_SYSTEM = (
     "missing task title, it is clarify_response. "
     "Examples illustrating the distinction, not exact-match rules: "
     "pending title + '核对检测设备编号' -> clarify_response; "
-    "pending title + '给我讲讲分布式系统中的一致性模型' -> respond; "
+    "pending title + '请说明向量索引的适用场景' -> respond; "
     "pending title + '请说明事件驱动架构的作用' -> respond; "
     "pending title + '整理不再续订服务的记录' -> clarify_response; "
     "pending title + '这条待办先不创建了' -> respond. "
