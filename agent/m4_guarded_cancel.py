@@ -10,14 +10,15 @@ from agent.route_shadow import ShadowRoute
 
 def admit_guarded_plan_cancel(*, message: str, conversation_id: str,
                               request_id: str, checkpoint: dict | None,
-                              turn_created: bool, semantic_confirmed: bool) -> bool:
+                              turn_created: bool, semantic_confirmed: bool,
+                              primary_bound: bool = False) -> bool:
     """Permit entry to existing Host CAS cancellation, never invoke a tool.
 
     Model confirmation alone is insufficient. This adapter is deliberately
     scoped to cancellation; all other routes remain on the legacy path.
     """
     if not (semantic_confirmed and turn_created
-            and explicit_saved_plan_cancellation(message)
+            and (primary_bound or explicit_saved_plan_cancellation(message))
             and isinstance(checkpoint, dict)):
         return False
     steps = checkpoint.get("steps")
