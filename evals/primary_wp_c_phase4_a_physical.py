@@ -119,7 +119,7 @@ def audit(db, conversation_id: str, group: str, turn_ids: dict) -> dict:
     elif group == "cancel":
         effect_ok = (
             len(auth) == 1 and len(tasks) == len(attempts) == 0
-            and auth[0]["status"] == "pending"
+            and auth[0]["status"] == "revoked"
             and auth[0]["consumed_turn_id"] is None
             and auth[0]["origin_turn_id"] == origin
             and second_ev.get("route_kind") in {"respond", "clarify", "reject",
