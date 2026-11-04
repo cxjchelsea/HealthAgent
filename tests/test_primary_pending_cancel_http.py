@@ -327,7 +327,7 @@ def test_pending_title_shape_gate_is_not_a_semantic_classifier():
     for utterance in (
         "我们换个话题，简单介绍一下模型上下文协议是什么。",
         "检查仪器，然后告诉我发生了什么。",
-        "提交报告？", "任务一\\n任务二",
+        "提交报告？", "任务一\n任务二",
         "取消这个待办",
     ):
         assert not standalone_pending_task_title(utterance)
