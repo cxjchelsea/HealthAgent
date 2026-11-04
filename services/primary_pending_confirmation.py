@@ -235,3 +235,60 @@ def reject_pending_task_candidate(
         if changed.rowcount != 1:
             return {"status": "denied", "reason": "confirmation_binding_conflict"}
         return {"status": "revoked", "reason": "pending_candidate_rejected"}
+
+
+def revoke_staged_candidates_on_new_turn(db, conversation_id: str) -> int:
+    """New conversational turn abandons old candidate; caller holds parent row lock."""
+    changed = db.execute(update(PendingWriteAuthority).where(
+        PendingWriteAuthority.conversation_id == conversation_id,
+        PendingWriteAuthority.status == "awaiting_confirmation",
+        PendingWriteAuthority.consumed_turn_id.is_(None),
+    ).values(status="revoked"))
+    return changed.rowcount
+
+
+def replace_pending_task_candidate(
+        *, session_factory, conversation_id: str, authority_id: str,
+        confirmation_nonce: str, candidate_digest: str, new_title: str) -> dict:
+    """Client-originated edit only: rotate nonce/digest; never dispatch a tool."""
+    try:
+        title = SCHEMAS["create_task"].model_validate(
+            {"title": new_title.strip()}).title
+    except ValueError:
+        return {"status": "denied", "reason": "confirmation_invalid_title"}
+    if not standalone_pending_task_title(title):
+        return {"status": "denied", "reason": "confirmation_title_not_standalone"}
+    nonce = str(uuid.uuid4())
+    expiry = datetime.now(timezone.utc) + CANDIDATE_TTL
+    with session_factory.begin() as db:
+        if not _lock_conversation(db, conversation_id):
+            return {"status": "denied", "reason": "confirmation_conversation_missing"}
+        auth = db.get(PendingWriteAuthority, authority_id)
+        if (auth is None or auth.conversation_id != conversation_id
+                or auth.status != "awaiting_confirmation"
+                or auth.confirmation_nonce != confirmation_nonce
+                or auth.candidate_digest != candidate_digest
+                or _expired(auth.candidate_expires_at)):
+            return {"status": "denied", "reason": "confirmation_binding_conflict"}
+        latest_turn_id = db.scalar(select(Turn.id).join(
+            Message, Turn.assistant_message_id == Message.id).where(
+            Turn.conversation_id == conversation_id)
+            .order_by(Message.created_at.desc(), Message.id.desc()).limit(1))
+        if latest_turn_id != auth.candidate_turn_id:
+            return {"status": "denied", "reason": "confirmation_superseded"}
+        changed = db.execute(update(PendingWriteAuthority).where(
+            PendingWriteAuthority.id == authority_id,
+            PendingWriteAuthority.status == "awaiting_confirmation",
+            PendingWriteAuthority.confirmation_nonce == confirmation_nonce,
+            PendingWriteAuthority.candidate_digest == candidate_digest,
+            PendingWriteAuthority.consumed_turn_id.is_(None),
+            PendingWriteAuthority.candidate_expires_at > datetime.now(timezone.utc),
+        ).values(candidate_title=title, candidate_digest=_digest(title),
+                 confirmation_nonce=nonce, candidate_expires_at=expiry))
+        if changed.rowcount != 1:
+            return {"status": "denied", "reason": "confirmation_replaced"}
+    return {"status": "awaiting_confirmation",
+            "confirmation": {"authority_id": authority_id,
+                             "confirmation_nonce": nonce,
+                             "candidate_digest": _digest(title),
+                             "candidate_title": title}}
