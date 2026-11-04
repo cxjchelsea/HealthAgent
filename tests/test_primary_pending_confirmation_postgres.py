@@ -168,3 +168,44 @@ def test_postgres_expiry_and_replacement_old_nonce_cannot_write():
         assert _audit(Session, cid)[2:] == (0, 0)
     finally:
         engine.dispose()
+
+
+def test_postgres_confirmation_transaction_crash_rolls_back_all(monkeypatch):
+    from services.task_store import ConversationTaskStore
+
+    engine, Session = database(os.environ["TEST_POSTGRES_URL"])
+    Base.metadata.create_all(engine)
+    try:
+        cid, token = _prepared(Session)
+        original_create = ConversationTaskStore.create_in_session
+
+        def crash_after_insert(self, db, title):
+            observed = original_create(self, db, title)
+            assert observed["ok"]
+            raise RuntimeError("synthetic_confirm_crash_after_task_insert")
+
+        monkeypatch.setattr(ConversationTaskStore, "create_in_session",
+                            crash_after_insert)
+        with pytest.raises(RuntimeError, match="synthetic_confirm_crash"):
+            commit_confirmed_pending_task(
+                session_factory=Session, conversation_id=cid,
+                authority_id=token["authority_id"],
+                confirmation_nonce=token["confirmation_nonce"],
+                candidate_digest=token["candidate_digest"],
+                request_id="synthetic-confirm-crash")
+        # The authority, task and attempt must be rolled back together.
+        assert _audit(Session, cid)[0] == "awaiting_confirmation"
+        assert _audit(Session, cid)[2:] == (0, 0)
+        monkeypatch.setattr(ConversationTaskStore, "create_in_session",
+                            original_create)
+        result = commit_confirmed_pending_task(
+            session_factory=Session, conversation_id=cid,
+            authority_id=token["authority_id"],
+            confirmation_nonce=token["confirmation_nonce"],
+            candidate_digest=token["candidate_digest"],
+            request_id="synthetic-confirm-recovery")
+        assert result["status"] == "completed"
+        assert _audit(Session, cid)[0] == "consumed"
+        assert _audit(Session, cid)[2:] == (1, 1)
+    finally:
+        engine.dispose()
