@@ -108,3 +108,23 @@ python -m evals.primary_wp_c_phase3_live --endpoint http://127.0.0.1:8012 --grou
 ```
 
 只有通过真实复验再进入 Phase 3 完整非回归；AC5 仍 HOLD，禁止未经用户明确授权合并。
+
+
+## Phase 3 Pending 定向 v3 结果及结构化生成修正（2026-11-04）
+
+用户真实模型报告 `phase3-pending-v3.json`，代码 HEAD `d101b040a72ff400e0e49308ccbf035dd1bbe3a4`，ollama_proxy/qwen3:14b，unified，**2 PASS、2 FAIL、3 BLOCKED**：
+
+- preflight PASS；PENDING_MCP_ORIGIN PASS，正确落为 `needs_input`。
+- PENDING_TASK_ORIGIN FAIL：`primary_route_quote_not_found`，一次 Primary 调用、0 工具；任务续答与重放被阻断。
+- PENDING_MCP_ANSWER FAIL：`primary_route_invalid_signal`，现在诊断能定位为 `primary_route_pending_read_invalid`，模型在答复已验证 Pending 时仍携带不允许的 Pending 读取意图字段；0 工具、无旧分类器回退。重放 BLOCKED。
+
+两次 Prompt 细化后，失败位置改变但没有完全消失，因此优先从**单次模型的结构化生成边界**下手，而不是增加无尽示例或跳过 Host。新增 `primary_route_generation_schema`：对于长度 1–400 的当前请求，约束生成的根 `quote` 必须是该请求本身（准确的唯一 Host 来源片段）；对于 Host 验证后的 Pending 回复，单模型生成 Schema 要求两个 `pending_*_tool_name` 字段为 null。未能满足时依然严格拒绝；代码不删除/重写模型输出字段、不替用户决定意图、不强制选择 `clarify_response`。原 RouteSignal 和 Host 授权规则仍独立验证。对较长请求保持原始可选 quote 方式。
+
+**注意边界**：完整当前消息可作为来源，但不代表模型的 `route_kind` 已经得到独立的语义正确性证明。生成约束仅防止不忠实的引用或复用上一轮 pending 标记；真正的路由质量仍需未调参挑战样本与真实 Qwen 物理回归。
+
+本次修正不得直接宣称已解决待办续答：即使生成字段正确，模型依然可能选择 `clarify` 而非 `clarify_response`，只能真实测量后处理。仍需保留 409 重放及 0 工具的负断言。
+
+定向真实运行命令：
+```powershell
+python -m evals.primary_wp_c_phase3_live --endpoint http://127.0.0.1:8012 --groups pending_task pending_mcp --output artifacts/wp-c/phase3-pending-v4.json --timeout 240
+```
