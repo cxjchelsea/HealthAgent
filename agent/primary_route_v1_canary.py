@@ -89,7 +89,8 @@ def admit_v1_canary(proposal: BoundPrimaryProposal, *, message: str,
         if not admit_guarded_plan_cancel(
                 message=message, conversation_id=conversation_id,
                 request_id=request_id, checkpoint=checkpoint,
-                turn_created=True, semantic_confirmed=True):
+                turn_created=True, semantic_confirmed=True,
+                primary_bound=True):
             return deny("primary_v1_cancel_admission_denied",
                         "无法验证计划取消权限，未取消计划。")
         return {"run_id": turn_id, "status": "completed",
