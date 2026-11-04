@@ -1609,7 +1609,10 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                         and (explicitly_withdraws_pending_task_write(body.content)
                              or (settings.primary_route_v1_active
                                  and v1_primary_kind is not None
-                                 and v1_primary_kind != "clarify_response"))):
+                                 and (v1_primary_kind != "clarify_response"
+                                      or (v1_admission is not None
+                                          and v1_admission.reason ==
+                                          "primary_v1_pending_title_not_standalone"))))):
                     revoke_pending_task_authority_in_session(
                         db, conversation_id=cid,
                         origin_turn_id=pending_write_origin_turn_id,
