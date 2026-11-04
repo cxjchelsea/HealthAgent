@@ -5,7 +5,7 @@ from sqlalchemy import select
 from agent.config import Settings
 from agent.primary_route_v1 import RouteSignal, bind_route_signal
 from apps.api.main import create_app
-from services.db import ConversationTask, PendingWriteAuthority, database
+from services.db import AgentAttempt, ConversationTask, PendingWriteAuthority, database
 
 
 def test_wrong_primary_pending_cancel_must_not_create_task(tmp_path, monkeypatch):
@@ -63,6 +63,8 @@ def test_wrong_primary_pending_cancel_must_not_create_task(tmp_path, monkeypatch
             authorities = db.scalars(select(PendingWriteAuthority).where(
                 PendingWriteAuthority.conversation_id == cid)).all()
             assert tasks == []
+            assert db.scalars(select(AgentAttempt).where(
+                AgentAttempt.conversation_id == cid)).all() == []
             assert len(authorities) == 1
             assert authorities[0].status == "pending"
 
