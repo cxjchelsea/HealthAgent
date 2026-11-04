@@ -469,3 +469,67 @@ def test_primary_first_snapshot_is_readonly_input_and_output_steps_must_be_empty
         caught.value.validation_issues
     ) or any(issue["field"].startswith("steps") for issue in caught.value.validation_issues)
     assert invalid.calls == 1
+
+
+
+def test_verified_pending_reply_context_and_output_contract_are_distinct():
+    from agent.primary_route_v1 import _PRIMARY_SYSTEM
+    marker = "Verified Pending reply OUTPUT FORMAT EXAMPLE ONLY: "
+    encoded = _PRIMARY_SYSTEM.split(marker, 1)[1].split(
+        " This is ONLY an output example", 1)[0]
+    parsed = RouteSignal.model_validate_json(encoded)
+    assert parsed.route_kind == "clarify_response"
+    assert parsed.steps == []
+    assert parsed.pending_read_tool_name is None
+    assert parsed.pending_write_tool_name is None
+    assert parsed.clarification_question is None
+    assert "pending_origin_verified=true" in _PRIMARY_SYSTEM
+    assert "pending_question" in _PRIMARY_SYSTEM
+
+
+@pytest.mark.parametrize("action", ["create_task", "mcp_reference_lookup"])
+def test_primary_passes_only_host_verified_pending_question(action):
+    reply = "整理模拟记录"
+    class Capture:
+        def __init__(self):
+            self.payload = None
+            self.calls = 0
+        async def complete(self, *, model, messages, response_schema):
+            self.calls += 1
+            self.payload = json.loads(messages[1]["content"])
+            return json.dumps(signal("clarify_response", reply),
+                              ensure_ascii=False)
+
+    yes = Capture()
+    proposal = asyncio.run(propose_primary_route(
+        yes, "test", reply, saved_plan_present=False,
+        pending_action=action, pending_origin_verified=True,
+        pending_question="请提供任务标题或查询词条"))
+    assert proposal.route_kind == "clarify_response"
+    assert yes.calls == 1
+    assert yes.payload["pending_action"] == action
+    assert yes.payload["pending_origin_verified"] is True
+    assert yes.payload["pending_question"] == "请提供任务标题或查询词条"
+
+    no = Capture()
+    with pytest.raises(PrimaryRouteRejected, match="primary_route_untrusted_pending_origin"):
+        asyncio.run(propose_primary_route(
+            no, "test", reply, saved_plan_present=False,
+            pending_action=action, pending_origin_verified=False,
+            pending_question="未经验证的旧问题"))
+    assert no.calls == 1
+    assert no.payload["pending_action"] is None
+    assert no.payload["pending_origin_verified"] is False
+    assert no.payload["pending_question"] is None
+
+
+def test_pending_mcp_validator_error_is_reported_as_safe_category():
+    from agent.primary_route_v1 import safe_route_validation_issues
+    invalid = signal(
+        "clarify_response", "RAG",
+        pending_read_tool_name="mcp_reference_lookup")
+    with pytest.raises(ValidationError) as caught:
+        RouteSignal.model_validate(invalid)
+    issues = safe_route_validation_issues(caught.value)
+    assert {"field": "root", "category": "primary_route_pending_read_invalid"} in issues
+    assert "RAG" not in str(issues)
