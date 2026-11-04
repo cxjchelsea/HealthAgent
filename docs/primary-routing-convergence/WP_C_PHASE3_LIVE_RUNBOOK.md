@@ -142,3 +142,24 @@ python -m evals.primary_wp_c_phase3_live --endpoint http://127.0.0.1:8012 --grou
 ```powershell
 python -m evals.primary_wp_c_phase3_live --endpoint http://127.0.0.1:8012 --groups pending_task pending_mcp --output artifacts/wp-c/phase3-pending-v5.json --timeout 240
 ```
+
+
+## Phase 3 Pending v5：真实 Qwen 定向物理验收 PASS（2026-11-04）
+
+依据用户在本机生成并上传的 `phase3-pending-v5.json`；精确执行代码 HEAD：`f04e10d2d7d42aa8d9d0102b7ce82e9f0428824b`。运行环境 ollama_proxy / qwen3:14b / unified / Primary v1。**7 PASS、0 FAIL、0 BLOCKED**。
+
+| 场景 | 验证结论 |
+| --- | --- |
+| preflight | PASS，真实模型与 Primary v1 |
+| PENDING_TASK_ORIGIN | PASS，clarify / needs_input，0 工具调用 |
+| PENDING_TASK_ANSWER | PASS，clarify_response / Host allow，admission_reason=primary_v1_pending_task_authorized；完成一次 create_task，termination_reason=pending_task_created |
+| PENDING_TASK_REPLAY | PASS，HTTP 409，0 模型和工具调用 |
+| PENDING_MCP_ORIGIN | PASS，clarify / needs_input，0 工具调用 |
+| PENDING_MCP_ANSWER | PASS，clarify_response / Host allow，admission_reason=primary_v1_pending_read_only；一次成功 mcp_reference_lookup，termination_reason=verified_clarification_execution |
+| PENDING_MCP_REPLAY | PASS，HTTP 409，0 模型和工具调用 |
+
+各正常业务请求的 `categories.primary=1`、`semantic_attempts=1`，没有把总 HTTP 模型调用数等同于语义调用数。真实物理结果证实定向 Pending 任务与只读 MCP 补参链路可工作；本报告不包含独立数据库原始回读或本机原始 JSON 入库，不能代替 Phase 4 持久性验证。
+
+同一精确 HEAD 的 GitHub Actions `41751171449` 已通过，1107 passed / 3 skipped（这是 CI，不是 Qwen 物理运行）。
+
+**当前裁决：Pending 定向验收 PASS；完整 Phase 3 非回归仍 NOT RUN、总体 HOLD。** 下一步在新独立数据库和同一代码 HEAD 上运行不带 `--groups` 的完整 `evals.primary_wp_c_phase3_live`，全部 14 项（preflight + 13 请求）必须 PASS、0 FAIL、0 BLOCKED，然后才能讨论 Phase 3 收口与未用于整改的挑战语句；Phase 4 与 AC5 仍 HOLD。
