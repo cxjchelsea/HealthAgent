@@ -647,3 +647,10 @@ def test_pending_task_source_bound_reply_only_one_model_call_and_no_host_repair(
     assert bad.calls == 1
     assert ex.value.validation_issues == [{
         "field": "root", "category": "primary_route_unexpected_write_contract"}]
+
+
+def test_primary_pending_withdrawal_prompt_does_not_grant_write():
+    from agent.primary_route_v1 import _PRIMARY_SYSTEM
+    assert "Pending write cancellation is a DIFFERENT intent" in _PRIMARY_SYSTEM
+    assert "choose respond/none/none" in _PRIMARY_SYSTEM
+    assert "not the missing title" in _PRIMARY_SYSTEM
