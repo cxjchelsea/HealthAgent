@@ -8,7 +8,8 @@ from dataclasses import dataclass
 import re
 from typing import Any, Callable, Literal
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
-from agent.tools import CalcArgs, EmptyArgs, MemoryKey, execute_tool
+from agent.tools import CalcArgs, EmptyArgs, MemoryKey, ReferenceArgs, execute_tool
+from agent.mcp_stdio_client import StdioMCPClient
 
 
 class StrictReadArgs(BaseModel):
@@ -25,6 +26,7 @@ class ReadToolRuntime:
     clock: Any = None
     task_store: Any = None
     memory_store: Any = None
+    mcp_client: Any = None
     tasks: list[str] | None = None
 
 
@@ -141,7 +143,19 @@ def _legacy_recall_memory(args: MemoryKey, runtime: ReadToolRuntime) -> dict:
                         memory_store=runtime.memory_store)
 
 
+def _trusted_mcp_reference(args: ReferenceArgs, runtime: ReadToolRuntime) -> dict:
+    # Only a trusted, fixed local server binding may be invoked in this slice.
+    # Remote discovery must not provide a command, tool name or schema.
+    if type(runtime.mcp_client) is not StdioMCPClient:
+        return {"ok": False, "error": "mcp_untrusted_client"}
+    return runtime.mcp_client.call_trusted_reference(args.model_dump())
+
+
 READ_REGISTRY = TrustedReadRegistry((
+    ReadToolDefinition(
+        name="mcp_reference_lookup", version="1.0.0",
+        description="Look up agent engineering terms in a trusted fixed MCP reference catalog.",
+        input_model=ReferenceArgs, adapter=_trusted_mcp_reference, requires_runtime=True),
     ReadToolDefinition(
         name="recall_memory", version="1.0.0",
         description="Look up user-owned long-term memory using an exact key.",
@@ -170,7 +184,8 @@ def approved_read_grants(*, host_disposition: str, host_route: str,
                          calculate_registry_enabled: bool = False,
                          utc_time_registry_enabled: bool = False,
                          list_tasks_registry_enabled: bool = False,
-                         recall_memory_registry_enabled: bool = False) -> tuple[str, ...]:
+                         recall_memory_registry_enabled: bool = False,
+                         mcp_reference_registry_enabled: bool = False) -> tuple[str, ...]:
     """Explicit server-side Host policy; descriptions never grant permission."""
     if not (host_disposition == "allow" and host_route == "ordinary_tool"
             and host_mode == "read_only"):
@@ -186,4 +201,6 @@ def approved_read_grants(*, host_disposition: str, host_route: str,
         granted.append("list_tasks")
     if recall_memory_registry_enabled:
         granted.append("recall_memory")
+    if mcp_reference_registry_enabled:
+        granted.append("mcp_reference_lookup")
     return tuple(granted)
