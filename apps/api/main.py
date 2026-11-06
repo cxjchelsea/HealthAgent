@@ -36,6 +36,7 @@ from agent.s25_04_explicit_ordinary import admit_explicit_ordinary_calculation
 from agent.primary_route_v1 import PrimaryRouteRejected, propose_primary_route
 from agent.primary_route_v1_canary import admit_v1_canary
 from agent.primary_host_admission_v1 import PrimaryHostFacts, admit_primary_route_v1
+from agent.tool_registry import approved_read_grants
 from agent.pending_write_withdrawal_guard import explicitly_withdraws_pending_task_write
 from agent.primary_pending_readonly_v1 import execute_pending_readonly_v1
 from agent.primary_ordinary_write_v1 import execute_primary_write_v1
@@ -667,6 +668,11 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                 ordinary_attempt_journal=AttemptEvidenceStore(
                                     cid, turn_id),
                                 ordinary_attempt_session_factory=Session,
+                                host_read_grants=approved_read_grants(
+                                    host_disposition=v1_admission.disposition,
+                                    host_route=primary_proposal.route_kind,
+                                    host_mode=v1_admission.execution_mode,
+                                    feature_enabled=settings.s25_05_text_stats_enabled),
                                 candidate_selector=(HTTPUnderstandingModel(
                                     settings.model_provider, settings.model_base_url,
                                     settings.model_api_key,
