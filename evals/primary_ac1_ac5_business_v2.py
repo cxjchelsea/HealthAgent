@@ -458,6 +458,8 @@ def main():
                     route_kind=(evidence or {}).get("route_kind"),
                     disposition=(evidence or {}).get("disposition"),
                     admission_reason=(evidence or {}).get("admission_reason"),
+                    refusal_code=body.get("primary_v1_refusal_code"),
+                    validation_issues=body.get("primary_v1_validation_issues", []),
                     semantic_attempts=(evidence or {}).get("semantic_attempts"),
                     model_categories=categories,
                     model_http_attempts=attempts,
