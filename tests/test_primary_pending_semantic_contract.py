@@ -1,3 +1,4 @@
+import pytest
 """Primary Pending semantic contract: priority is current intent, not state.
 
 The tests here check prompt input/constraints and non-reclassifying Host fence.
@@ -117,3 +118,28 @@ def test_no_verified_pending_keeps_original_one_system_one_user_contract():
     assert result.route_kind == "respond"
     assert len(p.calls) == 1
     assert [x["role"] for x in p.calls[0]] == ["system", "user"]
+
+
+def test_missing_mcp_term_prompt_contract_is_exclusive_and_host_validator_remains_strict():
+    from agent.primary_route_v1 import _PRIMARY_SYSTEM, RouteSignal
+    from pydantic import ValidationError
+    assert "For a NEW MCP lookup that is missing its search term" in _PRIMARY_SYSTEM
+    assert "pending_write_tool_name=null" in _PRIMARY_SYSTEM
+    assert "Never combine pending_read_tool_name with pending_write_tool_name" in _PRIMARY_SYSTEM
+    base = {
+        "schema_version": "primary-route-v1",
+        "route_kind": "clarify",
+        "quote": "查术语参考释义",
+        "execution_scope": "none",
+        "effect_intent": "none",
+        "steps": [],
+        "clarification_question": "需要查询哪个术语？",
+        "pending_read_tool_name": "mcp_reference_lookup",
+        "pending_write_tool_name": None,
+    }
+    assert RouteSignal.model_validate(base).pending_read_tool_name == "mcp_reference_lookup"
+    with pytest.raises(ValidationError):
+        RouteSignal.model_validate({**base, "pending_write_tool_name": "create_task"})
+    with pytest.raises(ValidationError):
+        RouteSignal.model_validate({
+            **base, "route_kind": "respond", "clarification_question": None})
