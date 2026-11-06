@@ -366,7 +366,8 @@ class AgentLoop:
                             exposed_names=tuple(state["exposure_limit"]),
                             expected_version=self.host_read_versions.get(name),
                             runtime=ReadToolRuntime(clock=self.clock,
-                                task_store=self.task_store, tasks=tasks))
+                                task_store=self.task_store, memory_store=self.memory_store,
+                                tasks=tasks))
                     else:
                         result = execute_tool(name, function.get("arguments"), tasks,
                                               self.clock, task_store=self.task_store,
