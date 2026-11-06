@@ -6,9 +6,9 @@ Existing tools remain on their original guarded paths during this slice.
 """
 from dataclasses import dataclass
 import re
-from typing import Callable, Literal
+from typing import Any, Callable, Literal
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
-from agent.tools import CalcArgs, execute_tool
+from agent.tools import CalcArgs, EmptyArgs, execute_tool
 
 
 class StrictReadArgs(BaseModel):
@@ -20,14 +20,23 @@ class TextStatsArgs(StrictReadArgs):
 
 
 @dataclass(frozen=True)
+class ReadToolRuntime:
+    """Trusted, invocation-local dependencies; not model-exposed tool input."""
+    clock: Any = None
+    task_store: Any = None
+    tasks: list[str] | None = None
+
+
+@dataclass(frozen=True)
 class ReadToolDefinition:
     name: str
     version: str
     description: str
     input_model: type[BaseModel]
-    adapter: Callable[[BaseModel], dict]
+    adapter: Callable[..., dict]
     effect: Literal["read"] = "read"
     enabled: bool = True
+    requires_runtime: bool = False
 
     def __post_init__(self):
         if (not re.fullmatch(r"[a-z][a-z0-9_]{0,79}", self.name)
@@ -65,7 +74,8 @@ class TrustedReadRegistry:
 
     def invoke(self, name: str, arguments: object, *,
                granted_names: tuple[str, ...], exposed_names: tuple[str, ...],
-               expected_version: str | None = None) -> dict:
+               expected_version: str | None = None,
+               runtime: ReadToolRuntime | None = None) -> dict:
         definition = self._definitions.get(name)
         if definition is None:
             return {"ok": False, "error": "unknown_tool"}
@@ -85,8 +95,11 @@ class TrustedReadRegistry:
         # Every successful invocation must carry a trusted version binding.
         if expected_version != definition.version:
             return {"ok": False, "error": "tool_version_mismatch"}
+        if definition.requires_runtime and runtime is None:
+            return {"ok": False, "error": "tool_runtime_unavailable"}
         try:
-            result = definition.adapter(parsed)
+            result = (definition.adapter(parsed, runtime) if definition.requires_runtime
+                      else definition.adapter(parsed))
             if not isinstance(result, dict) or not isinstance(result.get("ok"), bool):
                 return {"ok": False, "error": "tool_execution_error"}
             # Stable server-origin metadata only; never forward model or MCP claims.
@@ -106,7 +119,28 @@ def _legacy_calculate(args: CalcArgs) -> dict:
     return execute_tool("calculate", args.model_dump(), [])
 
 
+def _legacy_utc_time(args: EmptyArgs, runtime: ReadToolRuntime) -> dict:
+    return execute_tool("utc_time", args.model_dump(), [],
+                        clock=runtime.clock)
+
+
+def _legacy_list_tasks(args: EmptyArgs, runtime: ReadToolRuntime) -> dict:
+    if runtime.task_store is None and runtime.tasks is None:
+        return {"ok": False, "error": "tool_runtime_unavailable"}
+    return execute_tool("list_tasks", args.model_dump(),
+                        runtime.tasks if runtime.tasks is not None else [],
+                        task_store=runtime.task_store)
+
+
 READ_REGISTRY = TrustedReadRegistry((
+    ReadToolDefinition(
+        name="utc_time", version="1.0.0",
+        description="Read the current time in UTC.",
+        input_model=EmptyArgs, adapter=_legacy_utc_time, requires_runtime=True),
+    ReadToolDefinition(
+        name="list_tasks", version="1.0.0",
+        description="List persistent tasks in the current conversation.",
+        input_model=EmptyArgs, adapter=_legacy_list_tasks, requires_runtime=True),
     ReadToolDefinition(
         name="calculate", version="1.0.0",
         description="Calculate bounded numeric expressions (+,-,*,/,parentheses).",
@@ -120,7 +154,9 @@ READ_REGISTRY = TrustedReadRegistry((
 
 def approved_read_grants(*, host_disposition: str, host_route: str,
                          host_mode: str, feature_enabled: bool,
-                         calculate_registry_enabled: bool = False) -> tuple[str, ...]:
+                         calculate_registry_enabled: bool = False,
+                         utc_time_registry_enabled: bool = False,
+                         list_tasks_registry_enabled: bool = False) -> tuple[str, ...]:
     """Explicit server-side Host policy; descriptions never grant permission."""
     if not (host_disposition == "allow" and host_route == "ordinary_tool"
             and host_mode == "read_only"):
@@ -130,4 +166,8 @@ def approved_read_grants(*, host_disposition: str, host_route: str,
         granted.append("text_stats")
     if calculate_registry_enabled:
         granted.append("calculate")
+    if utc_time_registry_enabled:
+        granted.append("utc_time")
+    if list_tasks_registry_enabled:
+        granted.append("list_tasks")
     return tuple(granted)
