@@ -367,7 +367,7 @@ class AgentLoop:
                             expected_version=self.host_read_versions.get(name),
                             runtime=ReadToolRuntime(clock=self.clock,
                                 task_store=self.task_store, memory_store=self.memory_store,
-                                tasks=tasks))
+                                mcp_client=self.mcp_client, tasks=tasks))
                     else:
                         result = execute_tool(name, function.get("arguments"), tasks,
                                               self.clock, task_store=self.task_store,
