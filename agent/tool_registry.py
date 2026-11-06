@@ -53,6 +53,10 @@ class TrustedReadRegistry:
                 raise ValueError("duplicate_tool_registration")
             self._definitions[definition.name] = definition
 
+    def version_for(self, name: str) -> str | None:
+        definition = self._definitions.get(name)
+        return definition.version if definition and definition.enabled else None
+
     def exposed(self, granted_names: tuple[str, ...]) -> list[dict]:
         return [definition.provider_schema()
                 for name, definition in self._definitions.items()
