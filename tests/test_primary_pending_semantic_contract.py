@@ -1,10 +1,11 @@
-import pytest
 """Primary Pending semantic contract: priority is current intent, not state.
 
 The tests here check prompt input/constraints and non-reclassifying Host fence.
 True semantic accuracy is evaluated separately with the real-model contrast
 runner, never inferred from these deterministic tests alone.
 """
+
+import pytest
 from agent.primary_route_v1 import (
     _PRIMARY_SYSTEM, RouteSignal, bind_route_signal,
     primary_route_generation_schema,
