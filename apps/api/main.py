@@ -672,7 +672,8 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                     host_disposition=v1_admission.disposition,
                                     host_route=primary_proposal.route_kind,
                                     host_mode=v1_admission.execution_mode,
-                                    feature_enabled=settings.s25_05_text_stats_enabled),
+                                    feature_enabled=settings.s25_05_text_stats_enabled,
+                                    calculate_registry_enabled=settings.s25_05_calculate_registry_enabled),
                                 candidate_selector=(HTTPUnderstandingModel(
                                     settings.model_provider, settings.model_base_url,
                                     settings.model_api_key,
