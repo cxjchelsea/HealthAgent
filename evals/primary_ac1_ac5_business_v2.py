@@ -313,6 +313,8 @@ def main():
                         help="Exact isolated SQLite file used by the API")
     parser.add_argument("--output", default="artifacts/wp-f/ac1-ac5-business-v2.json")
     parser.add_argument("--timeout", type=float, default=240)
+    parser.add_argument("--groups", nargs="+", choices=sorted(set(
+        item[1] for item in CASES)), help="Run isolated group(s) only; default all")
     args = parser.parse_args()
     parsed = urlparse(args.endpoint)
     if (parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost"}
@@ -329,10 +331,13 @@ def main():
         check.execute("SELECT 1 FROM primary_route_evidence LIMIT 1")
         if check.execute("SELECT COUNT(*) FROM turns").fetchone()[0]:
             parser.error("fresh empty SQLite required")
+    selected = [item for item in CASES
+                if args.groups is None or item[1] in args.groups]
     report = {
         "schema_version": "ac1-ac5-business-physical-v2",
         "head": git_head(),
         "manifest_sha256": frozen_sha(),
+        "selected_groups": args.groups or sorted(set(item[1] for item in CASES)),
         "created_utc": datetime.now(timezone.utc).isoformat(),
         "scope": "full_business_qwen_disposable_sqlite_pending_confirm_v2",
         "cases": [], "verdict": "FAIL",
@@ -348,7 +353,7 @@ def main():
         report["summary"] = {v: sum(c["verdict"] == v for c in report["cases"])
                              for v in ("PASS", "FAIL", "BLOCKED")}
         report["verdict"] = ("PASS" if
-            len(report["cases"]) == 1 + len(CASES)
+            len(report["cases"]) == 1 + len(selected)
             and report["summary"]["PASS"] == len(report["cases"])
             else "FAIL")
         destination.write_text(json.dumps(report, ensure_ascii=False, indent=2),
@@ -374,7 +379,7 @@ def main():
                 save()
                 return 2
             groups, latest, blocked, prior, tokens = {}, {}, set(), {}, {}
-            for name, group, content, consent in CASES:
+            for name, group, content, consent in selected:
                 if group in blocked:
                     add(name, "BLOCKED", failure="earlier_case_in_group")
                     continue
