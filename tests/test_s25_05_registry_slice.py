@@ -396,3 +396,81 @@ def test_b2_http_persisted_task_list_is_conversation_scoped(
                 assert forbidden not in (attempts[0].result_projection or "")
                 assert title in (attempts[0].result_projection or "")
             assert response.json()["status"] in ("completed", "partial")
+
+
+
+def test_b3_recall_memory_requires_host_grant_and_trusted_store():
+    base = dict(host_disposition="allow", host_route="ordinary_tool",
+                host_mode="read_only", feature_enabled=False)
+    assert approved_read_grants(**base) == ()
+    assert approved_read_grants(**base, recall_memory_registry_enabled=True) == ("recall_memory",)
+    assert approved_read_grants(**{**base, "host_disposition": "deny"},
+                                recall_memory_registry_enabled=True) == ()
+    common = dict(granted_names=("recall_memory",),
+                  exposed_names=("recall_memory",), expected_version="1.0.0")
+    args = {"key": "test-key"}
+    missing = READ_REGISTRY.invoke("recall_memory", args, **common)
+    assert missing["error"] == "tool_runtime_unavailable"
+    no_store = READ_REGISTRY.invoke("recall_memory", args, **common,
+                                    runtime=ReadToolRuntime())
+    assert no_store["error"] == "memory_unavailable"
+    denied = READ_REGISTRY.invoke("recall_memory", args,
+        granted_names=(), exposed_names=("recall_memory",),
+        expected_version="1.0.0", runtime=ReadToolRuntime())
+    assert denied["error"] == "permission_denied"
+
+
+def test_b3_recall_memory_real_database_is_owner_scoped(tmp_path):
+    from services.memory_store import MemoryStore
+    _, Session = database(f"sqlite:///{tmp_path / 'b3_owner_memory.db'}")
+    # Instantiate the same schema bootstrapping used by the test application.
+    from services.db import Base
+    engine, Session = database(f"sqlite:///{tmp_path / 'b3_owner_memory.db'}")
+    Base.metadata.create_all(engine)
+    alice = MemoryStore(Session, "b3-alice", write_allowed=True)
+    bob = MemoryStore(Session, "b3-bob", write_allowed=True)
+    assert alice.put("shared-key", "only-alice")["ok"]
+    assert bob.put("shared-key", "only-bob")["ok"]
+    allowed = dict(granted_names=("recall_memory",), exposed_names=("recall_memory",),
+                   expected_version="1.0.0")
+    for store, expected, excluded in (
+        (alice, "only-alice", "only-bob"),
+        (bob, "only-bob", "only-alice"),
+    ):
+        result = READ_REGISTRY.invoke("recall_memory", {"key": "shared-key"},
+                                      runtime=ReadToolRuntime(memory_store=store),
+                                      **allowed)
+        assert result["ok"] and result["found"]
+        assert result["value"] == expected and result["value"] != excluded
+        assert result["tool_version"] == "1.0.0"
+    assert READ_REGISTRY.invoke("recall_memory", {"key": "shared-key", "value": "write"},
+        runtime=ReadToolRuntime(memory_store=alice),
+        **allowed)["error"] == "invalid_arguments"
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_b3_agentloop_recall_parity_without_duplicate_exposure(enabled):
+    class ScopedMemory:
+        def get(self, key):
+            return {"ok": True, "found": True, "key": key, "value": "owner-secret"}
+
+    class RecallOnce:
+        def __init__(self):
+            self.exposures = []
+        async def decide(self, messages, tools):
+            names = [t["function"]["name"] for t in tools]
+            self.exposures.append(names)
+            if any(m.get("role") == "tool" for m in messages):
+                return Decision("已核对", [])
+            return Decision("", [{"id": "b3-recall", "name": "recall_memory",
+                                  "arguments": {"key": "my-key"}}])
+    model = RecallOnce()
+    result = asyncio.run(AgentLoop(
+        model, memory_store=ScopedMemory(),
+        host_read_grants=("recall_memory",) if enabled else ()
+    ).run("查询记忆键 my-key", execution_mode="read_only", include_evidence=True))
+    assert all(names.count("recall_memory") == 1 for names in model.exposures)
+    observations = [a["observation"] for a in result["audit"] if a["name"] == "recall_memory"]
+    assert len(observations) == 1 and observations[0]["ok"]
+    assert observations[0]["value"] == "owner-secret"
+    assert ("tool_version" in observations[0]) is enabled
