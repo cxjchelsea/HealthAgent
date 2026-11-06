@@ -784,7 +784,8 @@ class AgentLoop:
                 and tool_allowlist is None):
             already_exposed = {t["function"]["name"] for t in selected_tools}
             selected_tools += [t for t in READ_REGISTRY.exposed(self.host_read_grants)
-                               if t["function"]["name"] not in already_exposed]
+                               if (t["function"]["name"] == "text_stats"
+                                   and t["function"]["name"] not in already_exposed)]
         resume_context = ("\nTrusted checkpoint: revision " + str(resumed.revision) +
                           "; steps: " + json.dumps(resumed.snapshot(), ensure_ascii=False)
                           if resumed.revision else "")
