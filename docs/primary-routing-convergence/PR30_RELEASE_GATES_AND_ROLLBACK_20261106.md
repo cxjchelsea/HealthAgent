@@ -30,7 +30,7 @@
 1. 使用真实认证网关/身份系统验证请求身份，**不能**使用 Demo 身份作为生产鉴权。至少设置 `ALLOW_DEMO_IDENTITY=false`，配置非空合法 `USER_TOKENS` 仅适用于受限开发/测试；内置令牌映射本身仍不是建议的生产身份系统。同步强制 HTTPS、密钥管理与访问隔离。
 2. 在隔离环境备份实际 PostgreSQL/SQLite 数据库。执行 Alembic `0015_primary_pending_write` → `0016_primary_route_evidence` → `0017_pending_write_confirmation` → `0018_pending_expiry`，复查 schema、原有数据、数据库索引、外键与版本。CI 已通过空/合成数据库迁移及重复执行，**不能替代现有生产数据迁移演练**。
 3. 明确预期 routing profile（推荐对发布系统**显式设置** `ROUTING_PROFILE`），禁止遗留 `ROUTE_ADMISSION_MODE`、`M5_*_ENABLED`、`UNDERSTANDING_STRATEGY` 等冲突环境变量意外覆盖发布决策。
-4. 验证 `/model` 返回的 `effective_routing_profile`、`routing_profile_source`、`primary_route_v1_active` 和 Pending 确认状态；不要只看环境变量是否被 shell 接受。复查 `/healthz`、`/readyz`。
+4. 使用已通过认证的测试用户检查 `/model` 响应的 `routing_profile`（实际有效配置）、`routing_profile_source` 和 `primary_route_v1_active`；注意 `/model` **没有** `effective_routing_profile` 和 Pending 确认状态字段，后者用本地 `Settings.pending_write_confirmation_active` 单独核验。关闭 Demo 身份且未配置测试凭据时，`/model` 预期返回 401，不是路由故障。复查 `/healthz` 、`/readyz`。
 5. 在真实模型的隔离测试用户/独立数据库上验证 CREATE/FIRST/RESUME/REVISE/CANCEL、read-only MCP、普通任务写入、记忆同意、Pending 标题暂存→结构化确认、撤销、重复请求 409 和断点恢复。禁止使用真实病历/医疗决策数据。
 6. 记录观察窗口内模型拒绝/Provider 错误、工具超时、重复请求、`prepared`/unfinalized write、授权消费状态及人工回滚阈值；**不要**自动重试未知副作用。
 7. 确定旧客户端对新两阶段 Pending 协议的兼容策略。历史 v1 评测的“补标题立即创建”不再是 Unified 的正确行为。
