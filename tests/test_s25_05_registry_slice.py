@@ -422,7 +422,6 @@ def test_b3_recall_memory_requires_host_grant_and_trusted_store():
 
 def test_b3_recall_memory_real_database_is_owner_scoped(tmp_path):
     from services.memory_store import MemoryStore
-    _, Session = database(f"sqlite:///{tmp_path / 'b3_owner_memory.db'}")
     # Instantiate the same schema bootstrapping used by the test application.
     from services.db import Base
     engine, Session = database(f"sqlite:///{tmp_path / 'b3_owner_memory.db'}")
