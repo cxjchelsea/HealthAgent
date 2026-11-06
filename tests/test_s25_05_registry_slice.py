@@ -46,6 +46,23 @@ def test_registry_rejects_untrusted_and_invalid_calls():
     assert (r["tool_name"], r["tool_version"]) == ("text_stats", "1.0.0")
 
 
+def test_registered_tool_cannot_execute_without_trusted_version_binding():
+    executed = []
+    definition = ReadToolDefinition(
+        "versioned_read", "1.2.0", "A version-bound read", StrictReadArgs,
+        adapter=lambda _: executed.append(True) or {"ok": True})
+    registry = TrustedReadRegistry((definition,))
+    common = {"granted_names": ("versioned_read",),
+              "exposed_names": ("versioned_read",)}
+    assert registry.invoke("versioned_read", {}, **common)["error"] == "tool_version_mismatch"
+    assert registry.invoke("versioned_read", {}, expected_version="1.1.0",
+                           **common)["error"] == "tool_version_mismatch"
+    assert executed == []
+    assert registry.invoke("versioned_read", {}, expected_version="1.2.0",
+                           **common)["ok"] is True
+    assert executed == [True]
+
+
 def test_duplicate_definition_is_rejected():
     definition = ReadToolDefinition("x", "1.0.0", "read only", StrictReadArgs,
                                     adapter=lambda _: {"ok": True})
