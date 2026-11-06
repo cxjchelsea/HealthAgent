@@ -4,6 +4,7 @@ HTTP runs the real Host/AgentLoop/Attempt code; only provider decisions are
 scripted. This is NOT live Qwen evidence.
 """
 import asyncio
+from datetime import datetime, timezone
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
@@ -16,7 +17,7 @@ from agent.loop import AgentLoop
 from agent.primary_route_v1 import RouteSignal, bind_route_signal
 from agent.tool_registry import (
     READ_REGISTRY, ReadToolDefinition, StrictReadArgs, TrustedReadRegistry,
-    approved_read_grants,
+    approved_read_grants, ReadToolRuntime,
 )
 from apps.api.main import create_app
 
@@ -247,3 +248,92 @@ def test_migrated_calculator_does_not_reappear_after_semantic_filter():
             "请问现在有什么工具？", execution_mode="read_only",
             tool_allowlist=()))
     assert result["status"] == "completed"
+
+
+@pytest.mark.parametrize("name,enabled_flag", [
+    ("utc_time", "utc_time_registry_enabled"),
+    ("list_tasks", "list_tasks_registry_enabled"),
+])
+def test_b2_host_policy_requires_individual_opt_in(name, enabled_flag):
+    base = {"host_disposition": "allow", "host_route": "ordinary_tool",
+            "host_mode": "read_only", "feature_enabled": False}
+    assert name not in approved_read_grants(**base)
+    assert approved_read_grants(**base, **{enabled_flag: True}) == (name,)
+    for change in ({"host_disposition": "deny"}, {"host_route": "respond"},
+                   {"host_mode": "execute"}):
+        assert approved_read_grants(**{**base, **change},
+                                     **{enabled_flag: True}) == ()
+
+
+def test_b2_utc_time_preserves_injected_clock_and_denies_missing_context():
+    now = datetime(2026, 11, 6, 7, 30, tzinfo=timezone.utc)
+    common = dict(granted_names=("utc_time",), exposed_names=("utc_time",),
+                  expected_version="1.0.0")
+    assert READ_REGISTRY.invoke("utc_time", {}, **common)["error"] == "tool_runtime_unavailable"
+    result = READ_REGISTRY.invoke("utc_time", {}, runtime=ReadToolRuntime(clock=lambda: now),
+                                  **common)
+    assert result["ok"] and result["utc"] == "2026-11-06T07:30:00+00:00"
+    assert READ_REGISTRY.invoke("utc_time", {"extra": True},
+                                runtime=ReadToolRuntime(clock=lambda: now),
+                                **common)["error"] == "invalid_arguments"
+
+
+def test_b2_list_tasks_never_reads_another_conversation_or_global_store():
+    class ScopedStore:
+        def __init__(self, label):
+            self.label = label
+            self.calls = 0
+
+        def list(self):
+            self.calls += 1
+            return {"ok": True, "tasks": [{"title": self.label}]}
+
+    a, b = ScopedStore("owner-a-task"), ScopedStore("owner-b-task")
+    common = dict(granted_names=("list_tasks",), exposed_names=("list_tasks",),
+                  expected_version="1.0.0")
+    assert READ_REGISTRY.invoke("list_tasks", {}, **common)["error"] == "tool_runtime_unavailable"
+    first = READ_REGISTRY.invoke("list_tasks", {}, runtime=ReadToolRuntime(task_store=a),
+                                 **common)
+    second = READ_REGISTRY.invoke("list_tasks", {}, runtime=ReadToolRuntime(task_store=b),
+                                  **common)
+    assert first["tasks"] == [{"title": "owner-a-task"}]
+    assert second["tasks"] == [{"title": "owner-b-task"}]
+    assert a.calls == b.calls == 1
+    denied = READ_REGISTRY.invoke("list_tasks", {}, runtime=ReadToolRuntime(task_store=a),
+                                  granted_names=(), exposed_names=("list_tasks",),
+                                  expected_version="1.0.0")
+    assert denied["error"] == "permission_denied" and a.calls == 1
+
+
+@pytest.mark.parametrize("name,arguments,expected_field", [
+    ("utc_time", {}, "utc"),
+    ("list_tasks", {}, "tasks"),
+])
+@pytest.mark.parametrize("enabled", [False, True])
+def test_b2_agentloop_registry_parity_and_no_duplicate_tools(name, arguments,
+                                                               expected_field, enabled):
+    class ScopedStore:
+        def list(self):
+            return {"ok": True, "tasks": [{"task_id": 1, "title": "only-this-conversation"}]}
+
+    class OneCall:
+        def __init__(self):
+            self.seen = []
+        async def decide(self, messages, tools):
+            names = [t["function"]["name"] for t in tools]
+            self.seen.append(names)
+            if any(m.get("role") == "tool" for m in messages):
+                return Decision("完成", [])
+            return Decision("", [{"id": "b2", "name": name, "arguments": arguments}])
+
+    model = OneCall()
+    result = asyncio.run(AgentLoop(
+        model, clock=lambda: datetime(2026, 11, 6, 7, 30, tzinfo=timezone.utc),
+        task_store=ScopedStore(), host_read_grants=(name,) if enabled else ()
+    ).run("请读取当前会话任务或UTC时间", execution_mode="read_only",
+          include_evidence=True))
+    assert all(names.count(name) == 1 for names in model.seen)
+    audit = [x for x in result["audit"] if x["name"] == name]
+    assert len(audit) == 1 and audit[0]["observation"]["ok"]
+    assert expected_field in audit[0]["observation"]
+    assert ("tool_version" in audit[0]["observation"]) is enabled
