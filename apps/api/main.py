@@ -675,7 +675,8 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                     feature_enabled=settings.s25_05_text_stats_enabled,
                                     calculate_registry_enabled=settings.s25_05_calculate_registry_enabled,
                                     utc_time_registry_enabled=settings.s25_05_utc_time_registry_enabled,
-                                    list_tasks_registry_enabled=settings.s25_05_list_tasks_registry_enabled),
+                                    list_tasks_registry_enabled=settings.s25_05_list_tasks_registry_enabled,
+                                    recall_memory_registry_enabled=settings.s25_05_recall_memory_registry_enabled),
                                 candidate_selector=(HTTPUnderstandingModel(
                                     settings.model_provider, settings.model_base_url,
                                     settings.model_api_key,
