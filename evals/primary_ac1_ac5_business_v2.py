@@ -172,6 +172,15 @@ def physical_audit(db, cid, name, turn_id):
     else:
         result["effect_ok"] = len(tasks) == 0 and len(attempts) == 0
 
+    if name in {"PENDING_MCP_ORIGIN", "PENDING_MCP_ANSWER"}:
+        # Separate model route correctness from durable Pending provenance.
+        # A generic needs_input without the MCP tool marker cannot be resumed.
+        origin = turns[0] if turns else None
+        persisted = (origin is not None
+                     and origin["failure_code"] ==
+                     "needs_input:mcp_reference_lookup")
+        result["mcp_origin_marker_ok"] = bool(persisted)
+        result["effect_ok"] &= bool(persisted)
     if name in {"PLAN_CREATE_A", "PLAN_FIRST_A", "PLAN_RESUME_A",
                 "PLAN_CREATE_B", "PLAN_REVISE_B"}:
         result["effect_ok"] &= len(plan_records) == 1
