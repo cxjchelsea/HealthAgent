@@ -43,10 +43,11 @@ def test_registry_rejects_untrusted_and_invalid_calls():
     r = READ_REGISTRY.invoke("text_stats", args, granted_names=("text_stats",),
                              exposed_names=("text_stats",), expected_version="1.0.0")
     assert r["ok"] and r["characters"] == 11 and r["words"] == 2
+    assert (r["tool_name"], r["tool_version"]) == ("text_stats", "1.0.0")
 
 
 def test_duplicate_definition_is_rejected():
-    definition = ReadToolDefinition("x", "1", "read only", StrictReadArgs,
+    definition = ReadToolDefinition("x", "1.0.0", "read only", StrictReadArgs,
                                     adapter=lambda _: {"ok": True})
     with pytest.raises(ValueError, match="duplicate_tool_registration"):
         TrustedReadRegistry((definition, definition))
