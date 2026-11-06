@@ -351,7 +351,14 @@ class AgentLoop:
                         # This commit occurs BEFORE any external effect. On a
                         # process crash the prepared record remains unknown.
                         journal.begin(sessions, evidence)
-                    if name in self.host_read_grants:
+                    if (name == "text_stats" and name in self.host_read_grants
+                            and (not isinstance(arguments, dict)
+                                 or not isinstance(arguments.get("text"), str)
+                                 or arguments["text"] not in state["user_request"])):
+                        # Model-supplied text must originate in this turn;
+                        # never present statistics for a hallucinated passage.
+                        result = {"ok": False, "error": "argument_provenance_missing"}
+                    elif name in self.host_read_grants:
                         result = READ_REGISTRY.invoke(
                             name, arguments, granted_names=self.host_read_grants,
                             exposed_names=tuple(state["exposure_limit"]),
