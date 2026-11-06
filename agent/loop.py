@@ -100,6 +100,8 @@ class AgentLoop:
         self.governed_ordinary_writes = governed_ordinary_writes
         # Only the trusted API Host supplies per-turn optional read grants.
         self.host_read_grants = tuple(host_read_grants)
+        self.host_read_versions = {name: READ_REGISTRY.version_for(name)
+                                   for name in self.host_read_grants}
         flow = StateGraph(AgentState)
         flow.add_node("decide", self._decide)
         flow.add_node("tools", self._tools)
@@ -352,7 +354,8 @@ class AgentLoop:
                     if name in self.host_read_grants:
                         result = READ_REGISTRY.invoke(
                             name, arguments, granted_names=self.host_read_grants,
-                            exposed_names=tuple(state["exposure_limit"]))
+                            exposed_names=tuple(state["exposure_limit"]),
+                            expected_version=self.host_read_versions.get(name))
                     else:
                         result = execute_tool(name, function.get("arguments"), tasks,
                                               self.clock, task_store=self.task_store,
