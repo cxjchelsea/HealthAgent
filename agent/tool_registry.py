@@ -30,7 +30,7 @@ class ReadToolDefinition:
 
     def __post_init__(self):
         if (not re.fullmatch(r"[a-z][a-z0-9_]{0,79}", self.name)
-                or not re.fullmatch(r"[0-9]+\\.[0-9]+\\.[0-9]+", self.version)
+                or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", self.version)
                 or not self.description or self.effect != "read"):
             raise ValueError("invalid_tool_definition")
         if (not isinstance(self.input_model, type)
