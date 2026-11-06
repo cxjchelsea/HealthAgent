@@ -150,7 +150,7 @@ def test_verified_mcp_pending_gets_its_own_term_semantic_contract():
     import asyncio
     import json
     from agent.primary_route_v1 import (
-        _PENDING_MCP_CURRENT_TURN_SYSTEM,
+        _PRIMARY_MCP_FOCUSED_SYSTEM,
         _PENDING_CURRENT_TURN_SYSTEM,
         propose_primary_route,
     )
@@ -183,12 +183,12 @@ def test_verified_mcp_pending_gets_its_own_term_semantic_contract():
     assert route.route_kind == "clarify_response"
     assert len(provider.calls) == 1
     messages, schema = provider.calls[0]
-    assert [m["role"] for m in messages] == ["system", "system", "user"]
-    assert messages[1]["content"] == _PENDING_MCP_CURRENT_TURN_SYSTEM
-    assert messages[1]["content"] != _PENDING_CURRENT_TURN_SYSTEM
-    assert "single technical noun" in messages[1]["content"]
-    assert "do not silently reuse pending authority" in messages[1]["content"]
-    assert json.loads(messages[2]["content"])["pending_action"] == "mcp_reference_lookup"
+    assert [m["role"] for m in messages] == ["system", "user"]
+    assert messages[0]["content"] == _PRIMARY_MCP_FOCUSED_SYSTEM
+    assert messages[0]["content"] != _PENDING_CURRENT_TURN_SYSTEM
+    assert "single abbreviation or short noun" in messages[0]["content"]
+    assert "does NOT grant write authority" in messages[0]["content"]
+    assert json.loads(messages[1]["content"])["pending_action"] == "mcp_reference_lookup"
     assert schema["properties"]["pending_read_tool_name"]["type"] == "null"
     assert schema["properties"]["route_kind"].get("const") is None
 
