@@ -128,9 +128,11 @@ class AgentLoop:
                 tool for tool in TOOL_SCHEMAS
                 if tool["function"]["name"] in eligible
             ]
+            already_exposed = {tool["function"]["name"] for tool in state["allowed_tools"]}
             state["allowed_tools"] += [
                 tool for tool in READ_REGISTRY.exposed(self.host_read_grants)
-                if tool["function"]["name"] in state["exposure_limit"]
+                if (tool["function"]["name"] in state["exposure_limit"]
+                    and tool["function"]["name"] not in already_exposed)
             ]
             state["traces"].append({
                 "step": state["iterations"] + 1, "type": "tool_exposure",
@@ -780,7 +782,9 @@ class AgentLoop:
         if (mode == "read_only" and self.host_read_grants
                 and self.skill_strategy != "semantic_topk"
                 and tool_allowlist is None):
-            selected_tools += READ_REGISTRY.exposed(self.host_read_grants)
+            already_exposed = {t["function"]["name"] for t in selected_tools}
+            selected_tools += [t for t in READ_REGISTRY.exposed(self.host_read_grants)
+                               if t["function"]["name"] not in already_exposed]
         resume_context = ("\nTrusted checkpoint: revision " + str(resumed.revision) +
                           "; steps: " + json.dumps(resumed.snapshot(), ensure_ascii=False)
                           if resumed.revision else "")
