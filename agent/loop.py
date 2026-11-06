@@ -8,7 +8,7 @@ from typing import Any, TypedDict
 from langgraph.graph import END, StateGraph
 from agent.decision import NativeToolDecision
 from agent.tools import TOOL_SCHEMAS, execute_tool
-from agent.tool_registry import READ_REGISTRY
+from agent.tool_registry import READ_REGISTRY, ReadToolRuntime
 from agent.skills import (exposed_tools, load_instructions, SKILL_VERSION,
                           select_tool_exposure, exposure_schemas, exposure_instructions, SEMANTIC_GUIDANCE)
 from agent.semantic_topk import select_read_tools
@@ -364,7 +364,9 @@ class AgentLoop:
                         result = READ_REGISTRY.invoke(
                             name, arguments, granted_names=self.host_read_grants,
                             exposed_names=tuple(state["exposure_limit"]),
-                            expected_version=self.host_read_versions.get(name))
+                            expected_version=self.host_read_versions.get(name),
+                            runtime=ReadToolRuntime(clock=self.clock,
+                                task_store=self.task_store, tasks=tasks))
                     else:
                         result = execute_tool(name, function.get("arguments"), tasks,
                                               self.clock, task_store=self.task_store,
