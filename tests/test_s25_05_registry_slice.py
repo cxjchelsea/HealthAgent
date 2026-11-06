@@ -6,6 +6,8 @@ scripted. This is NOT live Qwen evidence.
 import asyncio
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import select
+from services.db import AgentAttempt, database
 from pydantic import ValidationError
 
 from agent.config import Settings
@@ -121,6 +123,20 @@ def test_http_primary_host_readonly_grant_and_attempt(tmp_path, monkeypatch, ena
         trace = response.json()["trace"]
         assert any(t.get("name") == "text_stats" and t.get("ok")
                    for t in trace if t.get("type") == "tool") is enabled
+        _, Session = database(cfg.database_url)
+        with Session() as db:
+            rows = db.scalars(select(AgentAttempt).where(
+                AgentAttempt.conversation_id == cid)).all()
+            if enabled:
+                assert len(rows) == 1
+                assert rows[0].tool_name == "text_stats"
+                assert rows[0].status == "succeeded"
+                import json
+                projection = json.loads(rows[0].result_projection)
+                assert projection == {"ok": True, "characters": 11, "words": 2}
+                assert "Hello world" not in rows[0].result_projection
+            else:
+                assert rows == []
         replay = client.post(f"/conversations/{cid}/agent/messages",
             json={"content": MESSAGE, "client_request_id": "s25-05-read-http-001"})
         assert replay.status_code == 409
