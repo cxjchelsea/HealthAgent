@@ -8,6 +8,7 @@ from dataclasses import dataclass
 import re
 from typing import Callable, Literal
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from agent.tools import CalcArgs, execute_tool
 
 
 class StrictReadArgs(BaseModel):
@@ -100,7 +101,16 @@ def _text_stats(args: TextStatsArgs) -> dict:
             "words": len(args.text.split())}
 
 
+def _legacy_calculate(args: CalcArgs) -> dict:
+    """Preserve the established calculator observation and error contract."""
+    return execute_tool("calculate", args.model_dump(), [])
+
+
 READ_REGISTRY = TrustedReadRegistry((
+    ReadToolDefinition(
+        name="calculate", version="1.0.0",
+        description="Calculate bounded numeric expressions (+,-,*,/,parentheses).",
+        input_model=CalcArgs, adapter=_legacy_calculate),
     ReadToolDefinition(
         name="text_stats", version="1.0.0",
         description="Count Unicode characters and whitespace-separated words in supplied text.",
@@ -109,9 +119,15 @@ READ_REGISTRY = TrustedReadRegistry((
 
 
 def approved_read_grants(*, host_disposition: str, host_route: str,
-                         host_mode: str, feature_enabled: bool) -> tuple[str, ...]:
+                         host_mode: str, feature_enabled: bool,
+                         calculate_registry_enabled: bool = False) -> tuple[str, ...]:
     """Explicit server-side Host policy; descriptions never grant permission."""
-    if (feature_enabled and host_disposition == "allow"
-            and host_route == "ordinary_tool" and host_mode == "read_only"):
-        return ("text_stats",)
-    return ()
+    if not (host_disposition == "allow" and host_route == "ordinary_tool"
+            and host_mode == "read_only"):
+        return ()
+    granted = []
+    if feature_enabled:
+        granted.append("text_stats")
+    if calculate_registry_enabled:
+        granted.append("calculate")
+    return tuple(granted)
