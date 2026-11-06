@@ -473,3 +473,77 @@ def test_b3_agentloop_recall_parity_without_duplicate_exposure(enabled):
     assert len(observations) == 1 and observations[0]["ok"]
     assert observations[0]["value"] == "owner-secret"
     assert ("tool_version" in observations[0]) is enabled
+
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_b3_http_owner_memory_isolation_and_attempt_redaction(
+        tmp_path, monkeypatch, enabled):
+    """Real FastAPI authentication, owner-bound MemoryStore and SQL Attempt."""
+    async def primary(*args, **kwargs):
+        msg = args[2]
+        return bind_route_signal(RouteSignal.model_validate({
+            "schema_version": "primary-route-v1", "route_kind": "ordinary_tool",
+            "quote": msg, "execution_scope": "none", "effect_intent": "read_only",
+        }), msg, saved_plan_present=False, pending_action=None)
+
+    class RecallProvider:
+        def __init__(self, settings):
+            self.seen = []
+
+        async def decide(self, messages, tools):
+            names = [t["function"]["name"] for t in tools]
+            self.seen.append(names)
+            if any(m.get("role") == "tool" for m in messages):
+                return Decision("已查询", [])
+            return Decision("", [{"id": "b3-memory", "name": "recall_memory",
+                                  "arguments": {"key": "b3-shared"}}])
+
+    monkeypatch.setattr("apps.api.main.propose_primary_route", primary)
+    monkeypatch.setattr("apps.api.main.NativeToolDecision", RecallProvider)
+    cfg = Settings(database_url=f"sqlite:///{tmp_path / 'b3_http_owners.db'}",
+                   model_provider="ollama_proxy", routing_profile="unified",
+                   allow_demo_identity=False, user_tokens="alice-token:alice,bob-token:bob",
+                   s25_05_recall_memory_registry_enabled=enabled)
+    with TestClient(create_app(cfg)) as client:
+        owners = []
+        for name, token, secret in [
+            ("alice", "alice-token", "alice-private-qa-123"),
+            ("bob", "bob-token", "bob-private-qa-456"),
+        ]:
+            headers = {"Authorization": "Bearer " + token}
+            response = client.put("/memories/b3-shared", headers=headers,
+                                  json={"value": secret})
+            assert response.status_code == 200, response.text
+            cid_response = client.post("/conversations", headers=headers)
+            assert cid_response.status_code == 200, cid_response.text
+            owners.append((name, headers, cid_response.json()["id"], secret))
+        _, Session = database(cfg.database_url)
+        for name, headers, cid, secret in owners:
+            other_secret = next(value for other, _, _, value in owners if other != name)
+            response = client.post(
+                f"/conversations/{cid}/agent/messages", headers=headers,
+                json={"content": "查询我的记忆键 b3-shared",
+                      "client_request_id": "b3-read-" + name + "-001"})
+            assert response.status_code == 200, response.text
+            with Session() as db:
+                attempts = db.scalars(select(AgentAttempt).where(
+                    AgentAttempt.conversation_id == cid,
+                    AgentAttempt.tool_name == "recall_memory")).all()
+                assert len(attempts) == 1
+                attempt = attempts[0]
+                assert attempt.status == "succeeded"
+                import json
+                assert json.loads(attempt.result_projection) == {"ok": True, "found": True}
+                assert secret not in (attempt.result_projection or "")
+                assert other_secret not in (attempt.result_projection or "")
+            assert any(t.get("name") == "recall_memory" and t.get("ok")
+                       for t in response.json()["trace"] if t.get("type") == "tool")
+            assert other_secret not in response.text
+        # Conversation access must be checked before the AgentLoop sees it.
+        cross = client.post(
+            f"/conversations/{owners[1][2]}/agent/messages",
+            headers=owners[0][1],
+            json={"content": "查询我的记忆键 b3-shared",
+                  "client_request_id": "b3-cross-owner-denial"})
+        assert cross.status_code == 404
