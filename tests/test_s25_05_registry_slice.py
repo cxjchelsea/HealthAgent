@@ -337,3 +337,62 @@ def test_b2_agentloop_registry_parity_and_no_duplicate_tools(name, arguments,
     assert len(audit) == 1 and audit[0]["observation"]["ok"]
     assert expected_field in audit[0]["observation"]
     assert ("tool_version" in audit[0]["observation"]) is enabled
+
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_b2_http_persisted_task_list_is_conversation_scoped(
+        tmp_path, monkeypatch, enabled):
+    from services.task_store import ConversationTaskStore
+    from services.db import ConversationTask
+
+    async def primary(*args, **kwargs):
+        msg = args[2]
+        return bind_route_signal(RouteSignal.model_validate({
+            "schema_version": "primary-route-v1", "route_kind": "ordinary_tool",
+            "quote": msg, "execution_scope": "none", "effect_intent": "read_only",
+        }), msg, saved_plan_present=False, pending_action=None)
+
+    class ListProvider:
+        def __init__(self, settings):
+            self.seen = []
+
+        async def decide(self, messages, tools):
+            names = [x["function"]["name"] for x in tools]
+            self.seen.append(names)
+            if any(m.get("role") == "tool" for m in messages):
+                return Decision("任务已读取", [])
+            return Decision("", [{"id": "b2_list", "name": "list_tasks",
+                                  "arguments": {}}])
+
+    monkeypatch.setattr("apps.api.main.propose_primary_route", primary)
+    monkeypatch.setattr("apps.api.main.NativeToolDecision", ListProvider)
+    cfg = Settings(database_url=f"sqlite:///{tmp_path / 'b2_scoped_http.db'}",
+                   model_provider="ollama_proxy", routing_profile="unified",
+                   s25_05_list_tasks_registry_enabled=enabled)
+    with TestClient(create_app(cfg)) as client:
+        first = client.post("/conversations").json()["id"]
+        second = client.post("/conversations").json()["id"]
+        _, Session = database(cfg.database_url)
+        ConversationTaskStore(Session, first).create("private-first")
+        ConversationTaskStore(Session, second).create("private-second")
+        for cid, title, forbidden in (
+            (first, "private-first", "private-second"),
+            (second, "private-second", "private-first"),
+        ):
+            response = client.post(
+                f"/conversations/{cid}/agent/messages",
+                json={"content": "查询当前会话的任务列表",
+                      "client_request_id": f"b2-scoped-{cid}"})
+            assert response.status_code == 200, response.text
+            with Session() as db:
+                attempts = db.scalars(select(AgentAttempt).where(
+                    AgentAttempt.conversation_id == cid,
+                    AgentAttempt.tool_name == "list_tasks")).all()
+                assert len(attempts) == 1
+                assert attempts[0].status == "succeeded"
+                # The bounded observation projection must not contain
+                # unrelated conversation data.
+                assert forbidden not in (attempts[0].result_projection or "")
+                assert title in (attempts[0].result_projection or "")
+            assert response.json()["status"] in ("completed", "partial")
