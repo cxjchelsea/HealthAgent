@@ -5,6 +5,7 @@ tool on the current turn; model calls and remote MCP metadata cannot grant it.
 Existing tools remain on their original guarded paths during this slice.
 """
 from dataclasses import dataclass
+import re
 from typing import Callable, Literal
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -28,9 +29,13 @@ class ReadToolDefinition:
     enabled: bool = True
 
     def __post_init__(self):
-        if not self.name or not self.version or not self.description:
+        if (not re.fullmatch(r"[a-z][a-z0-9_]{0,79}", self.name)
+                or not re.fullmatch(r"[0-9]+\\.[0-9]+\\.[0-9]+", self.version)
+                or not self.description or self.effect != "read"):
             raise ValueError("invalid_tool_definition")
-        if not issubclass(self.input_model, BaseModel) or not callable(self.adapter):
+        if (not isinstance(self.input_model, type)
+                or not issubclass(self.input_model, BaseModel)
+                or not callable(self.adapter)):
             raise ValueError("invalid_tool_definition")
 
     def provider_schema(self) -> dict:
@@ -77,7 +82,9 @@ class TrustedReadRegistry:
             result = definition.adapter(parsed)
             if not isinstance(result, dict) or not isinstance(result.get("ok"), bool):
                 return {"ok": False, "error": "tool_execution_error"}
-            return result
+            # Stable server-origin metadata only; never forward model or MCP claims.
+            return {**result, "tool_name": definition.name,
+                    "tool_version": definition.version}
         except Exception:
             return {"ok": False, "error": "tool_execution_error"}
 
