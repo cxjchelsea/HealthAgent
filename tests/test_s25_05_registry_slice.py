@@ -516,7 +516,7 @@ def test_b3_http_owner_memory_isolation_and_attempt_redaction(
                                   json={"value": secret})
             assert response.status_code == 200, response.text
             cid_response = client.post("/conversations", headers=headers)
-            assert cid_response.status_code == 200, cid_response.text
+            assert cid_response.status_code == 201, cid_response.text
             owners.append((name, headers, cid_response.json()["id"], secret))
         _, Session = database(cfg.database_url)
         for name, headers, cid, secret in owners:
