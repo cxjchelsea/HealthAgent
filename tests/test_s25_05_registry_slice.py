@@ -547,3 +547,108 @@ def test_b3_http_owner_memory_isolation_and_attempt_redaction(
             json={"content": "查询我的记忆键 b3-shared",
                   "client_request_id": "b3-cross-owner-denial"})
         assert cross.status_code == 404
+
+
+
+def test_b3b_mcp_host_grant_and_untrusted_client_are_rejected():
+    base = dict(host_disposition="allow", host_route="ordinary_tool",
+                host_mode="read_only", feature_enabled=False)
+    assert approved_read_grants(**base) == ()
+    assert approved_read_grants(**base, mcp_reference_registry_enabled=True) == (
+        "mcp_reference_lookup",)
+    assert approved_read_grants(**{**base, "host_disposition": "deny"},
+                                mcp_reference_registry_enabled=True) == ()
+    common = dict(granted_names=("mcp_reference_lookup",),
+                  exposed_names=("mcp_reference_lookup",),
+                  expected_version="1.0.0")
+    from agent.mock_mcp import MockMCPClient
+    assert READ_REGISTRY.invoke("mcp_reference_lookup", {"term": "rag"},
+                               **common)["error"] == "tool_runtime_unavailable"
+    assert READ_REGISTRY.invoke("mcp_reference_lookup", {"term": "rag"},
+           runtime=ReadToolRuntime(mcp_client=MockMCPClient()),
+           **common)["error"] == "mcp_untrusted_client"
+    assert READ_REGISTRY.invoke("mcp_reference_lookup",
+           {"term": "rag", "command": "echo injected"},
+           runtime=ReadToolRuntime(mcp_client=MockMCPClient()),
+           **common)["error"] == "invalid_arguments"
+
+
+def test_b3b_trusted_local_mcp_call_preserves_observations():
+    from agent.mcp_stdio_client import StdioMCPClient
+    client = StdioMCPClient(timeout_seconds=5)
+    common = dict(granted_names=("mcp_reference_lookup",),
+                  exposed_names=("mcp_reference_lookup",),
+                  expected_version="1.0.0",
+                  runtime=ReadToolRuntime(mcp_client=client))
+    success = READ_REGISTRY.invoke("mcp_reference_lookup", {"term": "rag"}, **common)
+    assert success["ok"] and success["term"] == "rag"
+    assert success["source"] == "trusted_mock_catalog_v1"
+    assert success["tool_version"] == "1.0.0"
+    absent = READ_REGISTRY.invoke("mcp_reference_lookup", {"term": "unknown-key"}, **common)
+    assert absent["error"] == "reference_not_found"
+    denied = READ_REGISTRY.invoke("mcp_reference_lookup", {"term": "rag"},
+        granted_names=(), exposed_names=("mcp_reference_lookup",),
+        expected_version="1.0.0", runtime=ReadToolRuntime(mcp_client=client))
+    assert denied["error"] == "permission_denied"
+
+
+@pytest.mark.parametrize("mutate", ["server_name", "server_version",
+                                      "schema", "extra_tool"])
+def test_b3b_remote_tool_discovery_cannot_authorize_catalog(monkeypatch, mutate):
+    import json
+    from types import SimpleNamespace
+    from agent.mcp_stdio_client import StdioMCPClient, TRUSTED_REFERENCE_TOOL
+    tool = {"name": TRUSTED_REFERENCE_TOOL["name"],
+            "inputSchema": TRUSTED_REFERENCE_TOOL["inputSchema"],
+            "description": "untrusted description"}
+    server = {"name": "healthagent-trusted-reference", "version": "1.0.0"}
+    if mutate == "server_name":
+        server["name"] = "malicious-mcp"
+    if mutate == "server_version":
+        server["version"] = "9.9.9"
+    if mutate == "schema":
+        tool["inputSchema"] = {"type": "object", "additionalProperties": True}
+    tools = [tool]
+    if mutate == "extra_tool":
+        tools.append({"name": "run_shell", "inputSchema": {}})
+    responses = [
+        {"jsonrpc": "2.0", "id": 1, "result": {
+            "protocolVersion": "2025-06-18", "serverInfo": server}},
+        {"jsonrpc": "2.0", "id": 2, "result": {"tools": tools}},
+        {"jsonrpc": "2.0", "id": 3, "result": {
+            "content": [{"type": "text", "text": json.dumps({
+                "ok": True, "term": "rag", "source": "untrusted"})}],
+            "isError": False}},
+    ]
+    def scripted_run(*args, **kwargs):
+        return SimpleNamespace(returncode=0,
+            stdout="".join(json.dumps(frame) + "\\n" for frame in responses))
+    monkeypatch.setattr("agent.mcp_stdio_client.subprocess.run", scripted_run)
+    result = StdioMCPClient().call_trusted_reference({"term": "rag"})
+    assert result == {"ok": False, "error": "mcp_catalog_mismatch"}
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_b3b_agentloop_fixed_mcp_registry_parity(enabled):
+    from agent.mcp_stdio_client import StdioMCPClient
+    class LookupOnce:
+        def __init__(self):
+            self.exposures = []
+        async def decide(self, messages, tools):
+            names = [t["function"]["name"] for t in tools]
+            self.exposures.append(names)
+            if any(m.get("role") == "tool" for m in messages):
+                return Decision("查阅结束", [])
+            return Decision("", [{"id": "mcp-b3b", "name": "mcp_reference_lookup",
+                                  "arguments": {"term": "rag"}}])
+    model = LookupOnce()
+    result = asyncio.run(AgentLoop(model, mcp_client=StdioMCPClient(),
+        host_read_grants=("mcp_reference_lookup",) if enabled else ()
+        ).run("查询 MCP 可信目录中的 rag", execution_mode="read_only",
+              include_evidence=True))
+    assert all(names.count("mcp_reference_lookup") == 1 for names in model.exposures)
+    observations = [x["observation"] for x in result["audit"]
+                    if x["name"] == "mcp_reference_lookup"]
+    assert len(observations) == 1 and observations[0]["ok"]
+    assert observations[0]["term"] == "rag"
+    assert ("tool_version" in observations[0]) is enabled
