@@ -152,3 +152,20 @@ def test_host_grant_does_not_enable_respond_or_saved_plan():
         result = asyncio.run(AgentLoop(OneCall(), host_read_grants=("text_stats",)).run(
             MESSAGE, execution_mode=mode))
         assert result["status"] == "completed"
+
+
+def test_model_cannot_count_fabricated_text():
+    class FabricatingModel:
+        async def decide(self, messages, tools):
+            if any(m.get("role") == "tool" for m in messages):
+                return Decision("无法核实", [])
+            return Decision("", [{"id": "fabricated", "name": "text_stats",
+                                  "arguments": {"text": "invented not in request"}}])
+    result = asyncio.run(AgentLoop(
+        FabricatingModel(), host_read_grants=("text_stats",)).run(
+            MESSAGE, execution_mode="read_only", include_evidence=True))
+    attempts = [a for a in result["audit"] if a["name"] == "text_stats"]
+    assert len(attempts) == 1
+    assert attempts[0]["observation"]["error"] == "argument_provenance_missing"
+    assert not any(t.get("name") == "text_stats" and t.get("ok")
+                   for t in result["trace"])
