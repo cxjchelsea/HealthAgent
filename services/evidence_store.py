@@ -6,6 +6,8 @@ import uuid
 _MAX_RESULT_CHARS = 1200
 _ALLOWED_OUTPUT = {
     "calculate": ("value",),
+    # Strict numeric-only metadata; never persist the supplied text.
+    "text_stats": ("characters", "words",),
     "utc_time": ("utc",),
     "mcp_reference_lookup": ("source", "definition", "value"),
     "list_tasks": ("tasks",),

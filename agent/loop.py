@@ -8,6 +8,7 @@ from typing import Any, TypedDict
 from langgraph.graph import END, StateGraph
 from agent.decision import NativeToolDecision
 from agent.tools import TOOL_SCHEMAS, execute_tool
+from agent.tool_registry import READ_REGISTRY, ReadToolRuntime
 from agent.skills import (exposed_tools, load_instructions, SKILL_VERSION,
                           select_tool_exposure, exposure_schemas, exposure_instructions, SEMANTIC_GUIDANCE)
 from agent.semantic_topk import select_read_tools
@@ -78,7 +79,8 @@ class AgentState(TypedDict):
 
 class AgentLoop:
     def __init__(self, decider: Any, max_steps: int = 6, clock=None, task_store=None, memory_store=None, mcp_client=None, skill_strategy='dynamic', skill_budget_chars=600, execution_guard=None, dispatch_journal=None,
-                 ordinary_attempt_journal=None, ordinary_attempt_session_factory=None, candidate_selector=None, selector_model=None, governed_ordinary_writes=False):
+                 ordinary_attempt_journal=None, ordinary_attempt_session_factory=None, candidate_selector=None, selector_model=None, governed_ordinary_writes=False,
+                 host_read_grants: tuple[str, ...] = ()):
         if max_steps < 1 or max_steps > 20:
             raise ValueError("max_steps must be 1..20")
         self.decider = decider
@@ -96,6 +98,10 @@ class AgentLoop:
         self.ordinary_attempt_journal = ordinary_attempt_journal
         self.ordinary_attempt_session_factory = ordinary_attempt_session_factory
         self.governed_ordinary_writes = governed_ordinary_writes
+        # Only the trusted API Host supplies per-turn optional read grants.
+        self.host_read_grants = tuple(host_read_grants)
+        self.host_read_versions = {name: READ_REGISTRY.version_for(name)
+                                   for name in self.host_read_grants}
         flow = StateGraph(AgentState)
         flow.add_node("decide", self._decide)
         flow.add_node("tools", self._tools)
@@ -121,6 +127,12 @@ class AgentLoop:
             state["allowed_tools"] = [
                 tool for tool in TOOL_SCHEMAS
                 if tool["function"]["name"] in eligible
+            ]
+            already_exposed = {tool["function"]["name"] for tool in state["allowed_tools"]}
+            state["allowed_tools"] += [
+                tool for tool in READ_REGISTRY.exposed(self.host_read_grants)
+                if (tool["function"]["name"] in state["exposure_limit"]
+                    and tool["function"]["name"] not in already_exposed)
             ]
             state["traces"].append({
                 "step": state["iterations"] + 1, "type": "tool_exposure",
@@ -341,10 +353,26 @@ class AgentLoop:
                         # This commit occurs BEFORE any external effect. On a
                         # process crash the prepared record remains unknown.
                         journal.begin(sessions, evidence)
-                    result = execute_tool(name, function.get("arguments"), tasks,
-                                          self.clock, task_store=self.task_store,
-                                          memory_store=self.memory_store,
-                                          mcp_client=self.mcp_client)
+                    if (name == "text_stats" and name in self.host_read_grants
+                            and (not isinstance(arguments, dict)
+                                 or not isinstance(arguments.get("text"), str)
+                                 or arguments["text"] not in state["user_request"])):
+                        # Model-supplied text must originate in this turn;
+                        # never present statistics for a hallucinated passage.
+                        result = {"ok": False, "error": "argument_provenance_missing"}
+                    elif name in self.host_read_grants:
+                        result = READ_REGISTRY.invoke(
+                            name, arguments, granted_names=self.host_read_grants,
+                            exposed_names=tuple(state["exposure_limit"]),
+                            expected_version=self.host_read_versions.get(name),
+                            runtime=ReadToolRuntime(clock=self.clock,
+                                task_store=self.task_store, memory_store=self.memory_store,
+                                mcp_client=self.mcp_client, tasks=tasks))
+                    else:
+                        result = execute_tool(name, function.get("arguments"), tasks,
+                                              self.clock, task_store=self.task_store,
+                                              memory_store=self.memory_store,
+                                              mcp_client=self.mcp_client)
                     if evidence is not None:
                         # Projection only; never writes model-generated claims.
                         from services.evidence_store import bounded_projection
@@ -752,6 +780,15 @@ class AgentLoop:
                           "candidate_count": len(ranked),
                           "selected_read_tools": sorted(topk_names),
                           "exposed_tools": [t["function"]["name"] for t in selected_tools]}
+        # Trusted Host permit is additive only for ordinary read-only turns.
+        # Explicit calculator and TopK reduction are not silently widened.
+        if (mode == "read_only" and self.host_read_grants
+                and self.skill_strategy != "semantic_topk"
+                and tool_allowlist is None):
+            already_exposed = {t["function"]["name"] for t in selected_tools}
+            selected_tools += [t for t in READ_REGISTRY.exposed(self.host_read_grants)
+                               if (t["function"]["name"] == "text_stats"
+                                   and t["function"]["name"] not in already_exposed)]
         resume_context = ("\nTrusted checkpoint: revision " + str(resumed.revision) +
                           "; steps: " + json.dumps(resumed.snapshot(), ensure_ascii=False)
                           if resumed.revision else "")
