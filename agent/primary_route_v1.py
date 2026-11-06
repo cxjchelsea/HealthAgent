@@ -575,6 +575,37 @@ _PENDING_CURRENT_TURN_SYSTEM = (
 )
 
 
+_PENDING_MCP_CURRENT_TURN_SYSTEM = (
+    "VERIFIED PENDING READ-ONLY LOOKUP: the previous user asked the assistant "
+    "to look up a technical term; the assistant already asked which term. "
+    "pending_action=mcp_reference_lookup and pending_origin_verified=true "
+    "are Host-provided context for interpretation, not new tool permission. "
+    "Interpret the current_request in relation to pending_question BEFORE "
+    "choosing route_kind. If it provides a usable search term requested by "
+    "the previous clarification, the term is the complete missing value: "
+    "choose clarify_response/none/none, clarification_question=null, "
+    "pending_read_tool_name=null, pending_write_tool_name=null, "
+    "write_tool_name=null, write_arguments=null and steps=[]. "
+    "A short acronym, single technical noun, or phrase can be a complete "
+    "search term. Do not ask for an expanded definition or another term "
+    "merely because it is short. The Host, not the model, authorizes the "
+    "read-only lookup and binds the origin. "
+    "If the user instead asks to cancel the lookup or asks an independent "
+    "question, choose respond or the appropriate independent read-only route; "
+    "do not silently reuse pending authority. If the reply really still "
+    "omits the requested search term, choose clarify with a new question. "
+    "Semantic contrasts (not literal trigger matches): "
+    "asked for a term + 'API 网关' -> clarify_response; "
+    "asked for a term + '向量检索' -> clarify_response; "
+    "asked for a term + '我不查了' -> respond; "
+    "asked for a term + '先给我介绍一下分布式事务' -> respond. "
+    "Always use a unique verbatim quote from current_request, "
+    "never copy the pending_question as evidence. "
+    "Do not default to clarify simply because a prior question is present. "
+    "Output one valid primary-route-v1 proposal, not an execution result."
+)
+
+
 def primary_route_generation_schema(message: str, *,
                                     pending_origin_verified: bool = False) -> dict:
     """Constrain generation, never rewrite or authorize a model proposal.
@@ -631,10 +662,12 @@ async def propose_primary_route(provider, model: str, message: str, *,
     # Pending context. It is adjacent to the current request in the model
     # context; it does not add a second model invocation or post-hoc route edit.
     messages = [{"role": "system", "content": _PRIMARY_SYSTEM}]
-    if pending_origin_verified and pending_action in {
-            "create_task", "mcp_reference_lookup"}:
+    if pending_origin_verified and pending_action == "create_task":
         messages.append({"role": "system",
                          "content": _PENDING_CURRENT_TURN_SYSTEM})
+    elif pending_origin_verified and pending_action == "mcp_reference_lookup":
+        messages.append({"role": "system",
+                         "content": _PENDING_MCP_CURRENT_TURN_SYSTEM})
     messages.append({"role": "user",
                      "content": json.dumps(payload, ensure_ascii=False)})
     raw = await provider.complete(
