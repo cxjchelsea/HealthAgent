@@ -146,3 +146,23 @@ def test_confirm_physical_audit_requires_exact_completed_turn_and_receipt():
     assert not v2.physical_audit(
         db, cid, "PENDING_TASK_CONFIRM", "confirm")["effect_ok"]
     db.close()
+
+
+
+def test_mcp_group_is_isolated_and_has_frozen_manifest():
+    chosen = [case[0] for case in v2.CASES if case[1] == "pending_mcp"]
+    assert chosen == ["PENDING_MCP_ORIGIN", "PENDING_MCP_ANSWER"]
+    assert v2.ROUTES["PENDING_MCP_ORIGIN"] == (
+        "clarify", "clarify", "needs_input")
+    assert v2.ROUTES["PENDING_MCP_ANSWER"] == (
+        "clarify_response", "allow", "verified_clarification_execution")
+    assert len(v2.frozen_sha()) == 64
+
+
+def test_refused_mcp_proposal_is_not_business_success():
+    assert not v2.assess(
+        "PENDING_MCP_ORIGIN", 200,
+        {"status": "partial", "termination_reason": "primary_v1_proposal_refused"},
+        {"schema_version": "primary-route-v1", "semantic_attempts": 1,
+         "disposition": "refused"}, {"primary": 1}, "2", [],
+        [], {}, {"turn_evidence_ok": False, "effect_ok": True})
