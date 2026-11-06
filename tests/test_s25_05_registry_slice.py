@@ -622,7 +622,7 @@ def test_b3b_remote_tool_discovery_cannot_authorize_catalog(monkeypatch, mutate)
     ]
     def scripted_run(*args, **kwargs):
         return SimpleNamespace(returncode=0,
-            stdout="".join(json.dumps(frame) + "\\n" for frame in responses))
+            stdout="".join(json.dumps(frame) + "\n" for frame in responses))
     monkeypatch.setattr("agent.mcp_stdio_client.subprocess.run", scripted_run)
     result = StdioMCPClient().call_trusted_reference({"term": "rag"})
     assert result == {"ok": False, "error": "mcp_catalog_mismatch"}
