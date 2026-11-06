@@ -606,6 +606,54 @@ _PENDING_MCP_CURRENT_TURN_SYSTEM = (
 )
 
 
+# A verified MCP continuation is a compact, single-owner semantic decision.
+# Do not place it behind the global plan/write examples: Qwen can copy the
+# generic "ask again" pattern even when the user has supplied the term.
+# This prompt must never force a route; Host provenance and Schema still gate
+# all tool execution and side effects.
+_PRIMARY_MCP_FOCUSED_SYSTEM = (
+    "You are the SINGLE primary-route-v1 semantic proposer for the current "
+    "user turn. Output exactly one JSON object valid under the provided "
+    "schema; include all schema keys and set unused optional fields to null. "
+    "Read the trusted input fields current_request, pending_action, "
+    "pending_origin_verified, pending_question, and saved_plan_exists. "
+    "The previous verified assistant question requests the NAME OF A TERM "
+    "to look up in a technical reference. It has ALREADY asked the question. "
+    "First determine whether the current user message supplies that missing "
+    "term, withdraws, or makes a different independent request. "
+    "For a supplied term (including a single abbreviation or short noun), "
+    "use route_kind=clarify_response, execution_scope=none, "
+    "effect_intent=none, steps=[], clarification_question=null. "
+    "For a withdrawal or independent explanation choose respond/none/none; "
+    "for a separate read-only tool request choose ordinary_tool/none/read_only. "
+    "If the current message really does not identify any lookup term and "
+    "still asks for a clarification, choose clarify/none/none and write "
+    "a nonempty clarification_question. This decision must be based on "
+    "the full meaning of the current request and the earlier question, "
+    "not matching abbreviations or keywords. Examples only for contrast: "
+    "asked which term + '一致性哈希' => clarify_response; "
+    "asked which term + '数据库索引' => clarify_response; "
+    "asked which term + '不查了' => respond; "
+    "asked which term + '换个话题介绍数据治理' => respond. "
+    "For ALL verified pending replies: pending_read_tool_name=null, "
+    "pending_write_tool_name=null, write_tool_name=null, "
+    "write_arguments=null, step_number=null, revision_old_argument=null, "
+    "revision_new_argument=null; NEVER infer tool execution permission. "
+    "For routes other than plan_create, steps must be []. "
+    "If current_request instead explicitly asks to create or modify a "
+    "saved plan, use the appropriate plan_create, plan_revise, plan_cancel, "
+    "plan_execute_first, plan_resume, or plan_missing route, preserving "
+    "the required saved-plan scope/effect and grounding in user text. "
+    "For an ordinary independent new write, the verified Pending context "
+    "does NOT grant write authority; do not invent or transfer a write. "
+    "The quote MUST equal one unique verbatim substring of current_request. "
+    "When the message is short, quote the whole current_request exactly. "
+    "Never quote the previous assistant question as the new user's evidence. "
+    "Do not repeat the previous clarification merely because there is "
+    "a pending question. Return a semantic proposal, not a tool result."
+)
+
+
 def primary_route_generation_schema(message: str, *,
                                     pending_origin_verified: bool = False) -> dict:
     """Constrain generation, never rewrite or authorize a model proposal.
@@ -666,8 +714,9 @@ async def propose_primary_route(provider, model: str, message: str, *,
         messages.append({"role": "system",
                          "content": _PENDING_CURRENT_TURN_SYSTEM})
     elif pending_origin_verified and pending_action == "mcp_reference_lookup":
-        messages.append({"role": "system",
-                         "content": _PENDING_MCP_CURRENT_TURN_SYSTEM})
+        # Use a scoped, self-contained instruction instead of stacking many
+        # general planning examples plus task-title Pending prompts.
+        messages = [{"role": "system", "content": _PRIMARY_MCP_FOCUSED_SYSTEM}]
     messages.append({"role": "user",
                      "content": json.dumps(payload, ensure_ascii=False)})
     raw = await provider.complete(
