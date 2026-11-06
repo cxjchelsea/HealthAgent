@@ -74,14 +74,16 @@ class TrustedReadRegistry:
             return {"ok": False, "error": "permission_denied"}
         if name not in exposed_names:
             return {"ok": False, "error": "tool_not_exposed"}
-        if expected_version is not None and expected_version != definition.version:
-            return {"ok": False, "error": "tool_version_mismatch"}
         if not isinstance(arguments, dict):
             return {"ok": False, "error": "invalid_arguments"}
         try:
             parsed = definition.input_model.model_validate(arguments)
         except ValidationError:
             return {"ok": False, "error": "invalid_arguments"}
+        # A missing expected version is not permission to use the latest one.
+        # Every successful invocation must carry a trusted version binding.
+        if expected_version != definition.version:
+            return {"ok": False, "error": "tool_version_mismatch"}
         try:
             result = definition.adapter(parsed)
             if not isinstance(result, dict) or not isinstance(result.get("ok"), bool):
