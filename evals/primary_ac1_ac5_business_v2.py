@@ -465,6 +465,7 @@ def main():
                     admission_reason=(evidence or {}).get("admission_reason"),
                     refusal_code=body.get("primary_v1_refusal_code"),
                     validation_issues=body.get("primary_v1_validation_issues", []),
+                    route_triple=body.get("primary_v1_route_triple"),
                     semantic_attempts=(evidence or {}).get("semantic_attempts"),
                     model_categories=categories,
                     model_http_attempts=attempts,
