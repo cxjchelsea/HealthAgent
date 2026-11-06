@@ -8,7 +8,7 @@ from dataclasses import dataclass
 import re
 from typing import Any, Callable, Literal
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
-from agent.tools import CalcArgs, EmptyArgs, execute_tool
+from agent.tools import CalcArgs, EmptyArgs, MemoryKey, execute_tool
 
 
 class StrictReadArgs(BaseModel):
@@ -24,6 +24,7 @@ class ReadToolRuntime:
     """Trusted, invocation-local dependencies; not model-exposed tool input."""
     clock: Any = None
     task_store: Any = None
+    memory_store: Any = None
     tasks: list[str] | None = None
 
 
@@ -132,7 +133,19 @@ def _legacy_list_tasks(args: EmptyArgs, runtime: ReadToolRuntime) -> dict:
                         task_store=runtime.task_store)
 
 
+def _legacy_recall_memory(args: MemoryKey, runtime: ReadToolRuntime) -> dict:
+    # No global fallback. The Host owns the user-scoped MemoryStore.
+    if runtime.memory_store is None:
+        return {"ok": False, "error": "memory_unavailable"}
+    return execute_tool("recall_memory", args.model_dump(), [],
+                        memory_store=runtime.memory_store)
+
+
 READ_REGISTRY = TrustedReadRegistry((
+    ReadToolDefinition(
+        name="recall_memory", version="1.0.0",
+        description="Look up user-owned long-term memory using an exact key.",
+        input_model=MemoryKey, adapter=_legacy_recall_memory, requires_runtime=True),
     ReadToolDefinition(
         name="utc_time", version="1.0.0",
         description="Read the current time in UTC.",
@@ -156,7 +169,8 @@ def approved_read_grants(*, host_disposition: str, host_route: str,
                          host_mode: str, feature_enabled: bool,
                          calculate_registry_enabled: bool = False,
                          utc_time_registry_enabled: bool = False,
-                         list_tasks_registry_enabled: bool = False) -> tuple[str, ...]:
+                         list_tasks_registry_enabled: bool = False,
+                         recall_memory_registry_enabled: bool = False) -> tuple[str, ...]:
     """Explicit server-side Host policy; descriptions never grant permission."""
     if not (host_disposition == "allow" and host_route == "ordinary_tool"
             and host_mode == "read_only"):
@@ -170,4 +184,6 @@ def approved_read_grants(*, host_disposition: str, host_route: str,
         granted.append("utc_time")
     if list_tasks_registry_enabled:
         granted.append("list_tasks")
+    if recall_memory_registry_enabled:
+        granted.append("recall_memory")
     return tuple(granted)
