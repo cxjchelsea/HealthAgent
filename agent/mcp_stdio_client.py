@@ -7,6 +7,18 @@ import json
 import subprocess
 import sys
 
+# Local policy, not populated from MCP tools/list or model prompts.
+TRUSTED_REFERENCE_SERVER = {"name": "healthagent-trusted-reference", "version": "1.0.0"}
+TRUSTED_REFERENCE_TOOL = {
+    "name": "mcp_reference_lookup",
+    "inputSchema": {
+        "type": "object",
+        "properties": {"term": {"type": "string", "minLength": 1, "maxLength": 80}},
+        "required": ["term"],
+        "additionalProperties": False,
+    },
+}
+
 
 class StdioMCPClient:
     def __init__(self, timeout_seconds: float = 5.0):
@@ -15,6 +27,13 @@ class StdioMCPClient:
         self.timeout_seconds = timeout_seconds
 
     def call(self, name: str, arguments: dict) -> dict:
+        return self._call(name, arguments, verify_trusted_catalog=False)
+
+    def call_trusted_reference(self, arguments: dict) -> dict:
+        """Strict local-server binding for S25-05 Registry; no remote discovery grants."""
+        return self._call("mcp_reference_lookup", arguments, verify_trusted_catalog=True)
+
+    def _call(self, name: str, arguments: dict, *, verify_trusted_catalog: bool) -> dict:
         if name != "mcp_reference_lookup":
             return {"ok": False, "error": "mcp_tool_not_allowlisted"}
         requests = [
@@ -45,6 +64,15 @@ class StdioMCPClient:
             assert set(indexed) == {1, 2, 3}
             assert indexed[1]["result"]["protocolVersion"] == "2025-06-18"
             available = indexed[2]["result"]["tools"]
+            if verify_trusted_catalog:
+                server = indexed[1]["result"]["serverInfo"]
+                if server != TRUSTED_REFERENCE_SERVER:
+                    return {"ok": False, "error": "mcp_catalog_mismatch"}
+                if (not isinstance(available, list) or len(available) != 1
+                        or not isinstance(available[0], dict)
+                        or any(available[0].get(k) != v
+                               for k, v in TRUSTED_REFERENCE_TOOL.items())):
+                    return {"ok": False, "error": "mcp_catalog_mismatch"}
             assert any(t["name"] == name for t in available)
             call = indexed[3]["result"]
             assert len(call["content"]) == 1 and call["content"][0]["type"] == "text"
