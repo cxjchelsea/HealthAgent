@@ -186,3 +186,64 @@ def test_model_cannot_count_fabricated_text():
     assert attempts[0]["observation"]["error"] == "argument_provenance_missing"
     assert not any(t.get("name") == "text_stats" and t.get("ok")
                    for t in result["trace"])
+
+
+
+def test_calculate_registry_is_explicit_host_opt_in_and_preserves_observations():
+    base = dict(host_disposition="allow", host_route="ordinary_tool",
+                host_mode="read_only", feature_enabled=False)
+    assert approved_read_grants(**base) == ()
+    assert approved_read_grants(**base, calculate_registry_enabled=True) == ("calculate",)
+    assert approved_read_grants(**{**base, "host_mode": "respond_only"},
+                                calculate_registry_enabled=True) == ()
+    original = READ_REGISTRY.invoke("calculate", {"expression": "(19+23)*4"},
+        granted_names=("calculate",), exposed_names=("calculate",),
+        expected_version="1.0.0")
+    assert original["ok"] and original["value"] == 168
+    for expression, error in [("1/0", "division_by_zero"),
+                              ("abc", "unsupported_expression")]:
+        result = READ_REGISTRY.invoke("calculate", {"expression": expression},
+            granted_names=("calculate",), exposed_names=("calculate",),
+            expected_version="1.0.0")
+        assert result["error"] == error
+    assert READ_REGISTRY.invoke("calculate", {"expression": "1+2"},
+        granted_names=(), exposed_names=("calculate",),
+        expected_version="1.0.0")["error"] == "permission_denied"
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_calculator_migration_preserves_tool_exposure_and_observation(enabled):
+    class CalculatorModel:
+        def __init__(self):
+            self.seen = []
+        async def decide(self, messages, tools):
+            names = [t["function"]["name"] for t in tools]
+            self.seen.append(names)
+            if any(m.get("role") == "tool" for m in messages):
+                return Decision("已计算", [])
+            return Decision("", [{"id": "calc_s25_05", "name": "calculate",
+                                  "arguments": {"expression": "(19+23)*4"}}])
+    model = CalculatorModel()
+    result = asyncio.run(AgentLoop(model,
+        host_read_grants=("calculate",) if enabled else ()).run(
+            "请计算 (19+23)*4", execution_mode="read_only", include_evidence=True))
+    assert all(names.count("calculate") == 1 for names in model.seen)
+    attempts = [a for a in result["audit"] if a["name"] == "calculate"]
+    assert len(attempts) == 1
+    assert attempts[0]["observation"]["ok"]
+    assert attempts[0]["observation"]["value"] == 168
+    assert ("tool_version" in attempts[0]["observation"]) is enabled
+
+
+def test_migrated_calculator_does_not_reappear_after_semantic_filter():
+    class NoTools:
+        async def decide(self, messages, tools):
+            assert not any(t["function"]["name"] == "calculate" for t in tools)
+            return Decision("仅答复", [])
+    # The existing explicit Host allowlist is a reduction. A registry grant
+    # cannot revive a tool removed from this turn's exposure.
+    result = asyncio.run(AgentLoop(
+        NoTools(), host_read_grants=("calculate",)).run(
+            "请问现在有什么工具？", execution_mode="read_only",
+            tool_allowlist=()))
+    assert result["status"] == "completed"
