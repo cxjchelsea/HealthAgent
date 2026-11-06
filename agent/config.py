@@ -18,6 +18,8 @@ class Settings(BaseSettings):
     route_admission_mode: Literal["legacy", "guarded"] = "legacy"  # M4 explicit opt-in
     m5_first_route_enabled: bool = False  # explicit FIRST-only experiment
     m5_unified_route_enabled: bool = False  # opt-in shared saved-plan route experiment
+    primary_route_v1_canary_enabled: bool = False  # opt-in HTTP v1; never implicit
+    pending_write_confirmation_enabled: bool = False  # explicit rollout; no model-based confirmation
     understanding_strategy: str = "direct"  # direct or structured; benchmark before default switch
     model_api_key: str = ""
     model_timeout_seconds: float = Field(default=45, gt=0)
@@ -95,6 +97,28 @@ class Settings(BaseSettings):
                 and not self.m5_first_route_enabled):
             return "legacy"
         return "compatibility"
+
+    @property
+    def primary_route_v1_active(self) -> bool:
+        """One Primary owner for real-provider Unified (auto or explicit).
+
+        Fake-provider fixtures retain their legacy test harness until their
+        contracts are migrated. Explicit legacy remains a separate profile.
+        The explicit v1 canary still allows fake-provider contract tests;
+        failure of Primary admission never falls back to old classifiers.
+        """
+        return self.primary_route_v1_canary_enabled or (
+            self.model_provider != "fake"
+            and self.effective_routing_profile == "unified"
+            and self.routing_profile_source in {
+                "auto_real_provider_default", "explicit_unified"}
+        )
+
+    @property
+    def pending_write_confirmation_active(self) -> bool:
+        """Required for real-model Primary; opt-in for deterministic fixtures."""
+        return self.pending_write_confirmation_enabled or (
+            self.primary_route_v1_active and self.model_provider != "fake")
 
     @property
     def provider_ready(self) -> bool:

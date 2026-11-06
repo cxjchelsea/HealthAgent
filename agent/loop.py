@@ -74,10 +74,11 @@ class AgentState(TypedDict):
     structured_mode: bool
     failed_plan_attempts: int
     user_request: str
+    independent_ordinary: bool
 
 class AgentLoop:
     def __init__(self, decider: Any, max_steps: int = 6, clock=None, task_store=None, memory_store=None, mcp_client=None, skill_strategy='dynamic', skill_budget_chars=600, execution_guard=None, dispatch_journal=None,
-                 ordinary_attempt_journal=None, ordinary_attempt_session_factory=None, candidate_selector=None, selector_model=None):
+                 ordinary_attempt_journal=None, ordinary_attempt_session_factory=None, candidate_selector=None, selector_model=None, governed_ordinary_writes=False):
         if max_steps < 1 or max_steps > 20:
             raise ValueError("max_steps must be 1..20")
         self.decider = decider
@@ -94,6 +95,7 @@ class AgentLoop:
         self.dispatch_journal = dispatch_journal
         self.ordinary_attempt_journal = ordinary_attempt_journal
         self.ordinary_attempt_session_factory = ordinary_attempt_session_factory
+        self.governed_ordinary_writes = governed_ordinary_writes
         flow = StateGraph(AgentState)
         flow.add_node("decide", self._decide)
         flow.add_node("tools", self._tools)
@@ -148,8 +150,12 @@ class AgentLoop:
                         "status": "partial", "termination_reason": "memory_recall_unverified",
                         "traces": state["traces"] + [{
                             "step": iteration, "type": "memory_recall_unverified"}]}
-            pending = [s["id"] for s in state["plan"].snapshot()
-                       if s["status"] != "completed"]
+            # An independently Host-admitted ordinary request does not inherit
+            # the saved plan's incomplete status. Do not report the user's
+            # successful unrelated tool work as a plan-execution failure.
+            pending = ([] if state.get("independent_ordinary", False) else
+                       [s["id"] for s in state["plan"].snapshot()
+                        if s["status"] != "completed"])
             superseded = [step_id for step_id in state["superseded_step_ids"]
                           if any(s["id"] == step_id and s["status"] == "completed"
                                  and s.get("expected_tool") == "calculate"
@@ -314,7 +320,15 @@ class AgentLoop:
                 # Saved-plan tools use M4 dispatch exclusively (see run()).
                 journal = self.ordinary_attempt_journal
                 sessions = self.ordinary_attempt_session_factory
-                if (journal is not None and sessions is not None and name in
+                if (self.governed_ordinary_writes
+                        and name in {"create_task", "save_memory"}):
+                    # The model tool call is NOT a Primary/Host write permit.
+                    # In Unified the only effectful writers are the
+                    # source-bound, transaction-governed Host executors.
+                    # Legacy/isolated AgentLoop tests retain compatibility.
+                    result = {"ok": False,
+                              "error": "write_requires_primary_host_authorization"}
+                elif (journal is not None and sessions is not None and name in
                         {"create_task", "save_memory"} and
                         journal.has_unresolved_writes(sessions)):
                     result = {"ok": False,
@@ -395,7 +409,8 @@ class AgentLoop:
                 state["unavailable_tools"].append(name)
             if name == "recall_memory":
                 state["memory_recall_observed"] = True
-            if name not in {"propose_plan", "revise_plan", "complete_plan_step"}:
+            if (name not in {"propose_plan", "revise_plan", "complete_plan_step"}
+                    and not state.get("independent_ordinary", False)):
                 state["plan"].observe(name, result, function.get("arguments"))
                 if result.get("ok"):
                     state["last_success"] = {"name": name, **result}
@@ -459,7 +474,8 @@ class AgentLoop:
                   understanding_result: dict | None = None,
                   execution_mode: str | None = None,
                   plan_control: str | None = None,
-                  execution_guard=None, memory_write_consent: bool = False) -> dict:
+                  execution_guard=None, memory_write_consent: bool = False,
+                  tool_allowlist: tuple[str, ...] | None = None) -> dict:
         if not goal.strip() or len(goal) > 12000:
             raise ValueError("Goal must contain 1..12000 characters")
         run_id = str(uuid.uuid4())
@@ -486,7 +502,9 @@ class AgentLoop:
                 and step.get("expected_arguments") == {"expression": old_expression}]
         # Explicit saved-memory questions use a trusted, owner-scoped read.
         # Do not leave correctness to optional model tool choice.
-        if (understanding_result is None and self.memory_store is not None and any(phrase in goal for phrase in (
+        if (execution_mode != "respond_only"
+                and understanding_result is None
+                and self.memory_store is not None and any(phrase in goal for phrase in (
                 "还记得", "记得我", "之前保存", "之前记住", "保存的",
                 "记住的", "测试偏好是什么", "测试偏好吗"))):
             records = self.memory_store.list()
@@ -668,7 +686,17 @@ class AgentLoop:
             selected_tools = exposed_tools(goal, TOOL_SCHEMAS, strategy=tool_strategy)
         selected_tools += [t for t in TOOL_SCHEMAS
                            if t["function"]["name"] == "request_clarification"]
-        if resumed.revision:
+        independent_ordinary = (
+            execution_mode == "read_only" and plan_control is None
+            and understanding_result is None)
+        if independent_ordinary:
+            # Neither a successful matching observation nor a plan-control
+            # tool invocation can mutate the saved checkpoint during ordinary
+            # read-only work.
+            selected_tools = [t for t in selected_tools
+                              if t["function"]["name"] not in {
+                                  "propose_plan", "revise_plan", "complete_plan_step"}]
+        if resumed.revision and not independent_ordinary:
             names = {t["function"]["name"] for t in selected_tools}
             selected_tools += [t for t in TOOL_SCHEMAS if t["function"]["name"]
                                in {"propose_plan", "revise_plan", "complete_plan_step"}
@@ -687,6 +715,14 @@ class AgentLoop:
                           "recall_memory", "mcp_reference_lookup"}
             selected_tools = [tool for tool in selected_tools
                               if tool["function"]["name"] in read_tools]
+        # Host-selected operations narrow exposure; never authorize writes.
+        if tool_allowlist is not None:
+            approved = set(tool_allowlist)
+            if not approved.issubset({"calculate", "utc_time", "list_tasks",
+                                      "recall_memory", "mcp_reference_lookup"}):
+                raise ValueError("invalid_host_tool_allowlist")
+            selected_tools = [tool for tool in selected_tools
+                              if tool["function"]["name"] in approved]
         topk_trace = None
         # S25-04 opt-in: model-mediated shortlist is a reduction ONLY of the
         # already Host-admitted read-only tools; keep plan/control and writes
@@ -720,9 +756,11 @@ class AgentLoop:
                           "; steps: " + json.dumps(resumed.snapshot(), ensure_ascii=False)
                           if resumed.revision else "")
         # A bounded re-decision only for explicit saved-memory requests.
-        recall_required = understanding_result is None and any(phrase in goal for phrase in (
+        recall_required = (execution_mode != "respond_only"
+                           and understanding_result is None
+                           and any(phrase in goal for phrase in (
             "还记得", "记得我", "之前保存", "之前记住", "保存的",
-            "记住的", "测试偏好是什么", "测试偏好吗"))
+            "记住的", "测试偏好是什么", "测试偏好吗")))
         bounded_first_step = bool(
             re.search(r"(只|先|首先|先尝试).{0,14}(完成|执行).{0,6}(第一步|第1步|步骤一)", goal)
             and re.search(r"(剩余|其他|后续).{0,12}(步骤|保留|不要|暂)", goal))
@@ -784,7 +822,8 @@ class AgentLoop:
             "last_tool_decision": None, "repeated_tool_decisions": 0,
             "structured_mode": understanding_result is not None,
             "user_request": goal,
-            "failed_plan_attempts": 0}
+            "failed_plan_attempts": 0,
+            "independent_ordinary": independent_ordinary}
         try:
             outcome = await self.graph.ainvoke(initial, config={"recursion_limit": 2 * self.max_steps + 4})
         except Exception as exc:

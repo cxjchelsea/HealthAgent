@@ -48,6 +48,27 @@ class ConversationPlan(Base):
         ForeignKey("conversations.id"), primary_key=True)
     snapshot: Mapped[str] = mapped_column(Text, default="{}")
 
+
+class PendingWriteAuthority(Base):
+    """Host-minted single-use authority for a clarified, internal task write."""
+    __tablename__ = "pending_write_authorities"
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: str(uuid.uuid4()))
+    conversation_id: Mapped[str] = mapped_column(ForeignKey("conversations.id"), index=True)
+    origin_turn_id: Mapped[str] = mapped_column(ForeignKey("turns.id"), unique=True)
+    origin_user_message_id: Mapped[str] = mapped_column(ForeignKey("messages.id"))
+    tool_name: Mapped[str] = mapped_column(String(80))
+    source_digest: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(24), default="pending")
+    consumed_turn_id: Mapped[str | None] = mapped_column(ForeignKey("turns.id"), nullable=True)
+    candidate_turn_id: Mapped[str | None] = mapped_column(ForeignKey("turns.id"), nullable=True)
+    candidate_title: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    candidate_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    confirmation_nonce: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    candidate_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
 class PlanExecutionClaim(Base):
     """Durable per-conversation reservation for saved-plan tool execution."""
     __tablename__ = "plan_execution_claims"
@@ -79,6 +100,28 @@ class Turn(Base):
     duration_ms: Mapped[int] = mapped_column(Integer, default=0)
     failure_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     decision_steps: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class PrimaryRouteEvidence(Base):
+    """Write-once Host admission evidence for one Primary Turn.
+
+    Never stores prompts, user text, model raw output, tool arguments or
+    credentials. The row is committed before any Primary-authorized effect.
+    """
+    __tablename__ = "primary_route_evidence"
+    turn_id: Mapped[str] = mapped_column(
+        ForeignKey("turns.id"), primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(
+        ForeignKey("conversations.id"), index=True)
+    proposal_id: Mapped[str] = mapped_column(String(40), unique=True)
+    schema_version: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    route_kind: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    semantic_attempts: Mapped[int] = mapped_column(Integer, nullable=False)
+    preturn_snapshot_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    disposition: Mapped[str] = mapped_column(String(20))
+    admission_reason: Mapped[str] = mapped_column(String(80))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=now)
 
 
 class PlanToolDispatch(Base):

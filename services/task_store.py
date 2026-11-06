@@ -8,16 +8,21 @@ class ConversationTaskStore:
         self.Session = Session
         self.conversation_id = conversation_id
 
+    def create_in_session(self, db, title):
+        """Caller-owned transaction permits atomic task effect + dispatch receipt."""
+        count = db.scalar(select(func.count()).select_from(ConversationTask).where(
+            ConversationTask.conversation_id == self.conversation_id))
+        if count >= 20:
+            return {"ok": False, "error": "task_limit"}
+        task = ConversationTask(id=str(uuid.uuid4()),
+                                conversation_id=self.conversation_id, title=title)
+        db.add(task)
+        db.flush()
+        return {"ok": True, "task_id": task.id, "title": task.title}
+
     def create(self, title):
         with self.Session.begin() as db:
-            count = db.scalar(select(func.count()).select_from(ConversationTask).where(
-                ConversationTask.conversation_id == self.conversation_id))
-            if count >= 20:
-                return {"ok": False, "error": "task_limit"}
-            task = ConversationTask(id=str(uuid.uuid4()), conversation_id=self.conversation_id, title=title)
-            db.add(task)
-            db.flush()
-            return {"ok": True, "task_id": task.id, "title": task.title}
+            return self.create_in_session(db, title)
 
     def list(self):
         with self.Session() as db:

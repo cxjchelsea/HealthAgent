@@ -31,10 +31,26 @@ jobs:
         env:
           TEST_POSTGRES_URL: postgresql+psycopg://healthagent:ci_local_only@localhost:5432/healthagent
         run: python -m pytest -q -rs tests/test_s25_03_step5_postgres_physical.py
+      - name: Primary Pending write PostgreSQL CAS and reconciliation
+        env:
+          TEST_POSTGRES_URL: postgresql+psycopg://healthagent:ci_local_only@localhost:5432/healthagent
+        run: python -m pytest -q -rs tests/test_primary_pending_write_postgres.py
+      - name: Pending confirmation PostgreSQL CAS and expiry lifecycle
+        env:
+          TEST_POSTGRES_URL: postgresql+psycopg://healthagent:ci_local_only@localhost:5432/healthagent
+        run: python -m pytest -q -rs tests/test_primary_pending_confirmation_postgres.py
+      - name: AC4 cross-entry ordinary Pending PostgreSQL write fence
+        env:
+          TEST_POSTGRES_URL: postgresql+psycopg://healthagent:ci_local_only@localhost:5432/healthagent
+        run: python -m pytest -q -rs tests/test_primary_ac4_cross_entry_postgres.py
       - name: M4 targeted PostgreSQL claim-row-lock verification
         env:
           TEST_POSTGRES_URL: postgresql+psycopg://healthagent:ci_local_only@localhost:5432/healthagent
         run: python -m pytest -q -rs tests/test_s25_02_m3_postgres_claim_concurrency.py
+      - name: AC4 v1 PostgreSQL subprocess write crash boundaries
+        env:
+          TEST_POSTGRES_URL: postgresql+psycopg://healthagent:ci_local_only@localhost:5432/healthagent
+        run: python -m pytest -q -rs tests/test_primary_ac4_postgres_process_crash.py
       - name: M4 isolated PostgreSQL subprocess crash and recovery
         env:
           TEST_POSTGRES_URL: postgresql+psycopg://healthagent:ci_local_only@localhost:5432/healthagent
@@ -59,4 +75,4 @@ jobs:
         run: |
           python -m services.migrate
           python -m services.migrate
-          python -c "from sqlalchemy import create_engine,text; import os; e=create_engine(os.environ['DATABASE_URL']); assert e.connect().execute(text('select version_num from alembic_version')).scalar()=='0014_s25_attempt_link'"
+          python -c "from sqlalchemy import create_engine,text; import os; e=create_engine(os.environ['DATABASE_URL']); assert e.connect().execute(text('select version_num from alembic_version')).scalar()=='0018_pending_expiry'"

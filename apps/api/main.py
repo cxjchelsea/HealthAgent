@@ -33,6 +33,23 @@ from agent.control_admission import admit_clarification
 from agent.plan_intent import PlanRequest, review_plan_intent, build_plan_checkpoint
 from agent.s25_04_admission_shadow import evaluate_admission_shadow
 from agent.s25_04_explicit_ordinary import admit_explicit_ordinary_calculation
+from agent.primary_route_v1 import PrimaryRouteRejected, propose_primary_route
+from agent.primary_route_v1_canary import admit_v1_canary
+from agent.primary_host_admission_v1 import PrimaryHostFacts, admit_primary_route_v1
+from agent.pending_write_withdrawal_guard import explicitly_withdraws_pending_task_write
+from agent.primary_pending_readonly_v1 import execute_pending_readonly_v1
+from agent.primary_ordinary_write_v1 import execute_primary_write_v1
+from services.primary_pending_confirmation import (
+    stage_pending_task_candidate, commit_confirmed_pending_task,
+    reject_pending_task_candidate,
+    replace_pending_task_candidate, revoke_staged_candidates_on_new_turn,
+)
+from services.primary_pending_write import (
+    pending_write_authority_for_origin,
+    mint_pending_write_authority_in_session,
+    consume_pending_task_write_v1,
+    revoke_pending_task_authority_in_session,
+)
 from evals.s25_04_route_shadow import shadow_classify
 from agent.m5_first_route import propose_first_route
 from agent.m5_unified_route import (propose_saved_plan_route, propose_new_plan_route,
@@ -56,6 +73,7 @@ from services.db import PlanExecutionClaim, PlanToolDispatch
 from services.db import AgentAttempt, ConversationPlan
 from services.task_state import AgentTaskStateStore
 from services.evidence_store import AttemptEvidenceStore
+from services.primary_route_evidence import record_primary_admission, read_primary_evidence
 from services.s25_03_projection import project_finalized_turn
 
 log=logging.getLogger("healthagent")
@@ -68,6 +86,17 @@ class ChatIn(BaseModel):
     selected_ordinary_operation: str | None = None  # explicitly selected by client
     goal_confirmation: str | None = None
     expected_goal_version: int | None = None
+
+class PendingTaskConfirmationIn(BaseModel):
+    authority_id: str = Field(min_length=36, max_length=40)
+    confirmation_nonce: str = Field(min_length=36, max_length=40)
+    candidate_digest: str = Field(min_length=64, max_length=64)
+    client_request_id: str = Field(min_length=8, max_length=120)
+
+
+class PendingTaskReplaceIn(PendingTaskConfirmationIn):
+    new_title: str = Field(min_length=1, max_length=120)
+
 
 class GoalIn(BaseModel):
     content: str = Field(min_length=1)
@@ -182,18 +211,78 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
             raise HTTPException(404, "memory_not_found")
         return {"deleted": True}
 
+    @app.post("/conversations/{cid}/pending-task/confirm")
+    def confirm_pending_task(cid: str, body: PendingTaskConfirmationIn,
+                             uid=Depends(user_id)):
+        if not settings.pending_write_confirmation_active:
+            raise HTTPException(403, "pending_confirmation_disabled")
+        with Session() as db:
+            get_owned(db, cid, uid)
+        result = commit_confirmed_pending_task(
+            session_factory=Session, conversation_id=cid,
+            authority_id=body.authority_id,
+            confirmation_nonce=body.confirmation_nonce,
+            candidate_digest=body.candidate_digest,
+            request_id=body.client_request_id)
+        if result["status"] != "completed":
+            raise HTTPException(409, result["reason"])
+        return result
+
+    @app.post("/conversations/{cid}/pending-task/reject")
+    def reject_pending_task(cid: str, body: PendingTaskConfirmationIn,
+                            uid=Depends(user_id)):
+        if not settings.pending_write_confirmation_active:
+            raise HTTPException(403, "pending_confirmation_disabled")
+        with Session() as db:
+            get_owned(db, cid, uid)
+        result = reject_pending_task_candidate(
+            session_factory=Session, conversation_id=cid,
+            authority_id=body.authority_id,
+            confirmation_nonce=body.confirmation_nonce,
+            candidate_digest=body.candidate_digest)
+        if result["status"] != "revoked":
+            raise HTTPException(409, result["reason"])
+        return result
+
+    @app.post("/conversations/{cid}/pending-task/replace")
+    def replace_pending_task(cid: str, body: PendingTaskReplaceIn,
+                             uid=Depends(user_id)):
+        if not settings.pending_write_confirmation_active:
+            raise HTTPException(403, "pending_confirmation_disabled")
+        with Session() as db:
+            get_owned(db, cid, uid)
+        result = replace_pending_task_candidate(
+            session_factory=Session, conversation_id=cid,
+            authority_id=body.authority_id,
+            confirmation_nonce=body.confirmation_nonce,
+            candidate_digest=body.candidate_digest, new_title=body.new_title)
+        if result["status"] != "awaiting_confirmation":
+            raise HTTPException(409, result["reason"])
+        return result
+
     @app.post("/conversations/{cid}/agent/messages")
     async def send_agent_in_conversation(cid: str, body: ChatIn, uid=Depends(user_id)):
         """S2-B1: reuse S1 ownership, persisted turns and completed conversation context."""
         if len(body.content) > settings.max_input_chars:
             raise HTTPException(413, "message_too_long")
+        pending_write_authority_id = None
+        pending_write_origin_turn_id = None
         try:
             with Session.begin() as db:
                 get_owned(db, cid, uid)
+                # Serialize new chats with confirm/reject on the shared owner
+                # conversation row; no stale candidate can race a new Turn.
+                db.scalar(select(Conversation.id).where(
+                    Conversation.id == cid).with_for_update())
                 prior = db.scalar(select(Turn).where(
                     Turn.conversation_id == cid, Turn.request_id == body.client_request_id))
                 if prior:
                     raise HTTPException(409, "duplicate_request_id")
+                # Every fresh message abandons staged candidates. A client
+                # wishing to edit the candidate uses the structured replace
+                # action and receives a fresh, bound one-time nonce.
+                if settings.pending_write_confirmation_active:
+                    revoke_staged_candidates_on_new_turn(db, cid)
                 latest_turn = db.scalar(select(Turn).join(
                     Message, Message.id == Turn.assistant_message_id).where(
                     Turn.conversation_id == cid, Turn.state != "running")
@@ -209,6 +298,13 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                     pending_action = None
                 pending_question = (db.get(Message, clarification_id).content
                     if clarification_id else None)
+                if pending_action == "create_task":
+                    write_origin = pending_write_authority_for_origin(
+                        db, conversation_id=cid,
+                        origin_turn=latest_turn, pending_action=pending_action)
+                    if write_origin is not None:
+                        pending_write_authority_id = write_origin.id
+                        pending_write_origin_turn_id = write_origin.origin_turn_id
                 history = db.scalars(select(Message).where(
                     Message.conversation_id == cid,
                     ((Message.status == "completed") |
@@ -324,6 +420,330 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                           "answer": "本轮显式普通操作未通过 Host 准入；没有执行工具或修改计划。",
                           "trace": [{"step": 0, "type": "explicit_ordinary_fenced"}],
                           "steps": 0}
+            # Pre-Primary Host-only decisions have no semantic owner; preserve
+            # that fact durably rather than inventing a Primary proposal.
+            if result is not None and settings.primary_route_v1_active:
+                record_primary_admission(
+                    session_factory=Session, conversation_id=cid,
+                    turn_id=turn_id, preturn_plan_raw=preturn_plan_raw,
+                    semantic_attempts=0,
+                    refusal_reason="primary_v1_host_only_precheck")
+            v1_plan_control = None
+            v1_primary_kind = None
+            # Primary v1 owns auto real-provider Unified and explicit canary requests.
+            # Rejected v1 proposals never fall back to M5 or Legacy.
+            if result is None and settings.primary_route_v1_active:
+                if (settings.effective_routing_profile != "unified"
+                        or agent_decider is not None
+                        or execution_policy is not None):
+                    record_primary_admission(
+                        session_factory=Session, conversation_id=cid,
+                        turn_id=turn_id, preturn_plan_raw=preturn_plan_raw,
+                        semantic_attempts=0,
+                        refusal_reason="primary_v1_incompatible_config")
+                    result = {"run_id": turn_id, "status": "partial",
+                              "termination_reason": "primary_v1_canary_incompatible",
+                              "answer": "当前配置未满足 v1 独立试运行准入条件，未执行工具。",
+                              "trace": [{"step": 0, "type": "primary_route_v1_denied"}],
+                              "steps": 0}
+                else:
+                    v1_evidence_recorded = False
+                    try:
+                        primary_proposal = await propose_primary_route(
+                            HTTPUnderstandingModel(
+                                settings.model_provider, settings.model_base_url,
+                                settings.model_api_key, settings.model_timeout_seconds,
+                                settings.model_max_output_tokens),
+                            settings.understanding_strong_model, body.content,
+                            saved_plan_present=existing_checkpoint is not None,
+                            pending_action=pending_action,
+                            pending_origin_verified=bool(
+                                pending_action and clarification_id and pending_question
+                                and (pending_action != "create_task"
+                                     or pending_write_authority_id is not None)),
+                            pending_question=(pending_question if (
+                                pending_action and clarification_id and pending_question
+                                and (pending_action != "create_task"
+                                     or pending_write_authority_id is not None))
+                                else None),
+                            saved_step_count=(len(existing_checkpoint.get("steps", []))
+                                              if existing_checkpoint else None),
+                            saved_plan_steps=([
+                                {"step_number": i + 1,
+                                 "expected_tool": step.get("expected_tool"),
+                                 "expected_arguments": step.get("expected_arguments"),
+                                 "status": step.get("status")}
+                                for i, step in enumerate(
+                                    existing_checkpoint.get("steps", [])[:8])]
+                                if existing_checkpoint else []),
+                            recent_context=context)
+                        v1_primary_kind = primary_proposal.route_kind
+                        v1_admission = admit_primary_route_v1(
+                            primary_proposal, PrimaryHostFacts(
+                                checkpoint=existing_checkpoint,
+                                pending_action=pending_action,
+                                pending_origin_verified=bool(
+                                    pending_action and clarification_id and pending_question
+                                    and (pending_action != "create_task"
+                                         or pending_write_authority_id is not None)),
+                                pending_write_authority_verified=(
+                                    pending_write_authority_id is not None),
+                                guarded_mode=settings.route_admission_mode == "guarded",
+                                turn_created=True,
+                                write_consent=body.memory_write_consent,
+                                current_request=body.content))
+                        # AC1/AC3: durable, immutable proposal+Host evidence
+                        # must commit before any tool, task, memory or plan effect.
+                        counter = model_call_counter.get() or {}
+                        primary_attempts = counter.get("by_category", {}).get(
+                            "primary", 0)
+                        record_primary_admission(
+                            session_factory=Session, conversation_id=cid,
+                            turn_id=turn_id, preturn_plan_raw=preturn_plan_raw,
+                            proposal=primary_proposal, decision=v1_admission,
+                            semantic_attempts=primary_attempts)
+                        v1_evidence_recorded = True
+                        # The Host decision is authoritative. A restricted
+                        # proposal must NEVER fall through to an executor or
+                        # the legacy canary's operation-specific handlers.
+                        # Clarification may proceed only for the original
+                        # clarify route; it is not permission to execute.
+                        if (v1_admission.disposition in {"deny", "restrict"}
+                                or (v1_admission.disposition == "clarify"
+                                    and primary_proposal.route_kind != "clarify")):
+                            result = {
+                                "run_id": turn_id, "status": "partial",
+                                "termination_reason": v1_admission.reason,
+                                "answer": "本轮请求未通过确定性 Host 准入，未执行工具。",
+                                "trace": [{"step": 0, "type": "primary_route_v1_denied"}],
+                                "steps": 0}
+                        # Explicit client operation narrows the Primary/Host
+                        # admitted route; it never grants tool authority.
+                        if (result is None
+                                and body.selected_ordinary_operation is not None
+                                and not (
+                                    selected_ordinary_admitted
+                                    and body.selected_ordinary_operation == "calculate"
+                                    and primary_proposal.route_kind == "ordinary_tool"
+                                    and primary_proposal.effect_intent == "read_only"
+                                    and v1_admission.disposition == "allow")):
+                            result = {
+                                "run_id": turn_id, "status": "partial",
+                                "termination_reason": "explicit_ordinary_primary_mismatch",
+                                "answer": "显式操作与主语义不一致，未执行工具。",
+                                "trace": [{"step": 0, "type": "explicit_ordinary_fenced"}],
+                                "steps": 0}
+                        if (result is None
+                                and primary_proposal.route_kind == "clarify_response"
+                                and v1_admission.disposition == "allow"
+                                and pending_action == "create_task"
+                                and pending_write_authority_id is not None
+                                and pending_write_origin_turn_id is not None):
+                            handler = (stage_pending_task_candidate
+                                       if settings.pending_write_confirmation_active
+                                       else consume_pending_task_write_v1)
+                            result = handler(
+                                session_factory=Session,
+                                conversation_id=cid, current_turn_id=turn_id,
+                                origin_turn_id=pending_write_origin_turn_id,
+                                authority_id=pending_write_authority_id,
+                                reply=body.content)
+                        if (result is None
+                                and primary_proposal.route_kind == "clarify_response"
+                                and v1_admission.disposition == "allow"
+                                and pending_action == "mcp_reference_lookup"):
+                            result = execute_pending_readonly_v1(
+                                message=body.content, conversation_id=cid,
+                                turn_id=turn_id, session_factory=Session,
+                                prior_pending_action=pending_action,
+                                prior_origin_verified=bool(
+                                    pending_action and clarification_id and pending_question))
+                        if result is None and primary_proposal.route_kind in {
+                                "plan_execute_first", "plan_resume"}:
+                            requested_control = (
+                                "execute_first" if primary_proposal.route_kind ==
+                                "plan_execute_first" else "resume")
+                            # Never let a model proposal grant tool authority.
+                            # M4 validates the exact bound checkpoint and
+                            # registered read-only step arguments.
+                            if not admit_guarded_plan_execution(
+                                    conversation_id=cid,
+                                    request_id=body.client_request_id,
+                                    checkpoint=existing_checkpoint,
+                                    scope=requested_control,
+                                    turn_created=True,
+                                    semantic_confirmed=True):
+                                result = {
+                                    "run_id": turn_id, "status": "partial",
+                                    "termination_reason": "primary_v1_plan_admission_denied",
+                                    "answer": "计划执行未通过 Host 准入，未调用工具。",
+                                    "trace": [{"step": 0, "type": "primary_route_v1_denied"}],
+                                    "steps": 0}
+                            else:
+                                # M4 already owns claim, journal and atomic CAS.
+                                # Do not invoke legacy semantics or bypass the
+                                # outcome-unknown reconciliation fence.
+                                with Session() as recovery_db:
+                                    unresolved = recovery_db.scalar(
+                                        select(PlanToolDispatch.id).where(
+                                            PlanToolDispatch.conversation_id == cid,
+                                            PlanToolDispatch.status.in_(
+                                                UNRESOLVED_DISPATCH_STATUSES)))
+                                    unknown = recovery_db.scalar(
+                                        select(Turn.id).where(
+                                            Turn.conversation_id == cid,
+                                            Turn.failure_code ==
+                                            "plan_execution_outcome_unknown"))
+                                if unresolved is not None or unknown is not None:
+                                    result = {
+                                        "run_id": turn_id, "status": "partial",
+                                        "termination_reason": "plan_execution_reconciliation_required",
+                                        "answer": "此前执行结果尚未核实，未继续调用工具。",
+                                        "trace": [{"step": 0,
+                                                   "type": "plan_execution_fenced"}],
+                                        "steps": 0}
+                                else:
+                                    v1_plan_control = requested_control
+                                    result = await AgentLoop(
+                                        NativeToolDecision(settings),
+                                        task_store=ConversationTaskStore(Session, cid),
+                                        memory_store=MemoryStore(
+                                            Session, uid,
+                                            write_allowed=body.memory_write_consent),
+                                        mcp_client=StdioMCPClient(),
+                                        skill_strategy=settings.skill_strategy,
+                                        skill_budget_chars=settings.skill_budget_chars,
+                                        execution_guard=saved_plan_execution_guard,
+                                        dispatch_journal=PlanDispatchJournal(
+                                            Session, cid, turn_id),
+                                    ).run(
+                                        body.content, history=context,
+                                        plan_checkpoint=existing_checkpoint,
+                                        understanding_result=None,
+                                        execution_mode="read_only",
+                                        memory_write_consent=body.memory_write_consent,
+                                        plan_control=requested_control)
+                        elif result is None and primary_proposal.route_kind == "respond":
+                            # Answer generation is post-admission AgentLoop work,
+                            # not another semantic route owner. Empty tools in
+                            # respond_only guarantee no business side effects.
+                            result = await AgentLoop(
+                                NativeToolDecision(settings),
+                                task_store=ConversationTaskStore(Session, cid),
+                                memory_store=MemoryStore(Session, uid,
+                                                         write_allowed=False),
+                                mcp_client=StdioMCPClient(),
+                                skill_strategy=settings.skill_strategy,
+                                skill_budget_chars=settings.skill_budget_chars,
+                            ).run(body.content, history=context,
+                                  plan_checkpoint=existing_checkpoint,
+                                  understanding_result=None,
+                                  execution_mode="respond_only",
+                                  memory_write_consent=False,
+                                  plan_control=None)
+                        elif (result is None
+                              and primary_proposal.route_kind == "ordinary_tool"
+                              and primary_proposal.effect_intent == "mutation_requested"
+                              and v1_admission.disposition == "allow"):
+                            result = execute_primary_write_v1(
+                                proposal=primary_proposal,
+                                session_factory=Session,
+                                conversation_id=cid, turn_id=turn_id,
+                                owner_id=uid,
+                                memory_write_consent=body.memory_write_consent)
+                        elif (result is None and primary_proposal.route_kind == "ordinary_tool"
+                              and primary_proposal.effect_intent == "read_only"):
+                            # Host restriction: AgentLoop may select among
+                            # registered read-only tools only. No plan control,
+                            # writes, or permission expansion is admitted.
+                            result = await AgentLoop(
+                                NativeToolDecision(settings),
+                                task_store=ConversationTaskStore(Session, cid),
+                                memory_store=MemoryStore(Session, uid,
+                                                         write_allowed=False),
+                                mcp_client=StdioMCPClient(),
+                                skill_strategy=settings.skill_strategy,
+                                skill_budget_chars=settings.skill_budget_chars,
+                                ordinary_attempt_journal=AttemptEvidenceStore(
+                                    cid, turn_id),
+                                ordinary_attempt_session_factory=Session,
+                                candidate_selector=(HTTPUnderstandingModel(
+                                    settings.model_provider, settings.model_base_url,
+                                    settings.model_api_key,
+                                    settings.model_timeout_seconds,
+                                    settings.model_max_output_tokens)
+                                    if settings.skill_strategy == "semantic_topk"
+                                    else None),
+                                selector_model=(settings.understanding_strong_model
+                                    if settings.skill_strategy == "semantic_topk"
+                                    else None),
+                            ).run(body.content, history=context,
+                                  plan_checkpoint=existing_checkpoint,
+                                  understanding_result=None,
+                                  execution_mode="read_only",
+                                  memory_write_consent=False,
+                                  plan_control=None,
+                                  tool_allowlist=(("calculate",)
+                                      if body.selected_ordinary_operation == "calculate"
+                                      else None))
+                        elif result is None:
+                            result = admit_v1_canary(
+                                primary_proposal, message=body.content,
+                                conversation_id=cid,
+                                request_id=body.client_request_id,
+                                turn_id=turn_id, checkpoint=existing_checkpoint)
+                    except PrimaryRouteRejected as exc:
+                        # Invalid schema or unbound quote is not an admission.
+                        # Persist refusal without a guessed route or permission.
+                        counter = model_call_counter.get() or {}
+                        record_primary_admission(
+                            session_factory=Session, conversation_id=cid,
+                            turn_id=turn_id, preturn_plan_raw=preturn_plan_raw,
+                            semantic_attempts=counter.get(
+                                "by_category", {}).get("primary", 0),
+                            refusal_reason="primary_v1_proposal_refused")
+                        v1_evidence_recorded = True
+                        result = {"run_id": turn_id, "status": "partial",
+                                  "termination_reason": "primary_v1_proposal_refused",
+                                  "primary_v1_refusal_code": str(exc),
+                                  "primary_v1_validation_issues": exc.validation_issues,
+                                  "primary_v1_route_triple": exc.route_triple,
+                                  "answer": "本轮主语义提案未通过验证，未执行工具或修改计划。",
+                                  "trace": [{"step": 0, "type": "primary_route_v1_denied"}],
+                                  "steps": 0}
+                    except Exception:
+                        # A model/provider or Host exception has no executable
+                        # admission. Retain a durable refusal, never reclassify
+                        # or dispatch a different route.
+                        if not v1_evidence_recorded:
+                            counter = model_call_counter.get() or {}
+                            record_primary_admission(
+                                session_factory=Session, conversation_id=cid,
+                                turn_id=turn_id,
+                                preturn_plan_raw=preturn_plan_raw,
+                                semantic_attempts=counter.get(
+                                    "by_category", {}).get("primary", 0),
+                                refusal_reason="primary_v1_admission_unavailable")
+                        raise
+            # Host decision is diagnostic; neither trace field grants access
+            # or changes a pending plan execution claim.
+            if (settings.primary_route_v1_active
+                    and v1_primary_kind is not None):
+                result["trace"] = [
+                    {"step": 0, "type": "primary_host_admission_v1",
+                     "disposition": v1_admission.disposition,
+                     "reason": v1_admission.reason},
+                    *result.get("trace", [])]
+            # One non-sensitive entry for the bound Primary route, regardless
+            # of which existing Host executor produced the final result.
+            # This is diagnostic only, not permission or durable authority.
+            if settings.primary_route_v1_active and v1_primary_kind is not None:
+                route_trace = {"step": 0, "type": "primary_route_v1",
+                               "schema_version": "primary-route-v1",
+                               "route_kind": v1_primary_kind}
+                if not any(t.get("type") == "primary_route_v1"
+                           for t in result.get("trace", [])):
+                    result["trace"] = [route_trace, *result.get("trace", [])]
             unified_new_plan_decision = None
             # Pending tool arguments and open clarifications belong to the
             # verified preturn origin; they cannot become a fresh plan route.
@@ -705,28 +1125,67 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                     # the operation; the reply supplies only its missing title.
                     # Reference lookup is read-only. These are the only two allowed
                     # resumable tool types, not an arbitrary model-supplied tool name.
-                    if pending_action == "create_task":
-                        observed = execute_tool(pending_action, validated.model_dump(), [],
-                            task_store=ConversationTaskStore(Session, cid))
+                    if settings.effective_routing_profile == "unified":
+                        # An old needs_input failure code is NOT a write permit.
+                        # Both Unified Pending operations must use an existing
+                        # Host-authorized, durable effect path; no direct tool
+                        # calls or fallback after the original Turn.
+                        if pending_action == "create_task":
+                            if (pending_write_authority_id is None
+                                    or pending_write_origin_turn_id is None):
+                                result = {
+                                    "run_id": turn_id, "status": "partial",
+                                    "termination_reason": "pending_write_origin_unverified",
+                                    "answer": "原始任务写入授权无法验证，未创建任务。",
+                                    "trace": [{"step": 0, "type": "pending_write_fenced"}],
+                                    "steps": 0}
+                            else:
+                                handler = (stage_pending_task_candidate
+                                           if settings.pending_write_confirmation_active
+                                           else consume_pending_task_write_v1)
+                                result = handler(
+                                    session_factory=Session,
+                                    conversation_id=cid, current_turn_id=turn_id,
+                                    origin_turn_id=pending_write_origin_turn_id,
+                                    authority_id=pending_write_authority_id,
+                                    reply=body.content)
+                        elif pending_action == "mcp_reference_lookup":
+                            result = execute_pending_readonly_v1(
+                                message=body.content, conversation_id=cid,
+                                turn_id=turn_id, session_factory=Session,
+                                prior_pending_action=pending_action,
+                                prior_origin_verified=bool(
+                                    clarification_id and pending_question))
                     else:
-                        observed = execute_tool(pending_action, validated.model_dump(), [],
-                            mcp_client=StdioMCPClient())
-                    result = {"run_id": turn_id,
-                              "status": "completed" if observed.get("ok") else "partial",
-                              "termination_reason": ("verified_clarification_execution"
-                                    if observed.get("ok") else "clarification_tool_failed"),
-                              "answer": ("已创建任务：" + candidate if pending_action == "create_task"
-                                  and observed.get("ok") else
-                                  "已查询词条：" + candidate + "。" + str(
-                                      observed.get("definition", observed.get("value", "")))
-                                  if pending_action == "mcp_reference_lookup" and observed.get("ok")
-                                  else "工具执行未成功，请检查查询或任务服务。"),
-                              "trace": [{"step": 0, "type": "clarification_resumed",
-                                         "name": pending_action, "ok": bool(observed.get("ok"))}],
-                              "steps": 1}
+                        # Explicit legacy compatibility; never used in Unified.
+                        if pending_action == "create_task":
+                            observed = execute_tool(
+                                pending_action, validated.model_dump(), [],
+                                task_store=ConversationTaskStore(Session, cid))
+                        else:
+                            observed = execute_tool(
+                                pending_action, validated.model_dump(), [],
+                                mcp_client=StdioMCPClient())
+                        result = {"run_id": turn_id,
+                                  "status": "completed" if observed.get("ok") else "partial",
+                                  "termination_reason": ("verified_clarification_execution"
+                                        if observed.get("ok") else "clarification_tool_failed"),
+                                  "answer": ("已创建任务：" + candidate if pending_action == "create_task"
+                                      and observed.get("ok") else
+                                      "已查询词条：" + candidate + "。" + str(
+                                          observed.get("definition", observed.get("value", "")))
+                                      if pending_action == "mcp_reference_lookup" and observed.get("ok")
+                                      else "工具执行未成功，请检查查询或任务服务。"),
+                                  "trace": [{"step": 0, "type": "clarification_resumed",
+                                             "name": pending_action,
+                                             "ok": bool(observed.get("ok"))}],
+                                  "steps": 1}
             execution_mode = "read_only" if clarification_read_only else None
             execution_target = "tool_action" if (clarification_read_only or (result is not None and
-                any(t.get("type") == "clarification_resumed" for t in result.get("trace", [])))) else "goal_state"  # Legacy injected strategy conservatively preserves revisions.
+                any(t.get("type") in {"clarification_resumed", "pending_write_fenced",
+                                      "pending_write_authority_consumed",
+                                      "primary_pending_readonly_v1"}
+                    for t in result.get("trace", [])))) else "goal_state"  # Pending outcomes never become goal edits.
             if result is None and interpretation is not None and not clarification_read_only:
                 if execution_policy is not None:
                     policy_result = await execution_policy(body.content, interpretation)
@@ -777,7 +1236,7 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                   "trace": [{"step": 0, "type": "goal_confirmation_required"}],
                                   "steps": 0, "proposed_goal": parsed_result.goal.model_dump(),
                                   "expected_goal_version": previous_goal["version"] + 1}
-            plan_control = None
+            plan_control = v1_plan_control
             confirmed_plan_execution = False
             # Separate authoring a future plan from executing its steps. Only
             # the bound checkpoint can authorize later read-only execution.
@@ -1058,6 +1517,8 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                         if plan_control not in {"execute_first", "resume"} else None),
                     ordinary_attempt_session_factory=(Session
                         if plan_control not in {"execute_first", "resume"} else None),
+                    governed_ordinary_writes=(
+                        settings.effective_routing_profile == "unified"),
                     candidate_selector=(HTTPUnderstandingModel(
                         settings.model_provider, settings.model_base_url,
                         settings.model_api_key, settings.model_timeout_seconds,
@@ -1074,6 +1535,10 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                           plan_control=plan_control)
             if result["status"] in {"completed", "partial"}:
                 answer, status = result["answer"], result["status"]
+                if (status == "partial"
+                        and result.get("termination_reason") ==
+                        "pending_write_confirmation_required"):
+                    failure_code = "pending_write_confirmation_required"
                 if status == "partial" and (
                     result.get("termination_reason") == "needs_input"
                     or any(t.get("type") == "goal_clarification"
@@ -1209,6 +1674,33 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                 # Release any saved-plan claim in the same transaction that
                 # persists the terminal Turn state, including partial/error paths.
                 plan_store.release_execution_claim_in_session(db, turn_id=turn_id)
+                if (status == "partial"
+                        and failure_code == "needs_input:create_task"
+                        and result is not None
+                        and result.get("pending_write_authority_candidate") is True
+                        and v1_primary_kind == "clarify"
+                        and settings.primary_route_v1_active):
+                    mint_pending_write_authority_in_session(
+                        db, conversation_id=cid, origin_turn_id=turn_id,
+                        origin_user_message_id=user_message.id,
+                        source_message=body.content, tool_name="create_task")
+                # Phase 4-B: a withdrawing user Turn closes its original
+                # Pending write authority in the SAME commit as the Turn.
+                # Unlike an HTTP-only 'no tool' response, this prevents
+                # later direct executor calls from consuming stale rights.
+                if (pending_write_authority_id is not None
+                        and pending_write_origin_turn_id is not None
+                        and (explicitly_withdraws_pending_task_write(body.content)
+                             or (settings.primary_route_v1_active
+                                 and v1_primary_kind is not None
+                                 and (v1_primary_kind != "clarify_response"
+                                      or (v1_admission is not None
+                                          and v1_admission.reason ==
+                                          "primary_v1_pending_title_not_standalone"))))):
+                    revoke_pending_task_authority_in_session(
+                        db, conversation_id=cid,
+                        origin_turn_id=pending_write_origin_turn_id,
+                        authority_id=pending_write_authority_id)
                 response.content = answer
                 response.status = status
                 turn.state = status
@@ -1391,7 +1883,9 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
             return {"turn_id": turn.id, "status": turn.state,
                     "failure_code": turn.failure_code,
                     "decision_steps": turn.decision_steps,
-                    "duration_ms": turn.duration_ms}
+                    "duration_ms": turn.duration_ms,
+                    "primary_route_evidence": read_primary_evidence(
+                        db, conversation_id=cid, turn_id=turn_id)}
 
     @app.get("/conversations/{cid}/plan/recovery-status")
     def plan_recovery_status(cid: str, uid=Depends(user_id)):
@@ -1441,6 +1935,7 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                 "routing_profile": settings.effective_routing_profile,
                 "routing_profile_requested": settings.routing_profile,
                 "routing_profile_source": settings.routing_profile_source,
+                "primary_route_v1_active": settings.primary_route_v1_active,
                 "m5_unified_route_enabled": settings.m5_unified_route_enabled,
                 "route_shadow_enabled": settings.route_shadow_enabled,
                 "m4_contract": "guarded-plan-route-priority-v2"}

@@ -1,0 +1,281 @@
+{
+  "kind": "runtime_semantic_call_baseline_saved_plan_pending",
+  "source_head": "41d91a3ae3fceeaa6f5401313f7471285b8cd86f",
+  "working_tree_dirty": true,
+  "model_provider": "ollama_proxy",
+  "model": "qwen3:14b",
+  "scope": "isolated SQLite, sequential real-provider HTTP turns on frozen main",
+  "ac2_names": [
+    "review_plan_cancellation",
+    "propose_first_route",
+    "review_plan_intent",
+    "check_plan_edit_intent",
+    "classify_pending_reply",
+    "review_pending_reference_lookup",
+    "review_unsupported_capability",
+    "review_read_only_clarification",
+    "reconcile_execution_policy",
+    "review_plan_creation_reference",
+    "review_missing_plan_reference",
+    "review_plan_execution_authorization",
+    "review_plan_execution_scope"
+  ],
+  "ac2_total": 11,
+  "ac2_counts": {
+    "review_plan_cancellation": 0,
+    "propose_first_route": 0,
+    "review_plan_intent": 0,
+    "check_plan_edit_intent": 0,
+    "classify_pending_reply": 0,
+    "review_pending_reference_lookup": 0,
+    "review_unsupported_capability": 0,
+    "review_read_only_clarification": 0,
+    "reconcile_execution_policy": 8,
+    "review_plan_creation_reference": 0,
+    "review_missing_plan_reference": 0,
+    "review_plan_execution_authorization": 2,
+    "review_plan_execution_scope": 1
+  },
+  "other_counts": {
+    "propose_new_plan_route": 6,
+    "propose_saved_plan_route": 5,
+    "review_plan_revision": 1,
+    "decide_execution_policy_detail": 9,
+    "UnderstandingService.understand": 9
+  },
+  "errors_by_function": {},
+  "elapsed_ms_by_function": {
+    "review_plan_cancellation": 0.0,
+    "propose_first_route": 0.0,
+    "review_plan_intent": 0.0,
+    "check_plan_edit_intent": 0.0,
+    "classify_pending_reply": 0.0,
+    "review_pending_reference_lookup": 0.0,
+    "review_unsupported_capability": 0.0,
+    "review_read_only_clarification": 0.0,
+    "reconcile_execution_policy": 4116.8,
+    "review_plan_creation_reference": 0.0,
+    "review_missing_plan_reference": 0.0,
+    "review_plan_execution_authorization": 705.8,
+    "review_plan_execution_scope": 294.7,
+    "propose_new_plan_route": 18450.4,
+    "propose_saved_plan_route": 2477.7,
+    "review_plan_revision": 864.2,
+    "decide_execution_policy_detail": 4797.3,
+    "UnderstandingService.understand": 34762.8
+  },
+  "requests": [
+    {
+      "scenario": "first_setup_create",
+      "http_status": 200,
+      "agent_status": "partial",
+      "reason_code": "plan_created_pending_execution",
+      "termination_reason": "plan_created_pending_execution",
+      "trace_types": [
+        "plan_created"
+      ],
+      "call_counts": {
+        "UnderstandingService.understand": 1,
+        "decide_execution_policy_detail": 1,
+        "propose_new_plan_route": 1,
+        "reconcile_execution_policy": 1
+      },
+      "elapsed_ms": 23008
+    },
+    {
+      "scenario": "first",
+      "http_status": 200,
+      "agent_status": "partial",
+      "reason_code": "pending_plan_steps",
+      "termination_reason": "pending_plan_steps",
+      "trace_types": [
+        "plan_resume_execution",
+        "tool"
+      ],
+      "call_counts": {
+        "UnderstandingService.understand": 1,
+        "decide_execution_policy_detail": 1,
+        "propose_saved_plan_route": 1,
+        "reconcile_execution_policy": 1,
+        "review_plan_execution_authorization": 1
+      },
+      "elapsed_ms": 6024
+    },
+    {
+      "scenario": "resume_setup_create",
+      "http_status": 200,
+      "agent_status": "partial",
+      "reason_code": "plan_created_pending_execution",
+      "termination_reason": "plan_created_pending_execution",
+      "trace_types": [
+        "plan_created"
+      ],
+      "call_counts": {
+        "UnderstandingService.understand": 1,
+        "decide_execution_policy_detail": 1,
+        "propose_new_plan_route": 1,
+        "reconcile_execution_policy": 1
+      },
+      "elapsed_ms": 8756
+    },
+    {
+      "scenario": "resume",
+      "http_status": 200,
+      "agent_status": "completed",
+      "reason_code": "plan_execution_completed",
+      "termination_reason": "plan_execution_completed",
+      "trace_types": [
+        "plan_resume_execution",
+        "tool",
+        "tool"
+      ],
+      "call_counts": {
+        "UnderstandingService.understand": 1,
+        "decide_execution_policy_detail": 1,
+        "propose_saved_plan_route": 1,
+        "reconcile_execution_policy": 1,
+        "review_plan_execution_authorization": 1,
+        "review_plan_execution_scope": 1
+      },
+      "elapsed_ms": 5593
+    },
+    {
+      "scenario": "revise_setup_create",
+      "http_status": 200,
+      "agent_status": "partial",
+      "reason_code": "plan_created_pending_execution",
+      "termination_reason": "plan_created_pending_execution",
+      "trace_types": [
+        "plan_created"
+      ],
+      "call_counts": {
+        "UnderstandingService.understand": 1,
+        "decide_execution_policy_detail": 1,
+        "propose_new_plan_route": 1,
+        "reconcile_execution_policy": 1
+      },
+      "elapsed_ms": 8679
+    },
+    {
+      "scenario": "revise",
+      "http_status": 200,
+      "agent_status": "partial",
+      "reason_code": "plan_revised_pending_execution",
+      "termination_reason": "plan_revised_pending_execution",
+      "trace_types": [
+        "plan_revised"
+      ],
+      "call_counts": {
+        "propose_saved_plan_route": 1,
+        "review_plan_revision": 1
+      },
+      "elapsed_ms": 5110
+    },
+    {
+      "scenario": "cancel_setup_create",
+      "http_status": 200,
+      "agent_status": "partial",
+      "reason_code": "plan_created_pending_execution",
+      "termination_reason": "plan_created_pending_execution",
+      "trace_types": [
+        "plan_created"
+      ],
+      "call_counts": {
+        "UnderstandingService.understand": 1,
+        "decide_execution_policy_detail": 1,
+        "propose_new_plan_route": 1,
+        "reconcile_execution_policy": 1
+      },
+      "elapsed_ms": 14535
+    },
+    {
+      "scenario": "cancel",
+      "http_status": 200,
+      "agent_status": "completed",
+      "reason_code": "plan_cancelled",
+      "termination_reason": "plan_cancelled",
+      "trace_types": [
+        "plan_cancelled"
+      ],
+      "call_counts": {
+        "propose_saved_plan_route": 1
+      },
+      "elapsed_ms": 3201
+    },
+    {
+      "scenario": "ordinary_with_plan_setup_create",
+      "http_status": 200,
+      "agent_status": "partial",
+      "reason_code": "plan_created_pending_execution",
+      "termination_reason": "plan_created_pending_execution",
+      "trace_types": [
+        "plan_created"
+      ],
+      "call_counts": {
+        "UnderstandingService.understand": 1,
+        "decide_execution_policy_detail": 1,
+        "propose_new_plan_route": 1,
+        "reconcile_execution_policy": 1
+      },
+      "elapsed_ms": 14348
+    },
+    {
+      "scenario": "ordinary_with_plan",
+      "http_status": 200,
+      "agent_status": "partial",
+      "reason_code": "unresolved_tool_failure",
+      "termination_reason": "unresolved_tool_failure",
+      "trace_types": [
+        "topk_selection",
+        "tool_exposure",
+        "decision",
+        "tool",
+        "tool_exposure",
+        "decision",
+        "tool",
+        "tool_exposure",
+        "decision",
+        "tool",
+        "tool_exposure",
+        "final"
+      ],
+      "call_counts": {
+        "UnderstandingService.understand": 1,
+        "decide_execution_policy_detail": 1,
+        "propose_saved_plan_route": 1,
+        "reconcile_execution_policy": 1
+      },
+      "elapsed_ms": 14325
+    },
+    {
+      "scenario": "pending_setup_missing_term",
+      "http_status": 200,
+      "agent_status": "completed",
+      "reason_code": "model_final",
+      "termination_reason": "model_final",
+      "trace_types": [
+        "topk_selection",
+        "tool_exposure",
+        "final"
+      ],
+      "call_counts": {
+        "UnderstandingService.understand": 1,
+        "decide_execution_policy_detail": 1,
+        "propose_new_plan_route": 1
+      },
+      "elapsed_ms": 6460
+    },
+    {
+      "scenario": "pending_answer",
+      "skipped": true,
+      "reason": "setup_pending_not_confirmed"
+    }
+  ],
+  "limitations": [
+    "No source changes or model stubs.",
+    "Python function entry counts, not underlying model HTTP calls.",
+    "A skipped scenario means setup failed; do not count it as zero calls.",
+    "A successful setup does not guarantee requested downstream routing.",
+    "TestClient isolated SQLite is not a process-crash or PostgreSQL test."
+  ]
+}

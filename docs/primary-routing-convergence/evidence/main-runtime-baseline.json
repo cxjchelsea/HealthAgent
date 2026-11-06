@@ -1,0 +1,187 @@
+{
+  "kind": "runtime_semantic_call_baseline",
+  "source_head": "41d91a3ae3fceeaa6f5401313f7471285b8cd86f",
+  "working_tree_dirty": true,
+  "scope": "S25-04 Unified physical suite, sequential TestClient HTTP turns",
+  "scope_limit": "not exhaustive: counts are observed calls, not all possible branches",
+  "ac2_names": [
+    "review_plan_cancellation",
+    "propose_first_route",
+    "review_plan_intent",
+    "check_plan_edit_intent",
+    "classify_pending_reply",
+    "review_pending_reference_lookup",
+    "review_unsupported_capability",
+    "review_read_only_clarification",
+    "reconcile_execution_policy",
+    "review_plan_creation_reference",
+    "review_missing_plan_reference",
+    "review_plan_execution_authorization",
+    "review_plan_execution_scope"
+  ],
+  "ac2_total": 15,
+  "ac2_counts": {
+    "review_plan_cancellation": 0,
+    "propose_first_route": 0,
+    "review_plan_intent": 0,
+    "check_plan_edit_intent": 0,
+    "classify_pending_reply": 0,
+    "review_pending_reference_lookup": 3,
+    "review_unsupported_capability": 3,
+    "review_read_only_clarification": 3,
+    "reconcile_execution_policy": 5,
+    "review_plan_creation_reference": 0,
+    "review_missing_plan_reference": 1,
+    "review_plan_execution_authorization": 0,
+    "review_plan_execution_scope": 0
+  },
+  "other_counts": {
+    "propose_new_plan_route": 10,
+    "propose_saved_plan_route": 0,
+    "review_plan_revision": 0,
+    "decide_execution_policy_detail": 6,
+    "UnderstandingService.understand": 10
+  },
+  "elapsed_ms_by_function": {
+    "review_plan_cancellation": 0.0,
+    "propose_first_route": 0.0,
+    "review_plan_intent": 0.0,
+    "check_plan_edit_intent": 0.0,
+    "classify_pending_reply": 0.0,
+    "review_pending_reference_lookup": 937.8,
+    "review_unsupported_capability": 2029.2,
+    "review_read_only_clarification": 1050.3,
+    "reconcile_execution_policy": 2571.5,
+    "review_plan_creation_reference": 0.0,
+    "review_missing_plan_reference": 444.3,
+    "review_plan_execution_authorization": 0.0,
+    "review_plan_execution_scope": 0.0,
+    "propose_new_plan_route": 17459.3,
+    "propose_saved_plan_route": 0.0,
+    "review_plan_revision": 0.0,
+    "decide_execution_policy_detail": 3063.7,
+    "UnderstandingService.understand": 37153.6
+  },
+  "errors_by_function": {
+    "UnderstandingService.understand": 1
+  },
+  "requests": [
+    {
+      "sequence": 1,
+      "http_status": 200,
+      "call_counts": {
+        "UnderstandingService.understand": 1,
+        "decide_execution_policy_detail": 1,
+        "propose_new_plan_route": 1
+      },
+      "elapsed_ms": 16176
+    },
+    {
+      "sequence": 2,
+      "http_status": 200,
+      "call_counts": {
+        "UnderstandingService.understand": 1,
+        "decide_execution_policy_detail": 1,
+        "propose_new_plan_route": 1,
+        "reconcile_execution_policy": 1
+      },
+      "elapsed_ms": 14514
+    },
+    {
+      "sequence": 3,
+      "http_status": 200,
+      "call_counts": {
+        "UnderstandingService.understand": 1,
+        "decide_execution_policy_detail": 1,
+        "propose_new_plan_route": 1,
+        "reconcile_execution_policy": 1,
+        "review_missing_plan_reference": 1
+      },
+      "elapsed_ms": 5458
+    },
+    {
+      "sequence": 4,
+      "http_status": 200,
+      "call_counts": {
+        "UnderstandingService.understand": 1,
+        "decide_execution_policy_detail": 1,
+        "propose_new_plan_route": 1,
+        "reconcile_execution_policy": 1
+      },
+      "elapsed_ms": 12677
+    },
+    {
+      "sequence": 5,
+      "http_status": 503,
+      "call_counts": {
+        "UnderstandingService.understand": 1,
+        "propose_new_plan_route": 1
+      },
+      "elapsed_ms": 4930
+    },
+    {
+      "sequence": 6,
+      "http_status": 200,
+      "call_counts": {
+        "UnderstandingService.understand": 1,
+        "propose_new_plan_route": 1,
+        "review_pending_reference_lookup": 1,
+        "review_read_only_clarification": 1,
+        "review_unsupported_capability": 1
+      },
+      "elapsed_ms": 7501
+    },
+    {
+      "sequence": 7,
+      "http_status": 200,
+      "call_counts": {
+        "UnderstandingService.understand": 1,
+        "decide_execution_policy_detail": 1,
+        "propose_new_plan_route": 1,
+        "reconcile_execution_policy": 1
+      },
+      "elapsed_ms": 13583
+    },
+    {
+      "sequence": 8,
+      "http_status": 200,
+      "call_counts": {
+        "UnderstandingService.understand": 1,
+        "decide_execution_policy_detail": 1,
+        "propose_new_plan_route": 1,
+        "reconcile_execution_policy": 1
+      },
+      "elapsed_ms": 8300
+    },
+    {
+      "sequence": 9,
+      "http_status": 200,
+      "call_counts": {
+        "UnderstandingService.understand": 1,
+        "propose_new_plan_route": 1,
+        "review_pending_reference_lookup": 1,
+        "review_read_only_clarification": 1,
+        "review_unsupported_capability": 1
+      },
+      "elapsed_ms": 11224
+    },
+    {
+      "sequence": 10,
+      "http_status": 200,
+      "call_counts": {
+        "UnderstandingService.understand": 1,
+        "propose_new_plan_route": 1,
+        "review_pending_reference_lookup": 1,
+        "review_read_only_clarification": 1,
+        "review_unsupported_capability": 1
+      },
+      "elapsed_ms": 9865
+    }
+  ],
+  "limitations": [
+    "No source code changed or model behavior mocked.",
+    "Only Python-level entry calls counted, not nested model HTTP retries.",
+    "Runtime categories require separate baseline for unexercised routes.",
+    "Shadow calls are not AC2 and are excluded from these counters."
+  ]
+}
