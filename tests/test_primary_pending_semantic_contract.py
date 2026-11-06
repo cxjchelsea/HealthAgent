@@ -144,3 +144,62 @@ def test_missing_mcp_term_prompt_contract_is_exclusive_and_host_validator_remain
     with pytest.raises(ValidationError):
         RouteSignal.model_validate({
             **base, "route_kind": "respond", "clarification_question": None})
+
+
+def test_verified_mcp_pending_gets_its_own_term_semantic_contract():
+    import asyncio
+    import json
+    from agent.primary_route_v1 import (
+        _PENDING_MCP_CURRENT_TURN_SYSTEM,
+        _PENDING_CURRENT_TURN_SYSTEM,
+        propose_primary_route,
+    )
+
+    class Provider:
+        def __init__(self):
+            self.calls = []
+
+        async def complete(self, *, model, messages, response_schema):
+            self.calls.append((messages, response_schema))
+            current = json.loads(messages[-1]["content"])["current_request"]
+            return json.dumps({
+                "schema_version": "primary-route-v1",
+                "route_kind": "clarify_response",
+                "quote": current,
+                "execution_scope": "none", "effect_intent": "none",
+                "steps": [], "clarification_question": None,
+                "pending_read_tool_name": None,
+                "pending_write_tool_name": None,
+            }, ensure_ascii=False)
+
+    provider = Provider()
+    route = asyncio.run(propose_primary_route(
+        provider, "synthetic", "GraphRAG",
+        saved_plan_present=False,
+        pending_action="mcp_reference_lookup",
+        pending_origin_verified=True,
+        pending_question="想查询哪个术语？",
+        recent_context=[{"role": "assistant", "content": "想查询哪个术语？"}]))
+    assert route.route_kind == "clarify_response"
+    assert len(provider.calls) == 1
+    messages, schema = provider.calls[0]
+    assert [m["role"] for m in messages] == ["system", "system", "user"]
+    assert messages[1]["content"] == _PENDING_MCP_CURRENT_TURN_SYSTEM
+    assert messages[1]["content"] != _PENDING_CURRENT_TURN_SYSTEM
+    assert "single technical noun" in messages[1]["content"]
+    assert "do not silently reuse pending authority" in messages[1]["content"]
+    assert json.loads(messages[2]["content"])["pending_action"] == "mcp_reference_lookup"
+    assert schema["properties"]["pending_read_tool_name"]["type"] == "null"
+    assert schema["properties"]["route_kind"].get("const") is None
+
+
+def test_mcp_pending_does_not_force_reply_route_in_schema():
+    from agent.primary_route_v1 import primary_route_generation_schema
+    schema = primary_route_generation_schema(
+        "请先介绍一下什么是工作流调度",
+        pending_origin_verified=True)
+    assert schema["properties"]["route_kind"].get("const") is None
+    assert "respond" in schema["properties"]["route_kind"]["enum"]
+    assert "clarify" in schema["properties"]["route_kind"]["enum"]
+    assert "clarify_response" in schema["properties"]["route_kind"]["enum"]
+    assert schema["properties"]["pending_read_tool_name"]["type"] == "null"
