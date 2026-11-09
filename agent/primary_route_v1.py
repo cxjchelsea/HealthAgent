@@ -489,6 +489,23 @@ _PRIMARY_SYSTEM += (
     "These examples are semantic contrasts, never outputs to copy. "
 )
 
+# Keep cross-field MCP Pending exclusivity near the generated output examples.
+# This is model instruction, NOT a schema bypass or a deterministic route rule.
+_PRIMARY_SYSTEM += (
+    " MCP FIELD-CONSISTENCY CHECK: The field pending_read_tool_name is a "
+    "marker for a NEW clarification that is actually missing the lookup "
+    "term; it does NOT mean 'this request uses the MCP tool'. If the "
+    "current_request already specifies the term to look up, an independent "
+    "lookup should be ordinary_tool/none/read_only and MUST have "
+    "pending_read_tool_name=null, clarification_question=null, "
+    "pending_write_tool_name=null, write_tool_name=null, "
+    "write_arguments=null, and steps=[]. If the term truly is absent, "
+    "choose clarify/none/none with a real clarification_question and "
+    "pending_read_tool_name=mcp_reference_lookup. Never combine an "
+    "ordinary_tool route with a pending_read_tool_name value. This check "
+    "does not grant tool permission and must never override Host admission. "
+)
+
 # The example is rendered as valid JSON rather than handwritten escaped text.
 # It is a format example only; the model must bind the quote to the request.
 _PRIMARY_SYSTEM += (
