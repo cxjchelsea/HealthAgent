@@ -4,6 +4,7 @@ No model mocks. No production DB. Reports safe evidence only; prompts, answers,
 memory values and credentials are never written to result artifacts.
 """
 import argparse
+from contextlib import contextmanager
 import json
 import os
 import statistics
@@ -117,6 +118,21 @@ def inspect_response(case_id, response, Session, cid, expected=None):
             "model_http_attempts": response.headers.get("X-HealthAgent-Model-HTTP-Attempts")}
 
 
+
+@contextmanager
+def isolated_read_sessions(url):
+    """Dispose the independent evidence-reader pool before temp DB deletion.
+
+    The TestClient/app owns a different SQLAlchemy Engine; its lifespan closes
+    its own pool. Windows prevents deleting SQLite files with either pool open.
+    """
+    engine, Session = database(url)
+    try:
+        yield Session
+    finally:
+        engine.dispose()
+
+
 def evaluate(repeats=1, case_ids=None):
     if os.getenv("RUN_S25_05_LIVE") != "1":
         raise RuntimeError("RUN_S25_05_LIVE=1 is required for real-provider testing")
@@ -158,8 +174,8 @@ def evaluate(repeats=1, case_ids=None):
                 "s25_05_mcp_reference_registry_enabled": True,
                 "allow_demo_identity": True, "user_tokens": "",
             })
-            with TestClient(create_app(settings)) as client:
-                _, Session = database(settings.database_url)
+            with (TestClient(create_app(settings)) as client,
+                  isolated_read_sessions(settings.database_url) as Session):
                 def send(cid, case_id, prompt, expected=None):
                     started = time.monotonic()
                     try:
