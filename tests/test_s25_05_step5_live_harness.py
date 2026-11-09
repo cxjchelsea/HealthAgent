@@ -117,3 +117,14 @@ def test_step5_temp_sqlite_can_be_removed_after_reader_pool_is_disposed(tmp_path
         assert dbpath.exists()
     dbpath.unlink()
     assert not dbpath.exists()
+
+
+def test_live_plan_memory_phrase_mode_keeps_default_suite_unchanged():
+    from evals.s25_05_step5_live import PLAN_CASES, PLAN_MEMORY_PHRASE_CASES
+
+    assert [x[0] for x in PLAN_MEMORY_PHRASE_CASES] == [
+        "plan_create", "plan_first", "plan_resume"]
+    assert "保存的" in PLAN_MEMORY_PHRASE_CASES[1][1]
+    assert "之前保存的" in PLAN_MEMORY_PHRASE_CASES[2][1]
+    assert "保存的" not in PLAN_CASES[1][1]
+    assert PLAN_CASES[0] == PLAN_MEMORY_PHRASE_CASES[0]
