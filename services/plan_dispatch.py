@@ -67,7 +67,6 @@ class PlanDispatchJournal:
             if (step is None or step.get("status") != "completed"
                     or step.get("evidence_tool") != entry.tool_name
                     or step.get("expected_arguments") != json.loads(entry.arguments_json)
-                    or (entry.tool_version is not None and
-                        step.get("tool_version") != entry.tool_version)):
+                    or step.get("tool_version") != entry.tool_version):
                 raise DispatchConflict("receipt_checkpoint_binding_mismatch")
             entry.status = "checkpointed"
