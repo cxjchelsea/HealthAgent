@@ -1329,3 +1329,42 @@ def test_unversioned_plan_is_quarantined_when_legacy_executor_version_changes(mo
             execution_mode="read_only", execution_guard=lambda: True))
         assert result["termination_reason"] == "plan_tool_version_mismatch"
         assert result["plan"][0]["status"] == "pending"
+
+
+def test_m4_checkpoint_refuses_missing_dispatch_version(tmp_path):
+    from services.db import Base, Conversation, Turn, database
+    from services.plan_dispatch import DispatchConflict, PlanDispatchJournal
+    from agent.plan_tool_versions import pin_new_plan_checkpoint
+    from agent.planning import PlanLedger
+
+    engine, Session = database(f"sqlite:///{tmp_path / 'm4_receipt_version.db'}")
+    Base.metadata.create_all(engine)
+    with Session.begin() as db:
+        conversation = Conversation(owner_id="m4-receipt-version-test")
+        db.add(conversation)
+        db.flush()
+        turn = Turn(conversation_id=conversation.id,
+                    request_id="m4-receipt-version-001", state="running")
+        db.add(turn)
+        db.flush()
+        cid, tid = conversation.id, turn.id
+    ledger = PlanLedger()
+    assert ledger.propose([{
+        "goal": "calculate", "expected_tool": "calculate",
+        "expected_arguments": {"expression": "19+23"},
+    }])["ok"]
+    checkpoint = pin_new_plan_checkpoint(ledger.checkpoint())
+    journal = PlanDispatchJournal(Session, cid, tid)
+    # Simulate a legacy/invalid versionless dispatcher serving a pinned step.
+    dispatch_id = journal.begin(1, "calculate", {"expression": "19+23"})
+    journal.record_receipt(dispatch_id, {"ok": True, "value": 42})
+    verified = PlanLedger.restore(checkpoint)
+    verified.observe("calculate", {"ok": True, "value": 42},
+                     {"expression": "19+23"})
+    with pytest.raises(DispatchConflict, match="receipt_checkpoint_binding_mismatch"):
+        with Session.begin() as db:
+            journal.checkpoint_in_session(db, verified.checkpoint())
+    from services.db import PlanToolDispatch
+    with Session() as db:
+        assert db.get(PlanToolDispatch, dispatch_id).status == "observed"
+    engine.dispose()
