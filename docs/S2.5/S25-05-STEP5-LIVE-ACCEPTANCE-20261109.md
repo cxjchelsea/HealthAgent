@@ -159,3 +159,18 @@ python -m evals.s25_05_step5_live --repeats 2 --cases mcp_reference_lookup,mcp_e
 ```
 
 Record both semantic and HTTP attempt counts; only actual successful tool call plus durable Attempt counts as pass. Do not merge the Draft PR until real-provider acceptance is established.
+
+## Step 5 final full acceptance — PASS (2026-11-09)
+
+**Scope:** local real-model `ollama_proxy / qwen3:14b`, Unified guarded routing, actual FastAPI/TestClient, isolated transient SQLite, trusted local MCP mock catalog, and independent persisted evidence checks. Full report: `artifacts/s25-05-step5-final-full.json` in user's local workspace (not committed to this PR).
+
+**Result: 26 / 26 PASS**, `all_passed=true`, **13 cases × 2 repeats**, median **6070.5 ms**. Per scenario: `text_stats` 2/2; `calculate` 2/2; `utc_time` 2/2; `list_tasks` 2/2; `list_tasks_explicit` 2/2; `mcp_reference_lookup` 2/2; `mcp_explicit_term` 2/2; `recall_memory` 2/2; `no_tool` 2/2; `deny_shell` 2/2; `plan_create` 2/2; `plan_first` 2/2; `plan_resume` 2/2.
+
+- Ordinary reads: Primary `ordinary_tool` → Host `primary_v1_ordinary_read_only` allow → actual successful named tool call and durable `AgentAttempt`, version `1.0.0`.
+- No-tool and forbidden Shell: no tool events, Attempts, or Dispatches. Shell is restricted as `primary_v1_route_rejected`.
+- Saved plan: 2-step checkpoint created with no dispatch; first step executes while the second remains pending; resume completes both with checkpointed Plan Dispatches, version `legacy-plan-v1`.
+- Caveat: `durable_tool_versions` for plan execution contains string `"None"` alongside `"legacy-plan-v1"`, because legacy ordinary Attempt provenance may be nullable; the critical Plan Dispatch version is recorded. Step 6 should assess legacy version migration/compatibility; do not claim all Attempts carry a concrete version.
+- Natural-language MCP lookup uses **5** recorded model HTTP attempts per turn versus **4** for explicit MCP, consistent with the bounded extra Primary generation; performance monitoring/optimization is follow-up, not a Step 5 functional blocker.
+- Most recent exact-HEAD CI on `06a69efbf12e2db2559e22d5620666e4ec011dca`: **1271 passed, 5 skipped**, PostgreSQL checks **6 passed, 2 skipped**, [run 42580683294](https://github.com/cxjchelsea/HealthAgent/actions/runs/42580683294).
+
+**Decision: STEP 5 ACCEPTED for the described isolated real-model acceptance scope.** This does not validate arbitrary external MCP servers, production security, distributed failures outside separately covered CI, or medical-domain correctness. PR #33 stays Draft and unmerged. Proceed to Step 6 closeout review, with no extra functional patches absent new evidence.
