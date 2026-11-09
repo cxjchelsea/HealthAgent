@@ -108,3 +108,20 @@ upgrade and verify zero M4 dispatch.
 No automatic historical version backfill, permission change, or M4-to-Registry
 dispatch migration is part of this slice. CI result for exact HEAD remains
 the next acceptance gate.
+
+## M4 → OrdinaryReadInvoker integration review / negative contract (2026-11-09)
+
+**Decision: NO direct migration on this commit.** The existing `OrdinaryReadInvoker` is authorized only for the Host's ordinary read route. A saved plan is separately admitted by the Primary Host and M4 execution claim. An `OrdinaryReadInvoker` call with the plan's `legacy-plan-v1` version is rejected by the Registry, whose tool definitions use `1.0.0`. Replacing that expected version with `1.0.0` would silently change the contract and is therefore NOT a valid migration.
+
+Four distinctions must be resolved before enabling migration:
+
+1. **Host authority:** A plan must receive its own durable Turn/owner/checkpoint-bound grant; ordinary `approved_read_grants` must continue to return no permissions for `plan_execute_first` or `plan_resume`. Neither a model proposal nor `PlanInvocation` is a bearer token.
+2. **Execution transaction:** Keep `saved_plan_execution_guard`/claim before each dispatch, `PlanDispatchJournal.begin` before any tool call, receipt afterward, and final exact-snapshot CAS/checkpoint binding. No unjournaled recovery retry. A reusable Invoker must not independently dispatch a plan without these guards.
+3. **Adapter semantics:** Legacy MCP uses `StdioMCPClient.call`; the Registry adapter uses `call_trusted_reference` (trusted handshake/catalog validation). The two are not behavioral no-ops. Tool error contracts, runtime scoping and result metadata also need explicit equivalence or a versioned migration.
+4. **Version and crash upgrade:** The historical `legacy-plan-v1` identifier is NOT equivalent to Registry `1.0.0`. If changing adapters, explicitly mint a new execution contract for NEW plans; old and unknown-version plans are never implicitly re-pinned or automatically replayed after a semantic upgrade. Retain PostgreSQL crash/reconciliation tests.
+
+The new `tests/test_s25_05_m4_invoker_migration_gate.py` codifies the current negative contract: incompatible versions reject, saved-plan routes do not inherit ordinary grants, MCP adapters differ, and a matching version alone does not grant permission. These are **migration blockers by design**, not an invitation to relax the checks.
+
+**Next implementation slice:** design a separate `PlanReadInvoker` with explicit plan-scoped, Host-bound input and injected durable dispatch lifecycle. Review a staged route-specific canary only after parity tests for the whole supported plan-tool set and PostgreSQL interrupted-dispatch recovery. Keep the existing M4 executor active meanwhile.
+
+No production source or M4 execution order was modified by this audit.
