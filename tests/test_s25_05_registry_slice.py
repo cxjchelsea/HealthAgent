@@ -1155,3 +1155,92 @@ def test_tool_version_evidence_preserves_legacy_unknown_and_guarded_completion(t
     mismatched["result_projection"] = {"ok": True, "value": 9}
     with pytest.raises(RuntimeError, match="attempt_outcome_conflict"):
         journal.finish(Session, mismatched)
+
+
+def test_new_plan_pinning_is_legacy_executor_specific_and_version_mismatch_fails_closed():
+    from agent.plan_tool_versions import (
+        LEGACY_PLAN_EXECUTOR_VERSION, pin_new_plan_checkpoint,
+        plan_versions_compatible,
+    )
+    from agent.plan_invocation import inspect_plan_invocations
+    from agent.planning import PlanLedger
+
+    ledger = PlanLedger()
+    assert ledger.propose([
+        {"goal": "first", "expected_tool": "calculate",
+         "expected_arguments": {"expression": "19+23"}},
+        {"goal": "second", "expected_tool": "calculate",
+         "expected_arguments": {"expression": "4*5"}},
+    ])["ok"]
+    legacy = ledger.checkpoint()
+    assert plan_versions_compatible(legacy, "resume")  # legacy compatibility
+    pinned = pin_new_plan_checkpoint(legacy)
+    assert all(s["tool_version"] == LEGACY_PLAN_EXECUTOR_VERSION
+               for s in pinned["steps"])
+    assert inspect_plan_invocations(pinned, "execute_first")[0].tool_version == (
+        LEGACY_PLAN_EXECUTOR_VERSION)
+    assert plan_versions_compatible(pinned, "execute_first")
+    assert plan_versions_compatible(pinned, "resume")
+    with pytest.raises(ValueError, match="plan_version_pin_requires_new_plan"):
+        pin_new_plan_checkpoint(pinned)
+    changed = {**pinned, "steps": [dict(s) for s in pinned["steps"]]}
+    changed["steps"][1]["tool_version"] = "legacy-plan-v2"
+    assert not plan_versions_compatible(changed, "execute_first")
+    assert not plan_versions_compatible(changed, "resume")
+    changed["steps"][1].pop("tool_version")
+    assert not plan_versions_compatible(changed, "resume")
+    changed["steps"][1]["tool_version"] = None
+    assert not plan_versions_compatible(changed, "resume")
+
+
+def test_versioned_saved_plan_journal_receipt_and_mismatched_executor_fence(monkeypatch):
+    from agent.plan_tool_versions import pin_new_plan_checkpoint
+    from agent.planning import PlanLedger
+    from agent import loop as loop_module
+
+    ledger = PlanLedger()
+    assert ledger.propose([
+        {"goal": "first", "expected_tool": "calculate",
+         "expected_arguments": {"expression": "19+23"}},
+    ])["ok"]
+    pinned = pin_new_plan_checkpoint(ledger.checkpoint())
+    captured = []
+
+    class Journal:
+        def begin(self, step_id, name, arguments, *, tool_version=None):
+            captured.append(("begin", tool_version))
+            return "dispatch-1"
+
+        def record_receipt(self, dispatch_id, result):
+            captured.append(("receipt", dispatch_id))
+
+    class NoModel:
+        async def decide(self, messages, tools):
+            raise AssertionError("bound saved plan should never call model")
+
+    def tool(name, arguments, tasks, clock=None, **kwargs):
+        captured.append(("execute", name))
+        return {"ok": True, "value": 42}
+
+    monkeypatch.setattr(loop_module, "execute_tool", tool)
+    output = asyncio.run(AgentLoop(NoModel(), dispatch_journal=Journal()).run(
+        "execute plan", plan_checkpoint=pinned,
+        plan_control="execute_first", execution_mode="read_only",
+        execution_guard=lambda: True))
+    assert output["status"] == "completed"
+    assert captured == [
+        ("begin", "legacy-plan-v1"),
+        ("execute", "calculate"),
+        ("receipt", "dispatch-1"),
+    ]
+
+    poisoned = {**pinned, "steps": [dict(pinned["steps"][0])]}
+    poisoned["steps"][0]["tool_version"] = "legacy-plan-v2"
+    captured.clear()
+    blocked = asyncio.run(AgentLoop(NoModel(), dispatch_journal=Journal()).run(
+        "execute plan", plan_checkpoint=poisoned,
+        plan_control="execute_first", execution_mode="read_only",
+        execution_guard=lambda: True))
+    assert blocked["termination_reason"] == "plan_tool_version_mismatch"
+    assert blocked["plan"][0]["status"] == "pending"
+    assert captured == []
