@@ -37,3 +37,13 @@ Acceptance evidence needed at **exact PR HEAD**:
 Do **not** make `TrustedReadRegistry.invoke` the executor for saved plans/M4 yet. The next design review should introduce a minimal, immutable invocation context, carrying a trusted Host-issued grant, tool id/version, exposure scope, and execution context; execute only after Host checks. `ToolInvoker` may validate and dispatch, but cannot assign authority, create approvals, advance plan steps, or finalize CAS journals. Existing ordinary, saved-plan, and M4 recovery call sites require a call graph and invariants review before migration.
 
 Persistence design: introduce an explicit tool-version binding in future attempts/checkpoints (with migration), and preserve historical unknown-version records as unknown instead of rewriting them to the current version. All prepared/replayed evidence must remain tied to its original tool identity and invocation contract.
+
+## 2026-11-09 minimal OrdinaryReadInvoker slice
+
+New `agent/tool_invoker.py` defines an immutable `ReadInvocation` carrying an explicit tool name, arguments, server-supplied grants, actually exposed tool names, and expected version. `OrdinaryReadInvoker` delegates to the existing Registry policy validation. The ordinary Registry call site in `agent/loop.py` now uses this adapter; no new permission or feature flag is introduced.
+
+- Only ordinary Registry-opted reads are routed through this adapter. Direct `execute_tool` remains for opt-out compatibility and all existing saved-plan/M4 execution/recovery paths.
+- The Invoker cannot grant permission or operate an unregistered write tool. An isolated unit test verifies denial, exposure, schema, version and successful calculation.
+- The existing `text_stats` request-text provenance check stays in AgentLoop before invoking. It must be retained or generalized before migrating more calls.
+- Next required work: map and independently review the saved-plan/M4 journal and checkpoint pre/postconditions before any reuse. Existing persistence has no durable tool-version contract; do not claim version-safe recovery yet.
+- Latest exact-head CI and live Qwen/PostgreSQL validations remain acceptance gates. PR stays Draft.
