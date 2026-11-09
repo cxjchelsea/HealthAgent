@@ -118,7 +118,14 @@ def evaluate(repeats=1, case_ids=None):
     with tempfile.TemporaryDirectory(prefix="s25-05-live-") as directory:
         for repeat in range(repeats):
             dbpath = (Path(directory) / f"isolated-{repeat}.sqlite").resolve()
-            settings = Settings(**{**base.model_dump(),
+            # Routing-profile policy fields are derived together. Do not copy
+            # resolved legacy/auto values as explicit conflicting overrides.
+            runtime = base.model_dump()
+            for key in ("route_admission_mode", "understanding_strategy",
+                        "m5_unified_route_enabled", "m5_first_route_enabled",
+                        "routing_profile"):
+                runtime.pop(key, None)
+            settings = Settings(**{**runtime,
                 "database_url": "sqlite:///" + dbpath.as_posix(),
                 "routing_profile": "unified",
                 "skill_strategy": "all",
