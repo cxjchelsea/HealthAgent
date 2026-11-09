@@ -37,6 +37,7 @@ from agent.primary_route_v1 import PrimaryRouteRejected, propose_primary_route
 from agent.primary_route_v1_canary import admit_v1_canary
 from agent.primary_host_admission_v1 import PrimaryHostFacts, admit_primary_route_v1
 from agent.host_plan_execution_binding import host_plan_binding_matches
+from agent.plan_tool_versions import pin_new_plan_checkpoint
 from agent.tool_registry import approved_read_grants
 from agent.pending_write_withdrawal_guard import explicitly_withdraws_pending_task_write
 from agent.primary_pending_readonly_v1 import execute_pending_readonly_v1
@@ -1553,6 +1554,15 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                           execution_mode=execution_mode,
                                           memory_write_consent=body.memory_write_consent,
                                           plan_control=plan_control)
+            # Host pins the *actual legacy plan executor* for newly authored plans.
+            # This occurs before durable CAS; never backfill historical checkpoints.
+            if (result is not None
+                    and settings.route_admission_mode == "guarded"
+                    and result.get("termination_reason") == "plan_created_pending_execution"
+                    and result.get("plan_checkpoint") is not None):
+                result["plan_checkpoint"] = pin_new_plan_checkpoint(
+                    result["plan_checkpoint"])
+                result["plan"] = result["plan_checkpoint"]["steps"]
             if result["status"] in {"completed", "partial"}:
                 answer, status = result["answer"], result["status"]
                 if (status == "partial"
