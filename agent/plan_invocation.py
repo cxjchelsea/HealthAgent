@@ -22,7 +22,7 @@ class PlanInvocation:
     control: PlanControl
     tool_name: str
     arguments_digest: str
-    tool_version: None = None  # Historical checkpoints have no version binding.
+    tool_version: str | None = None  # Historical checkpoints have no version binding.
 
 
 def inspect_plan_invocations(
@@ -58,5 +58,6 @@ def inspect_plan_invocations(
             control=control,
             tool_name=name,
             arguments_digest=arguments_digest(validated),
+            tool_version=step.get("tool_version"),
         ))
     return tuple(result[:1] if control == "execute_first" else result)
