@@ -1249,3 +1249,44 @@ def test_versioned_saved_plan_journal_receipt_and_mismatched_executor_fence(monk
     assert blocked["termination_reason"] == "plan_tool_version_mismatch"
     assert blocked["plan"][0]["status"] == "pending"
     assert captured == []
+
+
+def test_primary_http_plan_create_pins_actual_executor_before_checkpoint_cas(tmp_path, monkeypatch):
+    import json
+    import apps.api.main as api
+    from services.db import ConversationPlan
+    from agent.plan_tool_versions import LEGACY_PLAN_EXECUTOR_VERSION
+
+    message = "请建立计划，先计算19+23，再计算4*5，暂不执行"
+
+    async def primary(*args, **kwargs):
+        return bind_route_signal(RouteSignal.model_validate({
+            "schema_version": "primary-route-v1",
+            "route_kind": "plan_create", "quote": message,
+            "execution_scope": "none", "effect_intent": "mutation_requested",
+            "steps": [
+                {"goal": "first", "tool_name": "calculate",
+                 "arguments": {"expression": "19+23"}, "quote": "19+23"},
+                {"goal": "second", "tool_name": "calculate",
+                 "arguments": {"expression": "4*5"}, "quote": "4*5"},
+            ],
+        }), message, saved_plan_present=False, pending_action=None)
+
+    monkeypatch.setattr(api, "propose_primary_route", primary)
+    cfg = Settings(database_url=f"sqlite:///{tmp_path / 'versioned_plan_create.db'}",
+                   model_provider="ollama_proxy", routing_profile="unified")
+    with TestClient(create_app(cfg)) as client:
+        cid = client.post("/conversations").json()["id"]
+        response = client.post(f"/conversations/{cid}/agent/messages", json={
+            "content": message, "client_request_id": "versioned-plan-create-001",
+        })
+        assert response.status_code == 200, response.text
+        assert response.json()["termination_reason"] == "plan_created_pending_execution"
+        _, Session = database(cfg.database_url)
+        with Session() as db:
+            raw = db.get(ConversationPlan, cid).snapshot
+            checkpoint = json.loads(raw)
+            assert all(step["status"] == "pending"
+                       and step["tool_version"] == LEGACY_PLAN_EXECUTOR_VERSION
+                       for step in checkpoint["steps"])
+            assert checkpoint["revision"] == 1
