@@ -615,41 +615,9 @@ def test_b3b_verified_mcp_sends_call_only_after_catalog_validation(monkeypatch, 
     if mutate == "extra_tool":
         tools.append({"name": "run_shell", "inputSchema": {}})
 
-    class Input:
-        def write(self, text):
-            request = json.loads(text)
-            sent.append(request)
-            if request.get("method") == "initialize":
-                responses.append({"jsonrpc": "2.0", "id": 1, "result": {
-                    "protocolVersion": "bad" if mutate == "protocol" else "2025-06-18",
-                    "serverInfo": server,
-                }})
-            elif request.get("method") == "tools/list":
-                responses.append({"jsonrpc": "2.0", "id": 2, "result": {"tools": tools}})
-            elif request.get("method") == "tools/call":
-                responses.append({"jsonrpc": "2.0", "id": 3, "result": {
-                    "content": [{"type": "text", "text": json.dumps({
-                        "ok": True, "term": "rag", "source": "trusted_mock_catalog_v1",
-                    })}],
-                    "isError": False,
-                }})
-            return len(text)
-
-        def flush(self):
-            pass
-
-    class Output:
-        def __iter__(self):
-            while True:
-                item = queue.get()
-                if item is None:
-                    return
-                yield json.dumps(item) + "\\n"
-
-    # A fake streaming process tracks every request transmitted by the client.
+    # In-memory queue models responses from a persistent stdio process.
     import queue as queue_module
     queue = queue_module.Queue()
-    responses = []
 
     class Process:
         stdin = Input()
