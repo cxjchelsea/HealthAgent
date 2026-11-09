@@ -54,6 +54,21 @@ def test_step5_live_evidence_requires_actual_durable_rows(tmp_path):
     assert score["attempt_count"] == 0
     assert "answer" not in score
     assert "trace" not in score
+    assert score["primary_route"] is None
+
+    with_route = inspect_response("calculate", Response({
+        "status": "completed", "trace": [
+            {"type": "primary_route_v1", "route_kind": "respond",
+             "private_payload": "DO_NOT_EXPORT"},
+            {"type": "primary_host_admission_v1",
+             "disposition": "allow", "reason": "primary_v1_answer_only",
+             "private_payload": "DO_NOT_EXPORT"},
+        ], "answer": "DO_NOT_EXPORT",
+    }), Session, cid, "calculate")
+    assert with_route["pass"] is False
+    assert with_route["primary_route"] == "respond"
+    assert with_route["host_reason"] == "primary_v1_answer_only"
+    assert "DO_NOT_EXPORT" not in str(with_route)
 
     no_tool = inspect_response("no_tool", Response({
         "status": "completed", "trace": [], "answer": "safe text",
