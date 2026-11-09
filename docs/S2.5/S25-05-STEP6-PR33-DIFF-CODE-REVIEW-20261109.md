@@ -86,3 +86,20 @@ Base：`main@b2a17593ec062b030933e25ca7a35a1f6025701b`
 Cursor 还标出两项 P2 设计风险：`LEGACY_PLAN_EXECUTOR_VERSION` 和 `UNVERSIONED_LEGACY_COMPATIBLE_VERSION` 需要在未来版本升级时严格区分；Saved-plan MCP 仍走 `StdioMCPClient.call` Legacy 路径，不是已经验证目录一致性的 Registry `call_trusted_reference`。这些不应在本轮 P1 修复中混入重新授权或工具协议重构。其余 P3 涉及 ordinary Attempt 先记 prepared 再校验、失败即收敛等取舍，暂不阻断本轮功能整改。
 
 **阶段性结论：** 外部审查的 `REQUEST CHANGES` 已接受，P1 代码整改和回归已提交，但必须拿到精确 HEAD CI 和复核后才能转为可合并状态。没有任何合并授权，PR #33 保持 open/unmerged。
+
+
+## P1 最终真实模型 HTTP 验收（2026-11-09）
+
+用户上传实际运行文件 `s25-05-p1-plan-memory-http-live.json`（本地报告，不在 PR 中提交），环境 `ollama_proxy/qwen3:14b`，`routing_profile=unified`，`real_provider=true`，隔离 SQLite 与本地受信 MCP mock。**2 轮 × 3 场景，共 6/6 PASS**，中位响应 5694 ms。
+
+| 场景 | 两轮实际裁决 | 持久化/执行证据 |
+| --- | --- | --- |
+| `plan_create` | 两轮均 `partial / plan_created_pending_execution`，Host allow | 0 tool、0 Attempt、0 Dispatch；两步待执行 |
+| `plan_first`，自然语言含“已保存的” | 两轮均 `partial / pending_plan_steps`，Primary `plan_execute_first`，Host allow | `calculate` 成功；累计 1 Attempt、1 Dispatch，版本集包含 `legacy-plan-v1` |
+| `plan_resume`，自然语言含“之前保存的” | 两轮均 `completed / plan_execution_completed`，Primary `plan_resume`，Host allow | `calculate` 成功；累计 2 Attempts、2 Dispatch，版本集包含 `legacy-plan-v1` |
+
+报告中的 `durable_tool_versions` 仍出现字符串 `"None"` 与 `"legacy-plan-v1"` 并存，符合已归档的 nullable Legacy Attempt/Versioned Dispatch 兼容范围，不能据此声称所有 Attempt 均有真实版本号。
+
+CI 当前代码及测试 HEAD `080f13d040c6b1a1b005809db903eb1cca6e1728`：[run 42591511169](https://github.com/cxjchelsea/HealthAgent/actions/runs/42591511169) SUCCESS，`1275 passed / 5 skipped`，PostgreSQL `6 passed / 2 skipped`。HTTP 自动化测试还验证实际 MemoryStore 非空及两轮 `memory_index_lookup` 不出现；真实模型评测使用非空的 MemoryStore 对象和关键词场景，但评测 JSON 的判定主要依赖成功的工具/Dispatch 和 checkpoint，不单独导出记忆内容或完整 trace。
+
+**P1 最终裁决：CLOSED/ACCEPTED**，原 Cursor `REQUEST CHANGES` 中唯一 P1 阻断已整改、独立定向代码复审确认、HTTP 自动化及本机 Qwen 实测通过。P2/P3 保留为非阻断风险；**此裁决不构成合并授权**，PR 继续 Ready for Review 且未合并。
