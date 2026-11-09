@@ -36,6 +36,7 @@ from agent.s25_04_explicit_ordinary import admit_explicit_ordinary_calculation
 from agent.primary_route_v1 import PrimaryRouteRejected, propose_primary_route
 from agent.primary_route_v1_canary import admit_v1_canary
 from agent.primary_host_admission_v1 import PrimaryHostFacts, admit_primary_route_v1
+from agent.host_plan_execution_binding import host_plan_binding_matches
 from agent.tool_registry import approved_read_grants
 from agent.pending_write_withdrawal_guard import explicitly_withdraws_pending_task_write
 from agent.primary_pending_readonly_v1 import execute_pending_readonly_v1
@@ -567,13 +568,21 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                             # Never let a model proposal grant tool authority.
                             # M4 validates the exact bound checkpoint and
                             # registered read-only step arguments.
-                            if not admit_guarded_plan_execution(
+                            if (not admit_guarded_plan_execution(
                                     conversation_id=cid,
                                     request_id=body.client_request_id,
                                     checkpoint=existing_checkpoint,
                                     scope=requested_control,
                                     turn_created=True,
-                                    semantic_confirmed=True):
+                                    semantic_confirmed=True)
+                                    or not host_plan_binding_matches(
+                                        decision=v1_admission,
+                                        owner_id=str(uid), conversation_id=cid,
+                                        turn_id=turn_id,
+                                        request_id=body.client_request_id,
+                                        checkpoint_raw=preturn_plan_raw,
+                                        checkpoint=existing_checkpoint,
+                                        expected_control=requested_control)):
                                 result = {
                                     "run_id": turn_id, "status": "partial",
                                     "termination_reason": "primary_v1_plan_admission_denied",
