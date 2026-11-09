@@ -58,3 +58,15 @@ In `apps/api/main.py` Primary saved-plan first/resume now requires the existing 
 The check is supplementary, not an authorization token. All durable conditions remain with original owner-scoped conversation lookup, Turn creation, `saved_plan_execution_guard`, `PlanDispatchJournal`, and checkpoint CAS. No signed capability, tool-version database migration, write/ordinary permission expansion, or legacy route rewrite was introduced.
 
 New tests include fail-closed identity/snapshot/scope matching and an HTTP denial case confirming zero PlanToolDispatch rows. Exact new HEAD CI plus independent positive-path and PostgreSQL execution tests are still required. PR #33 stays Draft.
+
+## Durable tool-version provenance slice — 2026-11-09
+
+Alembic revision `0019_tool_versions` adds nullable `tool_version` to `agent_attempts` and `plan_tool_dispatches`. **NULL means unknown**, including all pre-migration rows; no version backfill occurs.
+
+For ordinary opt-in Registry reads only, AgentLoop now places the Host-bound `host_read_versions[name]` on the *prepared* Attempt before tool invocation. `AttemptEvidenceStore.begin` persists it and `finish` requires the identical nullable version for its prepared-to-terminal transition. Non-opted legacy tools remain `NULL`; `make_attempt` remains source-compatible with a default unknown version.
+
+The M4 saved-plan executor and `PlanDispatchJournal` continue to write `NULL` tool version until a **separate trusted plan-level version bind** exists. This is intentional: the current Registry's version must not be retroactively assigned to checkpointed old-plan work. The new column alone **does not** grant version-pinned saved-plan replay, does not authorize unknown-version replays, and does not change M4 recovery logic.
+
+New tests cover owner-scoped attempt persistence, legacy unknown versions, successful versioned preparation/completion, denial of mismatched version completion, Registry HTTP version recording, and saved-plan dispatch staying unknown. CI's Alembic head assertion is upgraded to `0019_tool_versions`.
+
+Remaining acceptance: exact-head GitHub CI including PostgreSQL migration, M4 crash/concurrency and targeted SQLite checks; then design Host-signed/persisted plan tool version with unknown-record quarantine before any M4 ToolInvoker migration.
