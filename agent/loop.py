@@ -79,11 +79,14 @@ class AgentState(TypedDict):
     failed_plan_attempts: int
     user_request: str
     independent_ordinary: bool
+    require_ordinary_read_evidence: bool
+    ordinary_read_retry: bool
 
 class AgentLoop:
     def __init__(self, decider: Any, max_steps: int = 6, clock=None, task_store=None, memory_store=None, mcp_client=None, skill_strategy='dynamic', skill_budget_chars=600, execution_guard=None, dispatch_journal=None,
                  ordinary_attempt_journal=None, ordinary_attempt_session_factory=None, candidate_selector=None, selector_model=None, governed_ordinary_writes=False,
-                 host_read_grants: tuple[str, ...] = ()):
+                 host_read_grants: tuple[str, ...] = (),
+                 require_ordinary_read_evidence: bool = False):
         if max_steps < 1 or max_steps > 20:
             raise ValueError("max_steps must be 1..20")
         self.decider = decider
@@ -103,6 +106,7 @@ class AgentLoop:
         self.governed_ordinary_writes = governed_ordinary_writes
         # Only the trusted API Host supplies per-turn optional read grants.
         self.host_read_grants = tuple(host_read_grants)
+        self.require_ordinary_read_evidence = require_ordinary_read_evidence
         self.host_read_versions = {name: READ_REGISTRY.version_for(name)
                                    for name in self.host_read_grants}
         flow = StateGraph(AgentState)
@@ -146,6 +150,32 @@ class AgentLoop:
         decision = await self.decider.decide(state["messages"], state["allowed_tools"])
         iteration = state["iterations"] + 1
         if not decision.tool_calls:
+            # A trusted Host selected an ordinary read operation, but a model
+            # answer without any tool observation is not verified completion.
+            # One bounded re-decision is generic: never select a tool via a
+            # keyword, manufacture a grant or execute tools on model's behalf.
+            if (state["require_ordinary_read_evidence"]
+                    and not any(x.get("type") == "tool" for x in state["traces"])):
+                if not state["ordinary_read_retry"] and iteration < self.max_steps:
+                    return {"iterations": iteration, "ordinary_read_retry": True,
+                            "recall_retry_pending": True,
+                            "messages": state["messages"] + [{
+                                "role": "system", "content":
+                                "The Host admitted a read-only tool operation, but no "
+                                "tool observation exists yet. Select an applicable "
+                                "exposed read-only tool and invoke it with validated "
+                                "arguments grounded in the user's request. If the "
+                                "necessary argument is missing, ask for it instead. "
+                                "Never assert that a lookup was done without a "
+                                "successful tool observation."}],
+                            "traces": state["traces"] + [{
+                                "step": iteration, "type": "ordinary_read_retry"}]}
+                return {"iterations": iteration,
+                        "status": "partial",
+                        "termination_reason": "ordinary_read_unverified",
+                        "final": "本轮只读工具请求未取得实际工具调用证据；不能将模型回答视为已查询。",
+                        "traces": state["traces"] + [{
+                            "step": iteration, "type": "ordinary_read_unverified"}]}
             if state["memory_recall_required"] and not state["memory_recall_observed"]:
                 if not state["memory_recall_retry"] and iteration < self.max_steps:
                     return {"iterations": iteration, "memory_recall_retry": True,
@@ -882,7 +912,12 @@ class AgentLoop:
             "structured_mode": understanding_result is not None,
             "user_request": goal,
             "failed_plan_attempts": 0,
-            "independent_ordinary": independent_ordinary}
+            "independent_ordinary": independent_ordinary,
+            "require_ordinary_read_evidence": bool(
+                self.require_ordinary_read_evidence and independent_ordinary
+                and any(t["function"]["name"] not in {"request_clarification"}
+                        for t in selected_tools)),
+            "ordinary_read_retry": False}
         try:
             outcome = await self.graph.ainvoke(initial, config={"recursion_limit": 2 * self.max_steps + 4})
         except Exception as exc:
