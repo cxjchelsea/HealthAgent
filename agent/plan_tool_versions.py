@@ -6,6 +6,9 @@ saved-plan adapters must bump this version before accepting old pinned plans.
 from agent.planning import PlanLedger
 
 LEGACY_PLAN_EXECUTOR_VERSION = "legacy-plan-v1"
+# Historical checkpoints had no version. Only their original executor is
+# known compatible; a version bump must quarantine them, not auto-repin.
+UNVERSIONED_LEGACY_COMPATIBLE_VERSION = "legacy-plan-v1"
 
 
 def pin_new_plan_checkpoint(checkpoint: dict) -> dict:
@@ -44,4 +47,7 @@ def plan_versions_compatible(checkpoint: dict, control: str) -> bool:
         if any(step["tool_version"] != LEGACY_PLAN_EXECUTOR_VERSION
                for step in steps):
             return False
+    elif LEGACY_PLAN_EXECUTOR_VERSION != UNVERSIONED_LEGACY_COMPATIBLE_VERSION:
+        # Do not infer a new version for pre-versioning records.
+        return False
     return True
