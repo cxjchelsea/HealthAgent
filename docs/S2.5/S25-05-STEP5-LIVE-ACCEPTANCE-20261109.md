@@ -122,3 +122,22 @@ python -m evals.s25_05_step5_live --repeats 2 --cases list_tasks,list_tasks_expl
 4. 后续 **只重复失败的 4 类场景**，不将自动化 CI 通过冒称真实模型重新通过。
 
 *验收裁决*: 代码修复需精确 HEAD CI，真实 Qwen 故障仍需新报告复验。保留 PR #33 Draft，未授权合并。
+
+## Step 5 v3: 6/8 真实模型结果及输出 Schema 整改
+
+真实 `ollama_proxy/qwen3:14b` 定向结果：**6/8 PASS**。普通 `list_tasks` 两轮均恢复工具执行，显式 `list_tasks` 和 `mcp_explicit_term` 两轮均成功；自然 `mcp_reference_lookup` 依然 0/2，错误均为 `primary_route_pending_read_invalid`，无 MCP 工具执行。表明此前的两项记忆关键词早返回整改经过真实运行验证；剩余问题是 Primary 的可选 Pending 标记和路由字段不一致。
+
+重复追加提示语两次未能解决模型生成的跨字段矛盾。新整改采用 **JSON Schema 条件分支（oneOf）在结构化生成时约束输出**：route_kind 为 `clarify` 时允许 Pending 标记；其它 route_kind 的 `pending_read_tool_name` / `pending_write_tool_name` 只能为 null。原 `RouteSignal` 严格验证、Host 准入与断点权限均保持不变，不做模型提案后修补、不推断目标术语、不凭关键词调用 MCP。Verified Pending 回复的 null 约束保持不变。新增 Draft 2020-12 JSON Schema 的通过/拒绝测试。
+
+**重要：** CI 只能验证 Schema 合约与旧回归，不能证明本地 Qwen/Ollama Proxy 的结构化解码器完全支持 oneOf。需要在同一环境定向复验；若 Provider 拒绝 Schema，应记录为 Provider/格式能力问题，不能降级为 fake 或悄然忽略该约束。
+
+复验命令（Git 更新到最新 HEAD 后）：
+
+```powershell
+$env:MODEL_PROVIDER = "ollama_proxy"
+$env:MODEL_NAME = "qwen3:14b"
+$env:RUN_S25_05_LIVE = "1"
+python -m evals.s25_05_step5_live --repeats 2 --cases mcp_reference_lookup,mcp_explicit_term --output artifacts\s25-05-step5-mcp-schema-v4.json
+```
+
+MCP 需同时通过自然语言和显式对照；此次局部重测不替代完成后的一次全套真实模型回归。PR #33 继续 Draft，未获授权不合并。
