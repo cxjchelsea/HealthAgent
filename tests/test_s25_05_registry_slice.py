@@ -821,3 +821,79 @@ def test_plan_execution_guard_failure_causes_no_dispatch(monkeypatch):
     assert result["plan"][0]["status"] == "pending"
     assert any(item["type"] == "plan_execution_guard_conflict"
                for item in result["trace"])
+
+
+def test_plan_invocation_inspection_binds_revision_and_args_without_executing(monkeypatch):
+    from agent.plan_invocation import inspect_plan_invocations
+    from agent.planning import PlanLedger
+    from services.evidence_store import arguments_digest
+    from agent import tool_invoker
+
+    ledger = PlanLedger()
+    assert ledger.propose([
+        {"goal": "计算", "expected_tool": "calculate",
+         "expected_arguments": {"expression": "19+23"}},
+        {"goal": "查询定义", "expected_tool": "mcp_reference_lookup",
+         "expected_arguments": {"term": "rag"}},
+    ])["ok"]
+
+    def reject(*args, **kwargs):
+        raise AssertionError("inspection cannot execute a tool")
+    monkeypatch.setattr(tool_invoker.OrdinaryReadInvoker, "invoke", reject)
+
+    first = inspect_plan_invocations(ledger.checkpoint(), "execute_first")
+    all_steps = inspect_plan_invocations(ledger.checkpoint(), "resume")
+    assert len(first) == 1 and len(all_steps) == 2
+    assert first[0] == all_steps[0].__class__(
+        plan_revision=1, step_id=1, control="execute_first",
+        tool_name="calculate",
+        arguments_digest=arguments_digest({"expression": "19+23"}),
+        tool_version=None,
+    )
+    assert all_steps[1].tool_name == "mcp_reference_lookup"
+    assert all(item.tool_version is None for item in all_steps)
+
+
+def test_plan_invocation_inspection_rejects_unbound_malformed_and_completed():
+    from agent.plan_invocation import inspect_plan_invocations
+    from agent.planning import PlanLedger
+
+    ledger = PlanLedger()
+    assert ledger.propose([
+        {"goal": "合法计算", "expected_tool": "calculate",
+         "expected_arguments": {"expression": "19+23"}}
+    ])["ok"]
+    valid = ledger.checkpoint()
+
+    with pytest.raises(ValueError, match="invalid_plan_control"):
+        inspect_plan_invocations(valid, "cancel")
+    bad = {**valid, "steps": [{**valid["steps"][0],
+           "expected_arguments": {"expression": "1+2", "extra": True}}]}
+    with pytest.raises(ValueError, match="invalid_plan_arguments"):
+        inspect_plan_invocations(bad, "resume")
+    bad_tool = {**valid, "steps": [{**valid["steps"][0],
+                "expected_tool": "create_task",
+                "expected_arguments": {"title": "unexpected write"}}]}
+    with pytest.raises(ValueError, match="invalid_plan_binding"):
+        inspect_plan_invocations(bad_tool, "resume")
+    assert ledger.observe("calculate", {"ok": True, "value": 42},
+                          {"expression": "19+23"}) is None
+    with pytest.raises(ValueError, match="plan_has_no_pending_steps"):
+        inspect_plan_invocations(ledger.checkpoint(), "resume")
+
+
+def test_plan_first_inspection_rejects_invalid_later_pending_step():
+    from agent.plan_invocation import inspect_plan_invocations
+    from agent.planning import PlanLedger
+
+    ledger = PlanLedger()
+    assert ledger.propose([
+        {"goal": "先计算", "expected_tool": "calculate",
+         "expected_arguments": {"expression": "19+23"}},
+        {"goal": "后计算", "expected_tool": "calculate",
+         "expected_arguments": {"expression": "3*4"}},
+    ])["ok"]
+    checkpoint = ledger.checkpoint()
+    checkpoint["steps"][1]["expected_arguments"] = {"expression": "3*4", "extra": 1}
+    with pytest.raises(ValueError, match="invalid_plan_arguments"):
+        inspect_plan_invocations(checkpoint, "execute_first")
