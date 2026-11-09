@@ -124,3 +124,28 @@ def test_legacy_memory_shortcut_remains_available_for_compatible_caller():
     assert result["status"] == "completed"
     assert any(x.get("type") == "memory_index_lookup"
                for x in result["trace"])
+
+
+def test_primary_reference_lookup_pending_marker_remains_restricted():
+    """The MCP prompt refinement must not weaken the strict proposal schema."""
+    import pytest
+    from pydantic import ValidationError
+    from agent.primary_route_v1 import RouteSignal, _PRIMARY_SYSTEM
+
+    base = {
+        "schema_version": "primary-route-v1",
+        "route_kind": "ordinary_tool",
+        "quote": "查询 RAG",
+        "execution_scope": "none",
+        "effect_intent": "read_only",
+        "steps": [],
+        "pending_read_tool_name": None,
+    }
+    valid = RouteSignal.model_validate(base)
+    assert valid.route_kind == "ordinary_tool"
+    with pytest.raises(ValidationError):
+        RouteSignal.model_validate({
+            **base, "pending_read_tool_name": "mcp_reference_lookup",
+        })
+    assert "MCP FIELD-CONSISTENCY CHECK" in _PRIMARY_SYSTEM
+    assert "pending_read_tool_name=null" in _PRIMARY_SYSTEM
