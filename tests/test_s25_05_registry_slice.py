@@ -1025,3 +1025,77 @@ def test_http_saved_plan_binding_gate_denies_before_dispatch(tmp_path, monkeypat
             dispatches = db.scalars(select(PlanToolDispatch).where(
                 PlanToolDispatch.conversation_id == cid)).all()
         assert dispatches == []
+
+
+def test_http_saved_plan_binding_allows_first_then_resume(tmp_path, monkeypatch):
+    import json
+    import apps.api.main as api
+    from agent.planning import PlanLedger
+    from services.db import ConversationPlan, PlanToolDispatch
+
+    async def primary(*args, **kwargs):
+        msg = args[2]
+        first = "第一步" in msg
+        return bind_route_signal(RouteSignal.model_validate({
+            "schema_version": "primary-route-v1",
+            "route_kind": "plan_execute_first" if first else "plan_resume",
+            "quote": msg,
+            "execution_scope": "first_step" if first else "remaining_steps",
+            "effect_intent": "read_only",
+        }), msg, saved_plan_present=True, pending_action=None)
+
+    class NoModel:
+        def __init__(self, settings):
+            pass
+
+        async def decide(self, messages, tools):
+            raise AssertionError("saved bound execution should not invoke model")
+
+    monkeypatch.setattr(api, "propose_primary_route", primary)
+    monkeypatch.setattr(api, "NativeToolDecision", NoModel)
+    cfg = Settings(database_url=f"sqlite:///{tmp_path / 'plan_positive.db'}",
+                   model_provider="ollama_proxy", routing_profile="unified")
+    with TestClient(create_app(cfg)) as client:
+        cid = client.post("/conversations").json()["id"]
+        ledger = PlanLedger()
+        assert ledger.propose([
+            {"goal": "First calculation", "expected_tool": "calculate",
+             "expected_arguments": {"expression": "19+23"}},
+            {"goal": "Second calculation", "expected_tool": "calculate",
+             "expected_arguments": {"expression": "4*5"}},
+        ])["ok"]
+        _, Session = database(cfg.database_url)
+        with Session.begin() as db:
+            db.add(ConversationPlan(
+                conversation_id=cid, snapshot=json.dumps(ledger.checkpoint())))
+
+        first = client.post(f"/conversations/{cid}/agent/messages", json={
+            "content": "只执行已保存计划的第一步",
+            "client_request_id": "plan-positive-first-001",
+        })
+        assert first.status_code == 200, first.text
+        assert first.json()["status"] == "partial"
+        with Session() as db:
+            record = db.get(ConversationPlan, cid)
+            snapshot = json.loads(record.snapshot)
+            entries = db.scalars(select(PlanToolDispatch).where(
+                PlanToolDispatch.conversation_id == cid)).all()
+            assert [step["status"] for step in snapshot["steps"]] == [
+                "completed", "pending"]
+            assert len(entries) == 1
+            assert entries[0].status == "checkpointed"
+
+        resumed = client.post(f"/conversations/{cid}/agent/messages", json={
+            "content": "继续执行已保存计划的剩余步骤",
+            "client_request_id": "plan-positive-resume-002",
+        })
+        assert resumed.status_code == 200, resumed.text
+        assert resumed.json()["status"] == "completed"
+        with Session() as db:
+            record = db.get(ConversationPlan, cid)
+            snapshot = json.loads(record.snapshot)
+            entries = db.scalars(select(PlanToolDispatch).where(
+                PlanToolDispatch.conversation_id == cid)).all()
+            assert all(step["status"] == "completed" for step in snapshot["steps"])
+            assert len(entries) == 2
+            assert all(entry.status == "checkpointed" for entry in entries)
