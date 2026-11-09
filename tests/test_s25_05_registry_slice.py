@@ -592,40 +592,129 @@ def test_b3b_trusted_local_mcp_call_preserves_observations():
     assert denied["error"] == "permission_denied"
 
 
-@pytest.mark.parametrize("mutate", ["server_name", "server_version",
-                                      "schema", "extra_tool"])
-def test_b3b_remote_tool_discovery_cannot_authorize_catalog(monkeypatch, mutate):
+@pytest.mark.parametrize("mutate", [
+    "server_name", "server_version", "protocol", "schema", "extra_tool",
+    "valid",
+])
+def test_b3b_verified_mcp_sends_call_only_after_catalog_validation(monkeypatch, mutate):
     import json
-    from types import SimpleNamespace
-    from agent.mcp_stdio_client import StdioMCPClient, TRUSTED_REFERENCE_TOOL
-    tool = {"name": TRUSTED_REFERENCE_TOOL["name"],
-            "inputSchema": TRUSTED_REFERENCE_TOOL["inputSchema"],
-            "description": "untrusted description"}
-    server = {"name": "healthagent-trusted-reference", "version": "1.0.0"}
+    from agent.mcp_stdio_client import (
+        StdioMCPClient, TRUSTED_REFERENCE_TOOL, TRUSTED_REFERENCE_SERVER,
+    )
+
+    sent = []
+    server = dict(TRUSTED_REFERENCE_SERVER)
+    tool = dict(TRUSTED_REFERENCE_TOOL)
     if mutate == "server_name":
-        server["name"] = "malicious-mcp"
-    if mutate == "server_version":
+        server["name"] = "untrusted-mcp"
+    elif mutate == "server_version":
         server["version"] = "9.9.9"
-    if mutate == "schema":
+    elif mutate == "schema":
         tool["inputSchema"] = {"type": "object", "additionalProperties": True}
     tools = [tool]
     if mutate == "extra_tool":
         tools.append({"name": "run_shell", "inputSchema": {}})
-    responses = [
-        {"jsonrpc": "2.0", "id": 1, "result": {
-            "protocolVersion": "2025-06-18", "serverInfo": server}},
-        {"jsonrpc": "2.0", "id": 2, "result": {"tools": tools}},
-        {"jsonrpc": "2.0", "id": 3, "result": {
-            "content": [{"type": "text", "text": json.dumps({
-                "ok": True, "term": "rag", "source": "untrusted"})}],
-            "isError": False}},
-    ]
-    def scripted_run(*args, **kwargs):
-        return SimpleNamespace(returncode=0,
-            stdout="".join(json.dumps(frame) + "\n" for frame in responses))
-    monkeypatch.setattr("agent.mcp_stdio_client.subprocess.run", scripted_run)
+
+    class Input:
+        def write(self, text):
+            request = json.loads(text)
+            sent.append(request)
+            if request.get("method") == "initialize":
+                responses.append({"jsonrpc": "2.0", "id": 1, "result": {
+                    "protocolVersion": "bad" if mutate == "protocol" else "2025-06-18",
+                    "serverInfo": server,
+                }})
+            elif request.get("method") == "tools/list":
+                responses.append({"jsonrpc": "2.0", "id": 2, "result": {"tools": tools}})
+            elif request.get("method") == "tools/call":
+                responses.append({"jsonrpc": "2.0", "id": 3, "result": {
+                    "content": [{"type": "text", "text": json.dumps({
+                        "ok": True, "term": "rag", "source": "trusted_mock_catalog_v1",
+                    })}],
+                    "isError": False,
+                }})
+            return len(text)
+
+        def flush(self):
+            pass
+
+    class Output:
+        def __iter__(self):
+            while True:
+                item = queue.get()
+                if item is None:
+                    return
+                yield json.dumps(item) + "\\n"
+
+    # A fake streaming process tracks every request transmitted by the client.
+    import queue as queue_module
+    queue = queue_module.Queue()
+    responses = []
+
+    class Process:
+        stdin = Input()
+        stdout = None
+
+        def __init__(self, *args, **kwargs):
+            self.stdout = self
+            self.dead = False
+
+        def __iter__(self):
+            while not self.dead:
+                try:
+                    item = queue.get(timeout=1)
+                except queue_module.Empty:
+                    continue
+                if item is None:
+                    return
+                yield json.dumps(item) + "\\n"
+
+        def poll(self):
+            return None if not self.dead else -9
+
+        def kill(self):
+            self.dead = True
+            queue.put(None)
+
+        def wait(self):
+            return -9
+
+    # Input writes queue protocol replies immediately; the client reader
+    # consumes them on a separate thread.
+    def enqueue_write(text):
+        request = json.loads(text)
+        sent.append(request)
+        if request.get("method") == "initialize":
+            response = {"jsonrpc": "2.0", "id": 1, "result": {
+                "protocolVersion": "bad" if mutate == "protocol" else "2025-06-18",
+                "serverInfo": server}}
+        elif request.get("method") == "tools/list":
+            response = {"jsonrpc": "2.0", "id": 2, "result": {"tools": tools}}
+        elif request.get("method") == "tools/call":
+            response = {"jsonrpc": "2.0", "id": 3, "result": {
+                "content": [{"type": "text", "text": json.dumps({
+                    "ok": True, "term": "rag", "source": "trusted_mock_catalog_v1"})}],
+                "isError": False}}
+        else:
+            return len(text)
+        queue.put(response)
+        return len(text)
+
+    Process.stdin = type("FakeStdin", (), {
+        "write": lambda self, text: enqueue_write(text),
+        "flush": lambda self: None,
+    })()
+    monkeypatch.setattr("agent.mcp_stdio_client.subprocess.Popen", Process)
     result = StdioMCPClient().call_trusted_reference({"term": "rag"})
-    assert result == {"ok": False, "error": "mcp_catalog_mismatch"}
+    methods = [request.get("method") for request in sent]
+    if mutate == "valid":
+        assert result["ok"]
+        assert methods == [
+            "initialize", "notifications/initialized", "tools/list", "tools/call",
+        ]
+    else:
+        assert result == {"ok": False, "error": "mcp_catalog_mismatch"}
+        assert "tools/call" not in methods
 
 
 @pytest.mark.parametrize("enabled", [False, True])
