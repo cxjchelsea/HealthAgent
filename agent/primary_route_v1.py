@@ -716,10 +716,12 @@ async def propose_primary_route(provider, model: str, message: str, *,
                                 saved_plan_steps: list[dict] | None = None,
                                 recent_context: list | None = None
                                 ) -> BoundPrimaryProposal:
-    """Exactly one model selection invocation; no legacy semantic fallback.
+    """One Primary semantic owner; at most one bounded schema-consistency retry.
 
-    Host may deny or clarify after this function, but cannot silently change
-    the route. A provider/schema/binding failure does not invoke another owner.
+    Only a fresh-turn Pending-read marker/route mismatch can trigger a second
+    full generation by the same model. This is NOT a post-hoc model-field edit
+    or a fallback to another semantic router. Both results remain subject to
+    full schema, evidence binding and independent Host authorization.
     """
     if not message.strip():
         raise PrimaryRouteRejected("primary_route_empty_message")
@@ -744,20 +746,56 @@ async def propose_primary_route(provider, model: str, message: str, *,
         messages = [{"role": "system", "content": _PRIMARY_MCP_FOCUSED_SYSTEM}]
     messages.append({"role": "user",
                      "content": json.dumps(payload, ensure_ascii=False)})
+    generation_schema = primary_route_generation_schema(
+        message, pending_origin_verified=bool(
+            pending_action and pending_origin_verified))
     raw = await provider.complete(
-        model=model,
-        messages=messages,
-        response_schema=primary_route_generation_schema(
-            message, pending_origin_verified=bool(
-                pending_action and pending_origin_verified)))
+        model=model, messages=messages, response_schema=generation_schema)
     try:
         signal = RouteSignal.model_validate_json(raw)
     except ValidationError as exc:
         issues = safe_route_validation_issues(exc)
-        raise PrimaryRouteRejected(
-            "primary_route_invalid_signal",
-            validation_issues=issues,
-            route_triple=safe_route_triple(raw, issues)) from exc
+        # A single bounded regeneration for a proven *format* inconsistency
+        # only. The old answer is not supplied to the model, is never modified,
+        # and can never grant Host/tool authority. No generic error retries.
+        # The model still determines whether clarification is actually needed.
+        if (not pending_origin_verified and
+                any(item["category"] == "primary_route_pending_read_invalid"
+                    for item in issues)):
+            correction = {
+                "role": "system",
+                "content": (
+                    "Your previous proposal failed schema validation because "
+                    "pending_read_tool_name may be non-null ONLY when "
+                    "route_kind=clarify. Generate a NEW complete JSON proposal "
+                    "including schema_version, quote and every required field. "
+                    "Determine from the current request whether a search term "
+                    "was supplied. If yes, choose ordinary_tool/none/read_only "
+                    "with pending_read_tool_name=null. If genuinely absent, "
+                    "choose clarify/none/none with a real clarification_question "
+                    "and pending_read_tool_name=mcp_reference_lookup. "
+                    "Do not copy or patch the previous output. No route is "
+                    "pre-authorized by this instruction."
+                ),
+            }
+            raw = await provider.complete(
+                model=model, messages=[messages[0], correction, *messages[1:]],
+                response_schema=generation_schema)
+            try:
+                signal = RouteSignal.model_validate_json(raw)
+            except ValidationError as final_exc:
+                final_issues = safe_route_validation_issues(final_exc)
+                raise PrimaryRouteRejected(
+                    "primary_route_invalid_signal",
+                    validation_issues=final_issues,
+                    route_triple=safe_route_triple(raw, final_issues)) from final_exc
+            except ValueError as final_exc:
+                raise PrimaryRouteRejected("primary_route_invalid_signal") from final_exc
+        else:
+            raise PrimaryRouteRejected(
+                "primary_route_invalid_signal",
+                validation_issues=issues,
+                route_triple=safe_route_triple(raw, issues)) from exc
     except ValueError as exc:
         raise PrimaryRouteRejected("primary_route_invalid_signal") from exc
     return bind_route_signal(
