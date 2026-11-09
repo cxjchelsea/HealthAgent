@@ -149,3 +149,95 @@ def test_primary_reference_lookup_pending_marker_remains_restricted():
         })
     assert "MCP FIELD-CONSISTENCY CHECK" in _PRIMARY_SYSTEM
     assert "pending_read_tool_name=null" in _PRIMARY_SYSTEM
+
+
+def test_saved_plan_controls_bypass_legacy_memory_index_even_with_saved_phrase():
+    """Cursor P1 repro: Host-admitted plan must dispatch, never memory-return."""
+    import pytest
+    from agent.planning import PlanLedger
+
+    class Memory:
+        def list(self):
+            raise AssertionError("plan control must never enter memory_index_lookup")
+
+    class NoModel:
+        async def decide(self, messages, tools):
+            raise AssertionError("bound saved plan must not ask the model to dispatch")
+
+    for control, expected_status, expected_steps in [
+        ("execute_first", "partial", 1),
+        ("resume", "completed", 2),
+    ]:
+        ledger = PlanLedger()
+        assert ledger.propose([
+            {"goal": "计算 19+23", "expected_tool": "calculate",
+             "expected_arguments": {"expression": "19+23"}},
+            {"goal": "计算 7+8", "expected_tool": "calculate",
+             "expected_arguments": {"expression": "7+8"}},
+        ])["ok"]
+        events = []
+
+        class Journal:
+            def begin(self, step_id, name, arguments, *, tool_version=None):
+                events.append(("begin", step_id, name, tool_version))
+                return "dispatch-" + str(step_id)
+
+            def record_receipt(self, dispatch_id, observation):
+                events.append(("receipt", dispatch_id, observation["ok"]))
+
+        result = asyncio.run(AgentLoop(
+            NoModel(), skill_strategy="all", memory_store=Memory(),
+            dispatch_journal=Journal(),
+            require_ordinary_read_evidence=False,
+        ).run("请执行已保存的计划",
+              plan_checkpoint=ledger.checkpoint(),
+              plan_control=control, execution_mode="read_only",
+              execution_guard=lambda: True, include_evidence=True))
+        assert result["status"] == expected_status
+        assert sum(event[0] == "begin" for event in events) == expected_steps
+        assert sum(event[0] == "receipt" for event in events) == expected_steps
+        assert all(item["type"] != "memory_index_lookup"
+                   for item in result["trace"])
+        assert sum(step["status"] == "completed" for step in result["plan"]) == expected_steps
+        assert result["termination_reason"] == (
+            "pending_plan_steps" if control == "execute_first"
+            else "plan_execution_completed")
+
+
+def test_saved_plan_with_memory_phrase_still_checks_version_before_dispatch(monkeypatch):
+    from agent.planning import PlanLedger
+    from agent import plan_tool_versions
+
+    class Memory:
+        def list(self):
+            raise AssertionError("version fence must precede memory shortcut")
+
+    class NoModel:
+        async def decide(self, messages, tools):
+            raise AssertionError("version mismatch must not reach the model")
+
+    ledger = PlanLedger()
+    assert ledger.propose([{
+        "goal": "计算 19+23", "expected_tool": "calculate",
+        "expected_arguments": {"expression": "19+23"},
+    }])["ok"]
+    events = []
+
+    class Journal:
+        def begin(self, *args, **kwargs):
+            events.append("begin")
+            raise AssertionError("version mismatch must not dispatch")
+
+    monkeypatch.setattr(
+        plan_tool_versions, "LEGACY_PLAN_EXECUTOR_VERSION", "legacy-plan-v2")
+    # AgentLoop imported plan_versions_compatible directly, but this function
+    # reads its module globals, so changing the version contract still fences.
+    result = asyncio.run(AgentLoop(
+        NoModel(), memory_store=Memory(), dispatch_journal=Journal(),
+    ).run("请继续执行之前保存的计划",
+          plan_checkpoint=ledger.checkpoint(), plan_control="resume",
+          execution_mode="read_only", execution_guard=lambda: True))
+    assert result["status"] == "partial"
+    assert result["termination_reason"] == "plan_tool_version_mismatch"
+    assert events == []
+    assert all(x["type"] != "memory_index_lookup" for x in result["trace"])
