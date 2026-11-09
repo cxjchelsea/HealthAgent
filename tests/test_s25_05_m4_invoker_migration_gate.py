@@ -136,3 +136,32 @@ def test_plan_read_invoker_rejects_without_dispatch_or_external_call(monkeypatch
         execution_guard=lambda: True, dispatch_journal=Journal())
     assert legacy["error"] == "plan_tool_version_mismatch"
     assert seen == []
+
+
+def test_plan_read_invoker_schema_denials_do_not_begin_m4_journal():
+    from agent.plan_read_invoker import PlanReadInvoker, PlanReadRequest
+
+    dispatched = []
+    class Journal:
+        def begin(self, *args, **kwargs):
+            dispatched.append("begin")
+            raise AssertionError("malformed arguments must never be journaled")
+    def execute(*args, **kwargs):
+        dispatched.append("execute")
+        raise AssertionError("malformed arguments must never execute")
+
+    invoker = PlanReadInvoker(execute=execute)
+    cases = (
+        ("calculate", {"expression": "19+23", "extra": "not allowed"}),
+        ("calculate", {"expression": ""}),
+        ("mcp_reference_lookup", {"term": "RAG", "command": "rm -rf /"}),
+        ("recall_memory", {"key": ""}),
+        ("utc_time", {"surprise": "field"}),
+        ("list_tasks", {"surprise": "field"}),
+    )
+    for name, args in cases:
+        result = invoker.invoke(
+            PlanReadRequest(1, name, args, "legacy-plan-v1"),
+            execution_guard=lambda: True, dispatch_journal=Journal())
+        assert result == {"ok": False, "error": "invalid_arguments"}
+    assert dispatched == []
