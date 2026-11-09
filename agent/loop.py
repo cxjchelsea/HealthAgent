@@ -9,6 +9,7 @@ from langgraph.graph import END, StateGraph
 from agent.decision import NativeToolDecision
 from agent.tools import TOOL_SCHEMAS, execute_tool
 from agent.tool_registry import READ_REGISTRY, ReadToolRuntime
+from agent.tool_invoker import OrdinaryReadInvoker, ReadInvocation
 from agent.skills import (exposed_tools, load_instructions, SKILL_VERSION,
                           select_tool_exposure, exposure_schemas, exposure_instructions, SEMANTIC_GUIDANCE)
 from agent.semantic_topk import select_read_tools
@@ -361,10 +362,13 @@ class AgentLoop:
                         # never present statistics for a hallucinated passage.
                         result = {"ok": False, "error": "argument_provenance_missing"}
                     elif name in self.host_read_grants:
-                        result = READ_REGISTRY.invoke(
-                            name, arguments, granted_names=self.host_read_grants,
-                            exposed_names=tuple(state["exposure_limit"]),
-                            expected_version=self.host_read_versions.get(name),
+                        result = OrdinaryReadInvoker().invoke(
+                            ReadInvocation(
+                                name=name, arguments=arguments,
+                                granted_names=self.host_read_grants,
+                                exposed_names=tuple(state["exposure_limit"]),
+                                expected_version=self.host_read_versions.get(name),
+                            ),
                             runtime=ReadToolRuntime(clock=self.clock,
                                 task_store=self.task_store, memory_store=self.memory_store,
                                 mcp_client=self.mcp_client, tasks=tasks))
