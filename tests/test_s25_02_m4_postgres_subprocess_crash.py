@@ -21,8 +21,9 @@ from services.m4_offline_recovery import quarantine, reconcile_verified_receipts
 @pytest.mark.skipif(not os.getenv("TEST_POSTGRES_URL"),
                     reason="requires isolated TEST_POSTGRES_URL")
 @pytest.mark.parametrize("receipt_written", [False, True])
+@pytest.mark.parametrize("versioned", [False, True])
 def test_real_subprocess_crash_postgres_durable_dispatch_recovery(
-        tmp_path, receipt_written):
+        tmp_path, receipt_written, versioned):
     url = os.environ["TEST_POSTGRES_URL"]
     assert url.startswith("postgresql"), "physical acceptance requires PostgreSQL"
     engine, Session = database(url)
@@ -42,7 +43,9 @@ def test_real_subprocess_crash_postgres_durable_dispatch_recovery(
         snapshot = json.dumps({"revision": 1, "next_step_id": 2, "steps": [
             {"id": 1, "goal": "calculate", "status": "pending",
              "expected_tool": "calculate",
-             "expected_arguments": {"expression": "4*7"}}]}, ensure_ascii=False)
+             "expected_arguments": {"expression": "4*7"},
+             **({"tool_version": "legacy-plan-v1"} if versioned else {})}]},
+             ensure_ascii=False)
         db.add(ConversationPlan(conversation_id=cid, snapshot=snapshot))
     # Prevent inherited live connections. The subprocess owns its own engine.
     engine.dispose()
@@ -52,13 +55,14 @@ from services.db import database
 from services.plan_store import ConversationPlanStore
 from services.plan_dispatch import PlanDispatchJournal
 from agent.tools import execute_tool
-url, cid, tid, raw, with_receipt = sys.argv[1:]
+url, cid, tid, raw, with_receipt, tool_version = sys.argv[1:]
 engine, Session = database(url)
 with Session.begin() as db:
     ConversationPlanStore(Session, cid).acquire_execution_claim_in_session(
         db, turn_id=tid, expected_raw=raw)
 journal = PlanDispatchJournal(Session, cid, tid)
-did = journal.begin(1, 'calculate', {'expression': '4*7'})
+did = journal.begin(1, 'calculate', {'expression': '4*7'},
+                    tool_version=tool_version if tool_version != 'none' else None)
 if with_receipt == 'yes':
     result = execute_tool('calculate', {'expression': '4*7'}, [])
     assert result['ok'] and result['value'] == 28
@@ -77,7 +81,9 @@ os._exit(73)
     try:
         child = subprocess.run(
             [sys.executable, "-c", script, url, cid, tid, snapshot,
-             "yes" if receipt_written else "no"], cwd=str(Path(__file__).parents[1]),
+             "yes" if receipt_written else "no",
+             "legacy-plan-v1" if versioned else "none"],
+            cwd=str(Path(__file__).parents[1]),
             timeout=25, capture_output=True, text=True)
         assert child.returncode == 73, child.stderr
         engine, Session = database(url)
@@ -89,6 +95,8 @@ os._exit(73)
             assert len(journal) == 1
             assert journal[0].status == ("observed" if receipt_written
                                          else "dispatch_unknown")
+            assert journal[0].tool_version == (
+                "legacy-plan-v1" if versioned else None)
             assert json.loads(db.get(ConversationPlan, cid).snapshot)["steps"][0]["status"] == "pending"
         action = reconcile_verified_receipts if receipt_written else quarantine
         outcome = action(database_url=url, conversation_id=cid, turn_id=tid,
@@ -102,6 +110,7 @@ os._exit(73)
                 PlanToolDispatch.conversation_id == cid))
             assert record.status == ("checkpointed" if receipt_written
                                      else "quarantined_no_replay")
+            assert record.tool_version == ("legacy-plan-v1" if versioned else None)
             plan = db.get(ConversationPlan, cid)
             if receipt_written:
                 assert json.loads(plan.snapshot)["steps"][0]["status"] == "completed"
