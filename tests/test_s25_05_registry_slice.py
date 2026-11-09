@@ -984,3 +984,44 @@ def test_host_plan_binding_matcher_fails_closed():
     assert not host_plan_binding_matches(**{**base, "expected_control": "resume"})
     assert not host_plan_binding_matches(**{**base, "checkpoint": {"revision": 2}})
     assert not host_plan_binding_matches(**{**base, "owner_id": ""})
+
+
+def test_http_saved_plan_binding_gate_denies_before_dispatch(tmp_path, monkeypatch):
+    import json
+    import apps.api.main as api
+    from agent.planning import PlanLedger
+    from services.db import ConversationPlan, PlanToolDispatch
+
+    async def primary(*args, **kwargs):
+        msg = args[2]
+        return bind_route_signal(RouteSignal.model_validate({
+            "schema_version": "primary-route-v1",
+            "route_kind": "plan_execute_first", "quote": msg,
+            "execution_scope": "first_step", "effect_intent": "read_only",
+        }), msg, saved_plan_present=True, pending_action=None)
+
+    monkeypatch.setattr(api, "propose_primary_route", primary)
+    monkeypatch.setattr(api, "host_plan_binding_matches", lambda **kwargs: False)
+    cfg = Settings(database_url=f"sqlite:///{tmp_path / 'plan_gate.db'}",
+                   model_provider="ollama_proxy", routing_profile="unified")
+    with TestClient(create_app(cfg)) as client:
+        cid = client.post("/conversations").json()["id"]
+        ledger = PlanLedger()
+        assert ledger.propose([
+            {"goal": "Calculate", "expected_tool": "calculate",
+             "expected_arguments": {"expression": "19+23"}},
+        ])["ok"]
+        _, Session = database(cfg.database_url)
+        with Session.begin() as db:
+            db.add(ConversationPlan(
+                conversation_id=cid, snapshot=json.dumps(ledger.checkpoint())))
+        result = client.post(f"/conversations/{cid}/agent/messages", json={
+            "content": "执行已保存计划的第一步",
+            "client_request_id": "plan-binding-deny-001",
+        })
+        assert result.status_code == 200, result.text
+        assert result.json()["termination_reason"] == "primary_v1_plan_admission_denied"
+        with Session() as db:
+            dispatches = db.scalars(select(PlanToolDispatch).where(
+                PlanToolDispatch.conversation_id == cid)).all()
+        assert dispatches == []
