@@ -349,8 +349,11 @@ class AgentLoop:
                 else:
                     evidence = None
                     if journal is not None and sessions is not None:
-                        evidence = make_attempt(state["run_id"], name, arguments,
-                                                {"ok": False, "error": "prepared"})
+                        evidence = make_attempt(
+                            state["run_id"], name, arguments,
+                            {"ok": False, "error": "prepared"},
+                            tool_version=(self.host_read_versions.get(name)
+                                          if name in self.host_read_grants else None))
                         # This commit occurs BEFORE any external effect. On a
                         # process crash the prepared record remains unknown.
                         journal.begin(sessions, evidence)
