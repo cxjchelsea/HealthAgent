@@ -50,3 +50,11 @@ Added `agent/host_plan_execution_binding.py` with `bind_host_plan_execution` for
 **Security boundary:** The Python dataclass is *not a bearer token, cryptographic signature, authenticated identity or self-sufficient capability*. Any in-process caller could construct it. The only permissible future construction point is the trusted API Host after owner-scoped Turn creation and deterministic admission; the existing durable snapshot claim, Turn CAS, M4 dispatch journal and checkpoint checks are still required at actual execution. Do not pass an object from clients, model output or a restored checkpoint as an already-approved permit.
 
 The builder is not yet called by the API or AgentLoop. This slice changes no production routing or effects; next gate is mapping the exact production Host handoff and DB ownership/CAS before a separately gated integration.
+
+## API Host admission integration (2026-11-09)
+
+In `apps/api/main.py` Primary saved-plan first/resume now requires the existing guarded-plan admission **and** the extra `host_plan_binding_matches` structural check before the established M4 reconciliation and AgentLoop dispatch. This new check uses trusted `uid`, conversation ID, Turn ID, request ID, raw pre-Turn snapshot and existing in-memory checkpoint. A mismatch reuses `primary_v1_plan_admission_denied`, without invoking a tool.
+
+The check is supplementary, not an authorization token. All durable conditions remain with original owner-scoped conversation lookup, Turn creation, `saved_plan_execution_guard`, `PlanDispatchJournal`, and checkpoint CAS. No signed capability, tool-version database migration, write/ordinary permission expansion, or legacy route rewrite was introduced.
+
+New tests include fail-closed identity/snapshot/scope matching and an HTTP denial case confirming zero PlanToolDispatch rows. Exact new HEAD CI plus independent positive-path and PostgreSQL execution tests are still required. PR #33 stays Draft.
