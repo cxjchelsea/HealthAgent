@@ -70,3 +70,15 @@ The M4 saved-plan executor and `PlanDispatchJournal` continue to write `NULL` to
 New tests cover owner-scoped attempt persistence, legacy unknown versions, successful versioned preparation/completion, denial of mismatched version completion, Registry HTTP version recording, and saved-plan dispatch staying unknown. CI's Alembic head assertion is upgraded to `0019_tool_versions`.
 
 Remaining acceptance: exact-head GitHub CI including PostgreSQL migration, M4 crash/concurrency and targeted SQLite checks; then design Host-signed/persisted plan tool version with unknown-record quarantine before any M4 ToolInvoker migration.
+
+## Prospective saved-plan legacy-executor version pin (2026-11-09)
+
+`agent/plan_tool_versions.py` declares `LEGACY_PLAN_EXECUTOR_VERSION = "legacy-plan-v1"`. This is a **separate, explicit version of the existing `agent.tools.execute_tool` saved-plan adapter**, not the opt-in `READ_REGISTRY` version `1.0.0`. Any semantic change to its underlying implementation must bump the contract version. Because Python code itself is not cryptographically signed, this is an application-maintained version contract, not a code integrity attestation.
+
+Guarded API Host newly authored checkpoints now get `tool_version` on every plan step **before the Turn's durable checkpoint CAS**. `PlanLedger.restore` preserves these step fields through subsequent checkpoints and revisions. Host binding checks all pending steps for consistent version information before M4; `AgentLoop.run` independently fences mismatched or mixed versions prior to any journal begin. The M4 journal accepts a trusted pinned version as a dedicated keyword argument and records it on the pre-dispatch row; the final checkpoint binding verifies it. The same code path retains `NULL` for unversioned historical checkpoints.
+
+**Historical policy:** Entirely unversioned old checkpoints remain supported by the legacy executor in this compatibility slice, with `tool_version=NULL` evidence. They are *not* certified version-safe; automatic execution of old plans after a future incompatible executor upgrade will need a separate explicit migration or quarantine policy. Mixed step versions, tampered pinned versions and explicit `NULL` downgrades fail closed. A version marker on a new plan does not alone issue permission: existing source authorization, Host M4 admission, Turn claim, guard, journal and CAS still apply.
+
+**Scope:** No `OrdinaryReadInvoker` migration, no write-tool authorization expansion and no claim of exactly-once external effect. Version checks are strict for version-pinned plans but not retroactive for existing legacy plans.
+
+Acceptance gates: exact-head CI, first/resume HTTP with newly created Host-pinned checkpoints, PostgreSQL dispatch version persistence and crash/recovery tests, plus historical data review. PR remains Draft.
