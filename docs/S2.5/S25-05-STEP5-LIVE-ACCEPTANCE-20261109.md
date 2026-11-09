@@ -41,7 +41,7 @@ python -m evals.s25_05_step5_live --repeats 2 --output artifacts\s25-05-step5-li
 python -m evals.s25_05_step5_live --repeats 1 --cases text_stats,calculate,mcp_reference_lookup --output artifacts\s25-05-step5-read.json
 ```
 
-一次性完整套件默认覆盖：`text_stats`、`calculate`、`utc_time`、`list_tasks`、`mcp_reference_lookup`、`no_tool` 及同一会话中的 `plan_create → plan_first → plan_resume`。所有普通只读 Registry 旗标仅在临时的 `Settings` 对象中启用；不修改持久的本机 `.env`，更不会修改生产开关。
+一次性完整套件默认覆盖：`text_stats`、`calculate`、`utc_time`、`list_tasks`、`mcp_reference_lookup`、`recall_memory`、`no_tool`、`deny_shell` 及同一会话中的 `plan_create → plan_first → plan_resume`。所有普通只读 Registry 旗标仅在临时的 `Settings` 对象中启用；不修改持久的本机 `.env`，更不会修改生产开关。
 
 ### 必须查看的物理证据
 
