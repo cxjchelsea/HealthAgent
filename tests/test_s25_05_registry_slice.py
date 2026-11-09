@@ -960,3 +960,27 @@ def test_host_plan_binding_rejects_nonplan_route_and_scope_spoofing():
     ]:
         with pytest.raises(ValueError, match="host_plan_"):
             bind_host_plan_execution(decision=decision, **args)
+
+
+def test_host_plan_binding_matcher_fails_closed():
+    import json
+    from agent.host_plan_execution_binding import host_plan_binding_matches
+    from agent.primary_host_admission_v1 import PrimaryHostDecision
+    from agent.planning import PlanLedger
+    ledger = PlanLedger()
+    assert ledger.propose([{"goal": "Calculate", "expected_tool": "calculate",
+                            "expected_arguments": {"expression": "19+23"}}])["ok"]
+    checkpoint = ledger.checkpoint()
+    raw = json.dumps(checkpoint)
+    decision = PrimaryHostDecision(
+        "allow", "primary_v1_plan_execution_candidate",
+        "plan_execute_first", "read_only", "execute_first")
+    base = dict(decision=decision, owner_id="owner-1", conversation_id="conv-1",
+                turn_id="turn-1", request_id="request-1",
+                checkpoint_raw=raw, checkpoint=checkpoint,
+                expected_control="execute_first")
+    assert host_plan_binding_matches(**base)
+    assert not host_plan_binding_matches(**{**base, "checkpoint_raw": None})
+    assert not host_plan_binding_matches(**{**base, "expected_control": "resume"})
+    assert not host_plan_binding_matches(**{**base, "checkpoint": {"revision": 2}})
+    assert not host_plan_binding_matches(**{**base, "owner_id": ""})
