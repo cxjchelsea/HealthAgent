@@ -71,3 +71,32 @@ python -m evals.s25_05_step5_live --repeats 1 --cases text_stats,calculate,mcp_r
 3. 人工检查非工具回答和 MCP 返回事实的忠实性、计划建立/首步/恢复语义；
 4. 独立审查 Host 不越权、M4 不无证重放、版本升级不自动重标、Pending/写入权限无扩展；
 5. PR #33 合并需用户单独授权，仍保持 Draft。
+
+## 首轮真实 Qwen 结果与集中诊断（2026-11-09）
+
+收到真实运行结果：`qwen3:14b` / `ollama_proxy` / Unified / 2 repeats，**18/22 PASS**，中位响应 **6009 ms**。唯一重复失败的是 `list_tasks`（2/2：HTTP 200 completed，无 tool event、无 Attempt）和 `mcp_reference_lookup`（2/2：`needs_input`，无 tool event、无 Attempt）。其他普通读、记忆、无工具、Shell 拒绝、计划创建/首步/恢复均通过；这些结果仅证明各自测试的观测事实，并不自动证明全面语义质量。
+
+**当前证据不支持断言 Registry Adapter 出错**：两个失败路径均没有派发；尚未获得 Primary route/Host reason，必须先区分模型选择 `respond/clarify` 与 Host deny 的责任边界。切勿为使分数变绿添加中文关键词硬编码，或放松 Host。
+
+已改进 `evals/s25_05_step5_live.py`：输出 `primary_route`、`host_disposition`、`host_reason` 和稳定 `refusal_code`（不存储用户原始输入、模型回答、工具参数、明文记忆或敏感日志）；对原有两个用例增加语义相同的显式工具名对照用例 `list_tasks_explicit`、`mcp_explicit_term`，并有离线评分/脱敏测试。
+
+### 集中复验
+
+在相同本地 `ollama_proxy/qwen3:14b` 环境、PR #33 新 HEAD 下：
+
+```powershell
+cd D:\HealthAgent
+git status --short
+git fetch origin
+git switch feat/s25-05-step4-tool-registry-slice-20261106
+git pull --ff-only
+.\.venv\Scripts\Activate.ps1
+$env:MODEL_PROVIDER = "ollama_proxy"
+$env:MODEL_NAME = "qwen3:14b"
+$env:RUN_S25_05_LIVE = "1"
+python -m evals.s25_05_step5_live --repeats 2 --cases list_tasks,list_tasks_explicit,mcp_reference_lookup,mcp_explicit_term --output artifacts\s25-05-step5-routing-diagnostic.json
+```
+
+判定规则：若原提示失败、显式提示成功且 Primary route 不同，优先集中整改主语义 Tool-or-Respond/Clarify 提示与对照评测；若 Primary ordinary/read_only/Host allow 但无调用，检查 AgentLoop 工具曝光、决策及工具调用；若 Host restrict/deny，检查准入事实。只有确认实际根因后才修改生产路由。**不能将只含 4 组的局部复验视为完整 Step 5 通过**。
+
+保持 Draft，不合并，不默认开启。
