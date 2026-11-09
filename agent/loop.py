@@ -604,10 +604,9 @@ class AgentLoop:
             audit = []
             delivered = []
             for step in outstanding:
-                if guard is not None and not guard():
-                    trace.append({"step": len(trace) + 1,
-                                  "type": "plan_execution_guard_conflict"})
-                    break
+                # PlanReadInvoker checks the guard once, immediately before
+                # the journal begin; an outer duplicate would consume
+                # stateful/CAS guards twice per step.
                 name = step["expected_tool"]
                 arguments = step["expected_arguments"]
                 result = PlanReadInvoker(execute=execute_tool).invoke(
