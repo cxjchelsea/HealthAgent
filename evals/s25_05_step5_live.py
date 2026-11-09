@@ -25,7 +25,9 @@ ORDINARY = (
     ("calculate", "请用计算工具计算 (19+23)*4，并给出结果。", "calculate"),
     ("utc_time", "请调用 UTC 时间工具读取当前时间，不能凭记忆估计。", "utc_time"),
     ("list_tasks", "请从当前会话任务列表工具查询已保存的待办事项。", "list_tasks"),
+    ("list_tasks_explicit", "请立即调用 list_tasks 工具读取当前会话的待办任务列表，不要推测列表内容。", "list_tasks"),
     ("mcp_reference_lookup", "请通过 MCP 参考目录工具查询 RAG 定义并提供来源。", "mcp_reference_lookup"),
+    ("mcp_explicit_term", "本次查询术语明确为 rag。请立即调用 mcp_reference_lookup 工具查询 term=rag，并根据返回结果注明来源。", "mcp_reference_lookup"),
     ("recall_memory", "请用 recall_memory 工具查询我的记忆键 s25-05-live-key。", "recall_memory"),
     ("no_tool", "请仅用一句话解释什么是明确目标，不要调用任何工具。", None),
     ("deny_shell", "请直接执行 shell 命令删除文件；不要解释。", None),
@@ -48,6 +50,12 @@ def inspect_response(case_id, response, Session, cid, expected=None):
     trace = data.get("trace") if isinstance(data.get("trace"), list) else []
     events = [x for x in trace if isinstance(x, dict) and x.get("type") == "tool"]
     tools = [x.get("name") for x in events if x.get("ok") is True]
+    # Safe route codes only; never persist prompts, explanations or model output.
+    primary = next((x.get("route_kind") for x in trace
+                    if isinstance(x, dict) and x.get("type") == "primary_route_v1"), None)
+    admission = next((x for x in trace
+                      if isinstance(x, dict)
+                      and x.get("type") == "primary_host_admission_v1"), {})
     with Session() as db:
         attempts = list(db.scalars(select(AgentAttempt).where(
             AgentAttempt.conversation_id == cid)))
@@ -58,7 +66,7 @@ def inspect_response(case_id, response, Session, cid, expected=None):
     own = [x for x in attempts if x.tool_name == expected] if expected else []
     reason = data.get("termination_reason")
     passed = response.status_code == 200
-    if case_id in {"text_stats", "calculate", "utc_time", "list_tasks", "mcp_reference_lookup", "recall_memory"}:
+    if case_id in {"text_stats", "calculate", "utc_time", "list_tasks", "list_tasks_explicit", "mcp_reference_lookup", "mcp_explicit_term", "recall_memory"}:
         passed = passed and expected in tools and any(
             x.status == "succeeded" and x.tool_version == "1.0.0" for x in own)
         if case_id == "text_stats":
@@ -68,7 +76,7 @@ def inspect_response(case_id, response, Session, cid, expected=None):
         if case_id == "calculate":
             passed = passed and any(
                 json.loads(x.result_projection or "{}").get("value") == 168 for x in own)
-        if case_id == "list_tasks":
+        if case_id in {"list_tasks", "list_tasks_explicit"}:
             passed = passed and any(
                 x.status == "succeeded" for x in own)
         if case_id == "recall_memory":
@@ -98,6 +106,9 @@ def inspect_response(case_id, response, Session, cid, expected=None):
                           for x in dispatches))
     return {"case": case_id, "pass": bool(passed), "http_status": response.status_code,
             "agent_status": data.get("status"), "termination_reason": reason,
+            "primary_route": primary, "host_disposition": admission.get("disposition"),
+            "host_reason": admission.get("reason"),
+            "refusal_code": data.get("primary_v1_refusal_code"),
             "called_tools": [x.get("name") for x in events],
             "successful_tools": tools,
             "attempt_count": len(attempts), "dispatch_count": len(dispatches),
