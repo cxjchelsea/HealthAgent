@@ -744,3 +744,80 @@ def test_minimal_invoker_does_not_authorize_write_tools():
         expected_version="1.0.0",
     ))
     assert result == {"ok": False, "error": "unknown_tool"}
+
+
+def test_plan_execution_keeps_m4_dispatch_and_does_not_reuse_ordinary_grant(monkeypatch):
+    """A plan's bound call must use its own journal, not an ordinary Host read grant."""
+    from agent import loop as loop_module
+    from agent.planning import PlanLedger
+
+    ledger = PlanLedger()
+    assert ledger.propose([{
+        "goal": "计算 19+23",
+        "expected_tool": "calculate",
+        "expected_arguments": {"expression": "19+23"},
+    }])["ok"]
+
+    invocations = []
+    class Journal:
+        def begin(self, step_id, name, arguments):
+            invocations.append(("begin", step_id, name, arguments))
+            return "dispatch-1"
+        def record_receipt(self, dispatch_id, observation):
+            invocations.append(("receipt", dispatch_id, observation))
+
+    class NoModel:
+        async def decide(self, messages, tools):
+            raise AssertionError("bound plan should not ask model to dispatch")
+
+    def bound_tool(name, arguments, tasks, clock=None, **kwargs):
+        invocations.append(("execute", name, arguments))
+        return {"ok": True, "value": 42}
+
+    def forbidden_registry(*args, **kwargs):
+        raise AssertionError("ordinary-only Registry must not execute saved plans")
+
+    monkeypatch.setattr(loop_module, "execute_tool", bound_tool)
+    monkeypatch.setattr(loop_module.OrdinaryReadInvoker, "invoke", forbidden_registry)
+    result = asyncio.run(AgentLoop(
+        NoModel(), dispatch_journal=Journal(),
+        host_read_grants=("calculate",),
+    ).run("执行已保存计划", plan_checkpoint=ledger.checkpoint(),
+          plan_control="execute_first", execution_mode="read_only",
+          include_evidence=True, execution_guard=lambda: True))
+    assert result["status"] == "completed"
+    assert result["plan"][0]["status"] == "completed"
+    assert [item[0] for item in invocations] == ["begin", "execute", "receipt"]
+    assert invocations[0][2:] == ("calculate", {"expression": "19+23"})
+    assert invocations[2][1] == "dispatch-1"
+
+
+def test_plan_execution_guard_failure_causes_no_dispatch(monkeypatch):
+    from agent.planning import PlanLedger
+    from agent import loop as loop_module
+
+    ledger = PlanLedger()
+    assert ledger.propose([{
+        "goal": "计算 19+23",
+        "expected_tool": "calculate",
+        "expected_arguments": {"expression": "19+23"},
+    }])["ok"]
+    def forbidden_execute(*args, **kwargs):
+        raise AssertionError("guard denial must suppress any tool call")
+    monkeypatch.setattr(loop_module, "execute_tool", forbidden_execute)
+    class Journal:
+        def begin(self, *args):
+            raise AssertionError("guard denial must suppress M4 begin")
+    class NoModel:
+        async def decide(self, messages, tools):
+            raise AssertionError("guard denial must not ask model to dispatch")
+    result = asyncio.run(AgentLoop(
+        NoModel(), dispatch_journal=Journal(),
+        host_read_grants=("calculate",),
+    ).run("执行已保存计划", plan_checkpoint=ledger.checkpoint(),
+          plan_control="execute_first", execution_mode="read_only",
+          execution_guard=lambda: False))
+    assert result["status"] == "partial"
+    assert result["plan"][0]["status"] == "pending"
+    assert any(item["type"] == "plan_execution_guard_conflict"
+               for item in result["trace"])
