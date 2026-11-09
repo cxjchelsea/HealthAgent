@@ -14,6 +14,12 @@ class Settings(BaseSettings):
     run_s25_01_live: bool = False
     routing_profile: Literal["auto", "unified", "legacy"] = "auto"
     route_shadow_enabled: bool = False  # M2 opt-in, never affects admission
+    s25_05_text_stats_enabled: bool = False  # opt-in; Host read-only grant, not registry authorization
+    s25_05_calculate_registry_enabled: bool = False  # opt-in legacy read migration; ordinary only
+    s25_05_utc_time_registry_enabled: bool = False
+    s25_05_list_tasks_registry_enabled: bool = False
+    s25_05_recall_memory_registry_enabled: bool = False
+    s25_05_mcp_reference_registry_enabled: bool = False
     s25_04_admission_trace_enabled: bool = False  # post-commit diagnostic only
     route_admission_mode: Literal["legacy", "guarded"] = "legacy"  # M4 explicit opt-in
     m5_first_route_enabled: bool = False  # explicit FIRST-only experiment

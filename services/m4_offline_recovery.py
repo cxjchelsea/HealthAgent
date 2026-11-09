@@ -162,6 +162,10 @@ def reconcile_verified_receipts(*, database_url, conversation_id, turn_id,
                 if (step is None or step["status"] != "pending"
                         or step.get("expected_tool") != entry.tool_name
                         or step.get("expected_arguments") != arguments
+                        # Never use a versionless or mismatched receipt to
+                        # complete a version-pinned saved-plan step. Historical
+                        # unversioned rows must remain unversioned on both sides.
+                        or step.get("tool_version") != entry.tool_version
                         or receipt.get("ok") is not True
                         or not isinstance(receipt.get("value"), str)):
                     raise RecoveryRefused("receipt_binding_mismatch")

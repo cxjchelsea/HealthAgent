@@ -8,6 +8,10 @@ from typing import Any, TypedDict
 from langgraph.graph import END, StateGraph
 from agent.decision import NativeToolDecision
 from agent.tools import TOOL_SCHEMAS, execute_tool
+from agent.tool_registry import READ_REGISTRY, ReadToolRuntime
+from agent.tool_invoker import OrdinaryReadInvoker, ReadInvocation
+from agent.plan_tool_versions import plan_versions_compatible
+from agent.plan_read_invoker import PlanReadInvoker, PlanReadRequest
 from agent.skills import (exposed_tools, load_instructions, SKILL_VERSION,
                           select_tool_exposure, exposure_schemas, exposure_instructions, SEMANTIC_GUIDANCE)
 from agent.semantic_topk import select_read_tools
@@ -75,10 +79,14 @@ class AgentState(TypedDict):
     failed_plan_attempts: int
     user_request: str
     independent_ordinary: bool
+    require_ordinary_read_evidence: bool
+    ordinary_read_retry: bool
 
 class AgentLoop:
     def __init__(self, decider: Any, max_steps: int = 6, clock=None, task_store=None, memory_store=None, mcp_client=None, skill_strategy='dynamic', skill_budget_chars=600, execution_guard=None, dispatch_journal=None,
-                 ordinary_attempt_journal=None, ordinary_attempt_session_factory=None, candidate_selector=None, selector_model=None, governed_ordinary_writes=False):
+                 ordinary_attempt_journal=None, ordinary_attempt_session_factory=None, candidate_selector=None, selector_model=None, governed_ordinary_writes=False,
+                 host_read_grants: tuple[str, ...] = (),
+                 require_ordinary_read_evidence: bool = False):
         if max_steps < 1 or max_steps > 20:
             raise ValueError("max_steps must be 1..20")
         self.decider = decider
@@ -96,6 +104,11 @@ class AgentLoop:
         self.ordinary_attempt_journal = ordinary_attempt_journal
         self.ordinary_attempt_session_factory = ordinary_attempt_session_factory
         self.governed_ordinary_writes = governed_ordinary_writes
+        # Only the trusted API Host supplies per-turn optional read grants.
+        self.host_read_grants = tuple(host_read_grants)
+        self.require_ordinary_read_evidence = require_ordinary_read_evidence
+        self.host_read_versions = {name: READ_REGISTRY.version_for(name)
+                                   for name in self.host_read_grants}
         flow = StateGraph(AgentState)
         flow.add_node("decide", self._decide)
         flow.add_node("tools", self._tools)
@@ -122,6 +135,12 @@ class AgentLoop:
                 tool for tool in TOOL_SCHEMAS
                 if tool["function"]["name"] in eligible
             ]
+            already_exposed = {tool["function"]["name"] for tool in state["allowed_tools"]}
+            state["allowed_tools"] += [
+                tool for tool in READ_REGISTRY.exposed(self.host_read_grants)
+                if (tool["function"]["name"] in state["exposure_limit"]
+                    and tool["function"]["name"] not in already_exposed)
+            ]
             state["traces"].append({
                 "step": state["iterations"] + 1, "type": "tool_exposure",
                 "strategy": selection.mode, "version": selection.version,
@@ -131,6 +150,32 @@ class AgentLoop:
         decision = await self.decider.decide(state["messages"], state["allowed_tools"])
         iteration = state["iterations"] + 1
         if not decision.tool_calls:
+            # A trusted Host selected an ordinary read operation, but a model
+            # answer without any tool observation is not verified completion.
+            # One bounded re-decision is generic: never select a tool via a
+            # keyword, manufacture a grant or execute tools on model's behalf.
+            if (state["require_ordinary_read_evidence"]
+                    and not any(x.get("type") == "tool" for x in state["traces"])):
+                if not state["ordinary_read_retry"] and iteration < self.max_steps:
+                    return {"iterations": iteration, "ordinary_read_retry": True,
+                            "recall_retry_pending": True,
+                            "messages": state["messages"] + [{
+                                "role": "system", "content":
+                                "The Host admitted a read-only tool operation, but no "
+                                "tool observation exists yet. Select an applicable "
+                                "exposed read-only tool and invoke it with validated "
+                                "arguments grounded in the user's request. If the "
+                                "necessary argument is missing, ask for it instead. "
+                                "Never assert that a lookup was done without a "
+                                "successful tool observation."}],
+                            "traces": state["traces"] + [{
+                                "step": iteration, "type": "ordinary_read_retry"}]}
+                return {"iterations": iteration,
+                        "status": "partial",
+                        "termination_reason": "ordinary_read_unverified",
+                        "final": "本轮只读工具请求未取得实际工具调用证据；不能将模型回答视为已查询。",
+                        "traces": state["traces"] + [{
+                            "step": iteration, "type": "ordinary_read_unverified"}]}
             if state["memory_recall_required"] and not state["memory_recall_observed"]:
                 if not state["memory_recall_retry"] and iteration < self.max_steps:
                     return {"iterations": iteration, "memory_recall_retry": True,
@@ -336,15 +381,37 @@ class AgentLoop:
                 else:
                     evidence = None
                     if journal is not None and sessions is not None:
-                        evidence = make_attempt(state["run_id"], name, arguments,
-                                                {"ok": False, "error": "prepared"})
+                        evidence = make_attempt(
+                            state["run_id"], name, arguments,
+                            {"ok": False, "error": "prepared"},
+                            tool_version=(self.host_read_versions.get(name)
+                                          if name in self.host_read_grants else None))
                         # This commit occurs BEFORE any external effect. On a
                         # process crash the prepared record remains unknown.
                         journal.begin(sessions, evidence)
-                    result = execute_tool(name, function.get("arguments"), tasks,
-                                          self.clock, task_store=self.task_store,
-                                          memory_store=self.memory_store,
-                                          mcp_client=self.mcp_client)
+                    if (name == "text_stats" and name in self.host_read_grants
+                            and (not isinstance(arguments, dict)
+                                 or not isinstance(arguments.get("text"), str)
+                                 or arguments["text"] not in state["user_request"])):
+                        # Model-supplied text must originate in this turn;
+                        # never present statistics for a hallucinated passage.
+                        result = {"ok": False, "error": "argument_provenance_missing"}
+                    elif name in self.host_read_grants:
+                        result = OrdinaryReadInvoker().invoke(
+                            ReadInvocation(
+                                name=name, arguments=arguments,
+                                granted_names=self.host_read_grants,
+                                exposed_names=tuple(state["exposure_limit"]),
+                                expected_version=self.host_read_versions.get(name),
+                            ),
+                            runtime=ReadToolRuntime(clock=self.clock,
+                                task_store=self.task_store, memory_store=self.memory_store,
+                                mcp_client=self.mcp_client, tasks=tasks))
+                    else:
+                        result = execute_tool(name, function.get("arguments"), tasks,
+                                              self.clock, task_store=self.task_store,
+                                              memory_store=self.memory_store,
+                                              mcp_client=self.mcp_client)
                     if evidence is not None:
                         # Projection only; never writes model-generated claims.
                         from services.evidence_store import bounded_projection
@@ -504,6 +571,15 @@ class AgentLoop:
         # Do not leave correctness to optional model tool choice.
         if (execution_mode != "respond_only"
                 and understanding_result is None
+                # An admitted saved-plan control always takes precedence over
+                # legacy substring memory shortcuts. Otherwise a request like
+                # "请执行已保存的计划" can falsely finish without an M4 dispatch.
+                and plan_control not in {"execute_first", "resume"}
+                # A verified Primary/Host ordinary read must reach the actual
+                # tool loop. The old substring memory shortcut ("保存的")
+                # intercepted unrelated task reads before any model decision
+                # or Attempt could be recorded.
+                and not self.require_ordinary_read_evidence
                 and self.memory_store is not None and any(phrase in goal for phrase in (
                 "还记得", "记得我", "之前保存", "之前记住", "保存的",
                 "记住的", "测试偏好是什么", "测试偏好吗"))):
@@ -541,6 +617,16 @@ class AgentLoop:
         # model to recreate or revise it. A changed goal follows the ordinary loop.
         outstanding = [step for step in resumed.snapshot()
                        if step["status"] == "pending"]
+        if (plan_control in {"execute_first", "resume"} and outstanding
+                and not plan_versions_compatible(resumed.checkpoint(), plan_control)):
+            return {"run_id": run_id, "status": "partial",
+                    "answer": "已保存计划的工具执行版本不匹配，未执行任何步骤；请重新审核并建立计划。",
+                    "trace": [{"step": 0, "type": "plan_tool_version_fenced"}],
+                    "termination_reason": "plan_tool_version_mismatch",
+                    "steps": 0, "plan": resumed.snapshot(),
+                    "plan_revision": resumed.revision,
+                    "plan_checkpoint": resumed.checkpoint(),
+                    "prompt_version": PROMPT_VERSION}
         authorized_plan_run = (
             plan_control in {"execute_first", "resume"}
             and bool(outstanding)
@@ -557,21 +643,24 @@ class AgentLoop:
             audit = []
             delivered = []
             for step in outstanding:
-                if guard is not None and not guard():
+                # PlanReadInvoker checks the guard once, immediately before
+                # the journal begin; an outer duplicate would consume
+                # stateful/CAS guards twice per step.
+                name = step["expected_tool"]
+                arguments = step["expected_arguments"]
+                result = PlanReadInvoker(execute=execute_tool).invoke(
+                    PlanReadRequest(step_id=step["id"], name=name,
+                                    arguments=arguments,
+                                    tool_version=step.get("tool_version")),
+                    execution_guard=guard, dispatch_journal=self.dispatch_journal,
+                    clock=self.clock, task_store=self.task_store,
+                    memory_store=self.memory_store, mcp_client=self.mcp_client)
+                if result.get("error") in {
+                        "plan_execution_guard_conflict", "plan_tool_version_mismatch",
+                        "invalid_plan_invocation"}:
                     trace.append({"step": len(trace) + 1,
                                   "type": "plan_execution_guard_conflict"})
                     break
-                name = step["expected_tool"]
-                arguments = step["expected_arguments"]
-                dispatch_id = None
-                if self.dispatch_journal is not None:
-                    dispatch_id = self.dispatch_journal.begin(step["id"], name, arguments)
-                result = execute_tool(
-                    name, arguments, [],
-                    self.clock, task_store=self.task_store,
-                    memory_store=self.memory_store, mcp_client=self.mcp_client)
-                if dispatch_id is not None:
-                    self.dispatch_journal.record_receipt(dispatch_id, result)
                 resumed.observe(name, result, arguments)
                 # Preserve only the bounded, tool-observed output for delivery.
                 # Never synthesize results for previously completed steps.
@@ -752,12 +841,25 @@ class AgentLoop:
                           "candidate_count": len(ranked),
                           "selected_read_tools": sorted(topk_names),
                           "exposed_tools": [t["function"]["name"] for t in selected_tools]}
+        # Trusted Host permit is additive only for ordinary read-only turns.
+        # Explicit calculator and TopK reduction are not silently widened.
+        if (mode == "read_only" and self.host_read_grants
+                and self.skill_strategy != "semantic_topk"
+                and tool_allowlist is None):
+            already_exposed = {t["function"]["name"] for t in selected_tools}
+            selected_tools += [t for t in READ_REGISTRY.exposed(self.host_read_grants)
+                               if (t["function"]["name"] == "text_stats"
+                                   and t["function"]["name"] not in already_exposed)]
         resume_context = ("\nTrusted checkpoint: revision " + str(resumed.revision) +
                           "; steps: " + json.dumps(resumed.snapshot(), ensure_ascii=False)
                           if resumed.revision else "")
         # A bounded re-decision only for explicit saved-memory requests.
         recall_required = (execution_mode != "respond_only"
                            and understanding_result is None
+                           # Likewise, do not convert Host-admitted ordinary
+                           # reads into legacy memory retries based on a
+                           # substring such as "保存的" in the user's task.
+                           and not self.require_ordinary_read_evidence
                            and any(phrase in goal for phrase in (
             "还记得", "记得我", "之前保存", "之前记住", "保存的",
             "记住的", "测试偏好是什么", "测试偏好吗")))
@@ -823,7 +925,12 @@ class AgentLoop:
             "structured_mode": understanding_result is not None,
             "user_request": goal,
             "failed_plan_attempts": 0,
-            "independent_ordinary": independent_ordinary}
+            "independent_ordinary": independent_ordinary,
+            "require_ordinary_read_evidence": bool(
+                self.require_ordinary_read_evidence and independent_ordinary
+                and any(t["function"]["name"] not in {"request_clarification"}
+                        for t in selected_tools)),
+            "ordinary_read_retry": False}
         try:
             outcome = await self.graph.ainvoke(initial, config={"recursion_limit": 2 * self.max_steps + 4})
         except Exception as exc:

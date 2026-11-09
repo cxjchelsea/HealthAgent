@@ -19,7 +19,7 @@ class PlanDispatchJournal:
     def __init__(self, sessions, conversation_id, turn_id):
         self.sessions, self.conversation_id, self.turn_id = sessions, conversation_id, turn_id
 
-    def begin(self, step_id, name, arguments):
+    def begin(self, step_id, name, arguments, *, tool_version=None):
         with self.sessions.begin() as db:
             turn = db.get(Turn, self.turn_id)
             if not turn or turn.conversation_id != self.conversation_id or turn.state != "running":
@@ -32,6 +32,7 @@ class PlanDispatchJournal:
             entry = PlanToolDispatch(
                 conversation_id=self.conversation_id, turn_id=self.turn_id,
                 step_id=step_id, tool_name=name,
+                tool_version=tool_version,
                 arguments_json=json.dumps(arguments, ensure_ascii=False, sort_keys=True),
                 status="dispatch_unknown")
             db.add(entry)
@@ -65,6 +66,7 @@ class PlanDispatchJournal:
             step = next((s for s in steps if s.get("id") == entry.step_id), None)
             if (step is None or step.get("status") != "completed"
                     or step.get("evidence_tool") != entry.tool_name
-                    or step.get("expected_arguments") != json.loads(entry.arguments_json)):
+                    or step.get("expected_arguments") != json.loads(entry.arguments_json)
+                    or step.get("tool_version") != entry.tool_version):
                 raise DispatchConflict("receipt_checkpoint_binding_mismatch")
             entry.status = "checkpointed"

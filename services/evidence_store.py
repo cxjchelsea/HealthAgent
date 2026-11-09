@@ -6,6 +6,8 @@ import uuid
 _MAX_RESULT_CHARS = 1200
 _ALLOWED_OUTPUT = {
     "calculate": ("value",),
+    # Strict numeric-only metadata; never persist the supplied text.
+    "text_stats": ("characters", "words",),
     "utc_time": ("utc",),
     "mcp_reference_lookup": ("source", "definition", "value"),
     "list_tasks": ("tasks",),
@@ -36,11 +38,12 @@ def arguments_digest(arguments: object) -> str:
     raw = json.dumps(arguments, ensure_ascii=False, sort_keys=True, default=str)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
-def make_attempt(run_id: str, tool_name: str, arguments: object, observation: dict, step_id: int | None = None) -> dict:
+def make_attempt(run_id: str, tool_name: str, arguments: object, observation: dict, step_id: int | None = None, *, tool_version: str | None = None) -> dict:
     projection = bounded_projection(tool_name, observation)
     return {
         "attempt_id": str(uuid.uuid4()), "run_id": run_id,
         "step_id": step_id, "tool_name": tool_name,
+        "tool_version": tool_version,
         "arguments_digest": arguments_digest(arguments),
         "status": "succeeded" if observation.get("ok") is True else "failed",
         "error_code": None if observation.get("ok") is True else str(observation.get("error", "unknown"))[:80],
@@ -60,13 +63,15 @@ class AttemptEvidenceStore:
                 if (existing.conversation_id != self.conversation_id or
                     existing.turn_id != self.turn_id or
                     existing.status != item["status"] or
-                    existing.arguments_digest != item["arguments_digest"]):
+                    existing.arguments_digest != item["arguments_digest"] or
+                    existing.tool_version != item.get("tool_version")):
                     raise RuntimeError("attempt_outcome_conflict")
                 continue
             db.add(AgentAttempt(
                 id=item["attempt_id"], conversation_id=self.conversation_id,
                 turn_id=self.turn_id, run_id=item["run_id"],
                 step_id=item.get("step_id"), tool_name=item["tool_name"],
+                tool_version=item.get("tool_version"),
                 arguments_digest=item["arguments_digest"],
                 status=item["status"], error_code=item.get("error_code"),
                 result_projection=json.dumps(item["result_projection"], ensure_ascii=False),
@@ -84,6 +89,7 @@ class AttemptEvidenceStore:
                 id=attempt["attempt_id"], conversation_id=self.conversation_id,
                 turn_id=self.turn_id, run_id=attempt["run_id"],
                 step_id=attempt.get("step_id"), tool_name=attempt["tool_name"],
+                tool_version=attempt.get("tool_version"),
                 arguments_digest=attempt["arguments_digest"], status="prepared",
                 result_projection=None,
             ))
@@ -98,6 +104,7 @@ class AttemptEvidenceStore:
                 AgentAttempt.id == attempt["attempt_id"],
                 AgentAttempt.conversation_id == self.conversation_id,
                 AgentAttempt.turn_id == self.turn_id,
+                AgentAttempt.tool_version.is_not_distinct_from(attempt.get("tool_version")),
                 AgentAttempt.status == "prepared"
             ).values(status=attempt["status"],
                      error_code=attempt.get("error_code"),
