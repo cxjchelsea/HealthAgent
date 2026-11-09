@@ -897,3 +897,66 @@ def test_plan_first_inspection_rejects_invalid_later_pending_step():
     checkpoint["steps"][1]["expected_arguments"] = {"expression": "3*4", "extra": 1}
     with pytest.raises(ValueError, match="invalid_plan_arguments"):
         inspect_plan_invocations(checkpoint, "execute_first")
+
+
+def test_host_plan_binding_captures_exact_snapshot_and_turn_context():
+    import json
+    import hashlib
+    from agent.host_plan_execution_binding import bind_host_plan_execution
+    from agent.primary_host_admission_v1 import PrimaryHostDecision
+    from agent.planning import PlanLedger
+
+    ledger = PlanLedger()
+    assert ledger.propose([
+        {"goal": "计算", "expected_tool": "calculate",
+         "expected_arguments": {"expression": "19+23"}},
+        {"goal": "查参考", "expected_tool": "mcp_reference_lookup",
+         "expected_arguments": {"term": "rag"}},
+    ])["ok"]
+    snapshot = ledger.checkpoint()
+    raw = json.dumps(snapshot, ensure_ascii=False)
+    decision = PrimaryHostDecision(
+        "allow", "primary_v1_plan_execution_candidate",
+        "plan_execute_first", "read_only", "execute_first")
+    args = dict(decision=decision, owner_id="owner-1", conversation_id="conv-1",
+                turn_id="turn-1", request_id="request-1",
+                checkpoint_raw=raw, checkpoint=snapshot)
+    bound = bind_host_plan_execution(**args)
+    assert bound.owner_id == "owner-1" and bound.turn_id == "turn-1"
+    assert bound.checkpoint_digest == hashlib.sha256(raw.encode()).hexdigest()
+    assert bound.plan_revision == snapshot["revision"]
+    assert len(bound.invocations) == 1 and bound.invocations[0].tool_name == "calculate"
+    assert bound.invocations[0].tool_version is None
+    with pytest.raises(ValueError, match="host_plan_snapshot_mismatch"):
+        bind_host_plan_execution(**{**args, "checkpoint": {"revision": 2}})
+    with pytest.raises(ValueError, match="host_plan_identity_missing"):
+        bind_host_plan_execution(**{**args, "owner_id": ""})
+
+
+def test_host_plan_binding_rejects_nonplan_route_and_scope_spoofing():
+    import json
+    from agent.host_plan_execution_binding import bind_host_plan_execution
+    from agent.primary_host_admission_v1 import PrimaryHostDecision
+    from agent.planning import PlanLedger
+
+    ledger = PlanLedger()
+    assert ledger.propose([{
+        "goal": "计算", "expected_tool": "calculate",
+        "expected_arguments": {"expression": "19+23"},
+    }])["ok"]
+    checkpoint = ledger.checkpoint()
+    args = dict(owner_id="owner", conversation_id="conv",
+                turn_id="turn", request_id="req",
+                checkpoint_raw=json.dumps(checkpoint), checkpoint=checkpoint)
+    for decision in [
+        PrimaryHostDecision("deny", "primary_v1_plan_execution_candidate",
+                            "plan_resume", "read_only", "resume"),
+        PrimaryHostDecision("allow", "primary_v1_ordinary_read_only",
+                            "ordinary_tool", "read_only", None),
+        PrimaryHostDecision("allow", "primary_v1_plan_execution_candidate",
+                            "plan_resume", "read_only", "execute_first"),
+        PrimaryHostDecision("allow", "primary_v1_plan_execution_candidate",
+                            "plan_resume", "respond_only", "resume"),
+    ]:
+        with pytest.raises(ValueError, match="host_plan_"):
+            bind_host_plan_execution(decision=decision, **args)
