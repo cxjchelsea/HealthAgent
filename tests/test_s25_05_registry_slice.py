@@ -1290,3 +1290,42 @@ def test_primary_http_plan_create_pins_actual_executor_before_checkpoint_cas(tmp
                        and step["tool_version"] == LEGACY_PLAN_EXECUTOR_VERSION
                        for step in checkpoint["steps"])
             assert checkpoint["revision"] == 1
+
+
+def test_unversioned_plan_is_quarantined_when_legacy_executor_version_changes(monkeypatch):
+    from agent import plan_tool_versions as versions
+    from agent.planning import PlanLedger
+    from agent import loop as loop_module
+
+    ledger = PlanLedger()
+    assert ledger.propose([{
+        "goal": "legacy calculation", "expected_tool": "calculate",
+        "expected_arguments": {"expression": "19+23"},
+    }])["ok"]
+    unversioned = ledger.checkpoint()
+    pinned = versions.pin_new_plan_checkpoint(unversioned)
+    assert versions.plan_versions_compatible(unversioned, "resume")
+    assert versions.plan_versions_compatible(pinned, "resume")
+    monkeypatch.setattr(versions, "LEGACY_PLAN_EXECUTOR_VERSION", "legacy-plan-v2")
+    assert not versions.plan_versions_compatible(unversioned, "resume")
+    assert not versions.plan_versions_compatible(pinned, "resume")
+
+    def forbidden_dispatch(*args, **kwargs):
+        raise AssertionError("upgraded executor cannot dispatch an old plan")
+    monkeypatch.setattr(loop_module, "execute_tool", forbidden_dispatch)
+
+    class Journal:
+        def begin(self, *args, **kwargs):
+            raise AssertionError("version mismatch must not create M4 dispatch")
+
+    class NoModel:
+        async def decide(self, messages, tools):
+            raise AssertionError("saved plan must not route to the model")
+
+    for checkpoint in (unversioned, pinned):
+        result = asyncio.run(AgentLoop(
+            NoModel(), dispatch_journal=Journal()).run(
+            "execute", plan_checkpoint=checkpoint, plan_control="resume",
+            execution_mode="read_only", execution_guard=lambda: True))
+        assert result["termination_reason"] == "plan_tool_version_mismatch"
+        assert result["plan"][0]["status"] == "pending"
