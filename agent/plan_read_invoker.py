@@ -36,6 +36,16 @@ class PlanReadInvoker:
                 or request.name not in READ_TOOLS or request.name not in SCHEMAS
                 or not isinstance(request.arguments, dict)):
             return {"ok": False, "error": "invalid_plan_invocation"}
+        # Validate the exact trusted legacy schema BEFORE durable dispatch.
+        # Extra model-supplied keys and invalid values must never create an
+        # uncertain M4 journal row or enter a tool adapter.
+        try:
+            validated = SCHEMAS[request.name].model_validate(
+                request.arguments).model_dump()
+        except (ValueError, TypeError):
+            return {"ok": False, "error": "invalid_arguments"}
+        if validated != request.arguments:
+            return {"ok": False, "error": "invalid_arguments"}
         if (request.tool_version != plan_tool_versions.LEGACY_PLAN_EXECUTOR_VERSION
                 and not (request.tool_version is None
                          and plan_tool_versions.LEGACY_PLAN_EXECUTOR_VERSION ==
