@@ -141,3 +141,21 @@ python -m evals.s25_05_step5_live --repeats 2 --cases mcp_reference_lookup,mcp_e
 ```
 
 MCP 需同时通过自然语言和显式对照；此次局部重测不替代完成后的一次全套真实模型回归。PR #33 继续 Draft，未获授权不合并。
+
+## Step 5 v4: 0/4 regression; conditional `oneOf` rolled back
+
+The actual `ollama_proxy/qwen3:14b` v4 MCP-only run failed **0/4**. Both natural and explicit requests (2 repeats each) returned `primary_v1_proposal_refused` with missing `schema_version` and `quote`. Previously working explicit MCP was broken, consistent with provider output/grammar incompatibility after adding root-level `oneOf` to the generation schema. **This does not prove which implementation layer (model or proxy decoder) omitted the keys.**
+
+Rollback: generation schema returns to the flat, working object shape, with no root `oneOf`; original strict `RouteSignal` validation remains unchanged.
+
+Controlled recovery: only a FRESH, not-pending Primary proposal with *specifically* `primary_route_pending_read_invalid` (model route and Pending read marker disagree) can trigger **one additional generation by the same Primary owner and same provider**, with sanitized schema feedback and the exact same output schema; the previous raw output is not replayed. Re-run the full strict validator, source evidence binding, and independent Host admission. A second invalid result remains a refusal, never an execution permission. Other invalid signals and verified Pending replies do **not** retry. This is an intentional narrowly scoped exception to the historic one-call policy and costs one extra model request only on this specific failure; no second semantic router, keyword match, or field auto-correction.
+
+Offline tests cover successful regeneration, repeated invalid fail-closed, no regeneration on unrelated schema violations or verified Pending, and flat root schema compatibility. Need current-HEAD CI and live-provider recheck. This may improve correctness but is not a guaranteed solution for unstable models.
+
+Focused rerun after updating branch:
+
+```powershell
+python -m evals.s25_05_step5_live --repeats 2 --cases mcp_reference_lookup,mcp_explicit_term --output artifacts\s25-05-step5-mcp-recovery-v5.json
+```
+
+Record both semantic and HTTP attempt counts; only actual successful tool call plus durable Attempt counts as pass. Do not merge the Draft PR until real-provider acceptance is established.
