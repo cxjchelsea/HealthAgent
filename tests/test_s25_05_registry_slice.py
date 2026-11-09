@@ -620,7 +620,7 @@ def test_b3b_verified_mcp_sends_call_only_after_catalog_validation(monkeypatch, 
     queue = queue_module.Queue()
 
     class Process:
-        stdin = Input()
+        stdin = None
         stdout = None
 
         def __init__(self, *args, **kwargs):
@@ -635,7 +635,7 @@ def test_b3b_verified_mcp_sends_call_only_after_catalog_validation(monkeypatch, 
                     continue
                 if item is None:
                     return
-                yield json.dumps(item) + "\\n"
+                yield json.dumps(item) + "\n"
 
         def poll(self):
             return None if not self.dead else -9
