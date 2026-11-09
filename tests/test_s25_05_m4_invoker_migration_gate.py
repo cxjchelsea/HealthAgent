@@ -61,3 +61,78 @@ def test_plan_version_does_not_authorize_ordinary_invoker_without_host_grant():
         granted_names=(), exposed_names=("calculate",),
         expected_version="1.0.0"))
     assert result == {"ok": False, "error": "permission_denied"}
+
+
+def test_plan_read_invoker_dispatch_lifecycle_and_all_supported_read_tools():
+    from agent.plan_read_invoker import PlanReadInvoker, PlanReadRequest
+    from agent.plan_intent import READ_TOOLS
+
+    calls = []
+
+    class Journal:
+        def begin(self, step_id, name, arguments, *, tool_version=None):
+            calls.append(("begin", step_id, name, tool_version))
+            return "dispatch-123"
+
+        def record_receipt(self, dispatch_id, result):
+            calls.append(("receipt", dispatch_id, result["ok"]))
+
+    def execute(name, arguments, tasks, clock=None, **kwargs):
+        calls.append(("execute", name))
+        return {"ok": True, "value": 42}
+
+    arguments = {
+        "calculate": {"expression": "19+23"},
+        "mcp_reference_lookup": {"term": "rag"},
+        "utc_time": {}, "list_tasks": {}, "recall_memory": {"key": "qa"},
+    }
+    assert set(arguments) == set(READ_TOOLS)
+    invoker = PlanReadInvoker(execute=execute)
+    for name, args in arguments.items():
+        calls.clear()
+        result = invoker.invoke(
+            PlanReadRequest(1, name, args, "legacy-plan-v1"),
+            execution_guard=lambda: calls.append(("guard",)) or True,
+            dispatch_journal=Journal())
+        assert result == {"ok": True, "value": 42}
+        assert calls == [
+            ("guard",),
+            ("begin", 1, name, "legacy-plan-v1"),
+            ("execute", name),
+            ("receipt", "dispatch-123", True),
+        ]
+
+
+def test_plan_read_invoker_rejects_without_dispatch_or_external_call(monkeypatch):
+    from agent import plan_tool_versions as versions
+    from agent.plan_read_invoker import PlanReadInvoker, PlanReadRequest
+
+    seen = []
+    class Journal:
+        def begin(self, *args, **kwargs):
+            seen.append("dispatch")
+            raise AssertionError("invalid plan must not begin a journal")
+    def execute(*args, **kwargs):
+        seen.append("execute")
+        raise AssertionError("invalid plan must not execute")
+    invoker = PlanReadInvoker(execute=execute)
+    invalid = [
+        PlanReadRequest(1, "create_task", {"title": "unauthorized"}, "legacy-plan-v1"),
+        PlanReadRequest(1, "calculate", {"expression": "19+23"}, "1.0.0"),
+        PlanReadRequest(0, "calculate", {"expression": "19+23"}, "legacy-plan-v1"),
+    ]
+    for request in invalid:
+        result = invoker.invoke(request, execution_guard=lambda: True,
+                                dispatch_journal=Journal())
+        assert result["ok"] is False
+    blocked = invoker.invoke(
+        PlanReadRequest(1, "calculate", {"expression": "19+23"},
+                        "legacy-plan-v1"),
+        execution_guard=lambda: False, dispatch_journal=Journal())
+    assert blocked == {"ok": False, "error": "plan_execution_guard_conflict"}
+    monkeypatch.setattr(versions, "LEGACY_PLAN_EXECUTOR_VERSION", "legacy-plan-v2")
+    legacy = invoker.invoke(
+        PlanReadRequest(1, "calculate", {"expression": "19+23"}, None),
+        execution_guard=lambda: True, dispatch_journal=Journal())
+    assert legacy["error"] == "plan_tool_version_mismatch"
+    assert seen == []
