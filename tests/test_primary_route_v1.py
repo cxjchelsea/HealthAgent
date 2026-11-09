@@ -675,3 +675,87 @@ def test_primary_generation_schema_keeps_root_object_for_ollama_proxy():
         RouteSignal.model_validate(signal(
             "ordinary_tool", "查询 RAG", effect_intent="read_only",
             pending_read_tool_name="mcp_reference_lookup"))
+
+
+def test_fresh_mcp_pending_field_conflict_regenerates_once_same_owner():
+    class ConflictedThenValid:
+        def __init__(self):
+            self.calls = 0
+            self.schemas = []
+
+        async def complete(self, *, model, messages, response_schema):
+            self.calls += 1
+            self.schemas.append(response_schema)
+            if self.calls == 1:
+                return json.dumps(signal(
+                    "ordinary_tool", "请通过 MCP 查询 RAG",
+                    effect_intent="read_only",
+                    pending_read_tool_name="mcp_reference_lookup"),
+                    ensure_ascii=False)
+            assert len(messages) == 3
+            assert "pending_read_tool_name may be non-null ONLY" in messages[1]["content"]
+            assert "pending_read_tool_name" not in messages[2]["content"]
+            return json.dumps(signal(
+                "ordinary_tool", "请通过 MCP 查询 RAG",
+                effect_intent="read_only"), ensure_ascii=False)
+
+    provider = ConflictedThenValid()
+    route = asyncio.run(propose_primary_route(
+        provider, "test", "请通过 MCP 查询 RAG", saved_plan_present=False))
+    assert route.route_kind == "ordinary_tool"
+    assert route.effect_intent == "read_only"
+    assert route.pending_read_tool_name is None
+    assert provider.calls == 2
+    assert provider.schemas[0] == provider.schemas[1]
+    assert "oneOf" not in provider.schemas[0]
+
+
+def test_fresh_mcp_pending_field_conflict_stays_denied_after_retry():
+    class AlwaysInvalid:
+        def __init__(self):
+            self.calls = 0
+
+        async def complete(self, *, model, messages, response_schema):
+            self.calls += 1
+            return json.dumps(signal(
+                "ordinary_tool", "请通过 MCP 查询 RAG",
+                effect_intent="read_only",
+                pending_read_tool_name="mcp_reference_lookup"),
+                ensure_ascii=False)
+
+    provider = AlwaysInvalid()
+    with pytest.raises(PrimaryRouteRejected, match="primary_route_invalid_signal") as exc:
+        asyncio.run(propose_primary_route(
+            provider, "test", "请通过 MCP 查询 RAG", saved_plan_present=False))
+    assert provider.calls == 2
+    assert exc.value.validation_issues == [{
+        "field": "root", "category": "primary_route_pending_read_invalid"}]
+
+
+def test_unrelated_bad_primary_and_verified_pending_never_retry():
+    class ProviderOnce:
+        def __init__(self, body):
+            self.calls = 0
+            self.body = body
+
+        async def complete(self, *, model, messages, response_schema):
+            self.calls += 1
+            return json.dumps(self.body, ensure_ascii=False)
+
+    bad_write = ProviderOnce(signal(
+        "ordinary_tool", "请查询 RAG",
+        effect_intent="mutation_requested"))
+    with pytest.raises(PrimaryRouteRejected, match="primary_route_invalid_signal"):
+        asyncio.run(propose_primary_route(
+            bad_write, "test", "请查询 RAG", saved_plan_present=False))
+    assert bad_write.calls == 1
+
+    verified = ProviderOnce(signal(
+        "clarify_response", "RAG",
+        pending_read_tool_name="mcp_reference_lookup"))
+    with pytest.raises(PrimaryRouteRejected, match="primary_route_invalid_signal"):
+        asyncio.run(propose_primary_route(
+            verified, "test", "RAG", saved_plan_present=False,
+            pending_action="mcp_reference_lookup",
+            pending_origin_verified=True, pending_question="查哪个术语？"))
+    assert verified.calls == 1
