@@ -68,3 +68,59 @@ def test_ordinary_read_gate_off_keeps_legacy_decision_semantics():
         require_ordinary_read_evidence=False,
     ).run("解释概念", execution_mode="read_only"))
     assert result["status"] == "completed"
+
+
+def test_saved_task_query_does_not_trigger_legacy_memory_early_return():
+    """Regression for actual Qwen case: '已保存的待办' was mistaken for memory."""
+    class Memory:
+        def list(self):
+            raise AssertionError("old memory substring shortcut must not run")
+
+    class Tasks:
+        def list(self):
+            return {"ok": True, "tasks": [{"title": "S25-05-独立验收事项"}]}
+
+    class Model:
+        def __init__(self):
+            self.calls = 0
+
+        async def decide(self, messages, tools):
+            self.calls += 1
+            names = {x["function"]["name"] for x in tools}
+            assert "list_tasks" in names
+            if self.calls == 1:
+                return Decision("", [{"id": "list_now", "name": "list_tasks",
+                                      "arguments": {}}])
+            return Decision("已读取实际待办列表", [])
+
+    model = Model()
+    result = asyncio.run(AgentLoop(
+        model, skill_strategy="all", memory_store=Memory(),
+        task_store=Tasks(), host_read_grants=("list_tasks",),
+        require_ordinary_read_evidence=True,
+    ).run("请从当前会话任务列表工具查询已保存的待办事项。",
+          execution_mode="read_only", include_evidence=True))
+    assert model.calls == 2
+    assert result["status"] == "completed"
+    assert result["termination_reason"] == "model_final"
+    assert any(x.get("type") == "tool" and x.get("name") == "list_tasks"
+               and x.get("ok") is True for x in result["trace"])
+    assert any(x["name"] == "list_tasks" for x in result["audit"])
+
+
+def test_legacy_memory_shortcut_remains_available_for_compatible_caller():
+    class Memory:
+        def list(self):
+            return [{"key": "qa-code", "value": "synthetic-value"}]
+
+    class NeverCalled:
+        async def decide(self, messages, tools):
+            raise AssertionError("legacy exact memory lookup should short-circuit")
+
+    result = asyncio.run(AgentLoop(
+        NeverCalled(), memory_store=Memory(),
+        require_ordinary_read_evidence=False,
+    ).run("你之前保存的 qa-code 是什么？", execution_mode="read_only"))
+    assert result["status"] == "completed"
+    assert any(x.get("type") == "memory_index_lookup"
+               for x in result["trace"])
