@@ -571,6 +571,11 @@ class AgentLoop:
         # Do not leave correctness to optional model tool choice.
         if (execution_mode != "respond_only"
                 and understanding_result is None
+                # A verified Primary/Host ordinary read must reach the actual
+                # tool loop. The old substring memory shortcut ("保存的")
+                # intercepted unrelated task reads before any model decision
+                # or Attempt could be recorded.
+                and not self.require_ordinary_read_evidence
                 and self.memory_store is not None and any(phrase in goal for phrase in (
                 "还记得", "记得我", "之前保存", "之前记住", "保存的",
                 "记住的", "测试偏好是什么", "测试偏好吗"))):
