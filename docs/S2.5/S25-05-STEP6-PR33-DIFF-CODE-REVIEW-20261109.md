@@ -70,3 +70,19 @@ Base：`main@b2a17593ec062b030933e25ca7a35a1f6025701b`
 - [ ] 仍需用户对 PR #33 的显式合并授权；保持 Draft，未合并。
 
 本次复审**未引入新的生产逻辑修改**。不因未经证实的 P3-01 猜测改动代码。
+
+## 外部 Cursor 独立复审发现与修复（2026-11-09）
+
+**裁决更新：** Cursor 对 `origin/main...999c725` 的独立只读复审识别出一项先前助手复审未覆盖的 **P1**，应当以此为准，不能继续沿用原报告“无已证实 P1”的历史结论。原复审是当时的证据快照，并非无条件通过。
+
+**P1：已准入的保存计划执行被记忆索引旧提前返回抢先截获。**
+
+- `agent/loop.py` 在版本围栏及 `PlanReadInvoker` 前，使用 `保存的`、`之前保存`、`还记得` 等关键词触发 `memory_index_lookup` 并 `status=completed`；此前新增的 `require_ordinary_read_evidence` 仅为普通只读请求启用，**不适用于** `plan_control=execute_first|resume`。
+- v1 HTTP 计划执行确实会传入 `memory_store`、`understanding_result=None` 和 `execution_mode=read_only`，因此存在已授权请求未进入 M4 Dispatch，却被标记为普通记忆查找完成的错误路径。
+- **最小整改**：当 `plan_control in {"execute_first", "resume"}` 时直接禁止旧关键词记忆索引快捷返回；不调整其它路由、Host 权限、Registry 或 Legacy 普通记忆查询。
+- **新增回归**：`tests/test_s25_05_step5_read_redecision.py`，包含 `memory_store`、用户原文 `请执行已保存的计划`、`execute_first` 与 `resume`；断言 PlanReadInvoker/M4 Journal 按计划工具调用并写 Receipt，没有 `memory_index_lookup`；历史未固定版本升级时仍要通过版本围栏拒绝，零 Dispatch。
+- **待验证项**：当前 HEAD 全量 CI 及后续建议的 Unified 真实 HTTP saved-plan 场景验证；不能将修复提交视为完整合并许可。
+
+Cursor 还标出两项 P2 设计风险：`LEGACY_PLAN_EXECUTOR_VERSION` 和 `UNVERSIONED_LEGACY_COMPATIBLE_VERSION` 需要在未来版本升级时严格区分；Saved-plan MCP 仍走 `StdioMCPClient.call` Legacy 路径，不是已经验证目录一致性的 Registry `call_trusted_reference`。这些不应在本轮 P1 修复中混入重新授权或工具协议重构。其余 P3 涉及 ordinary Attempt 先记 prepared 再校验、失败即收敛等取舍，暂不阻断本轮功能整改。
+
+**阶段性结论：** 外部审查的 `REQUEST CHANGES` 已接受，P1 代码整改和回归已提交，但必须拿到精确 HEAD CI 和复核后才能转为可合并状态。没有任何合并授权，PR #33 保持 open/unmerged。
