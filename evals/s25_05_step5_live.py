@@ -39,6 +39,14 @@ PLAN_CASES = (
     ("plan_resume", "继续执行已保存计划的剩余步骤。", None),
 )
 
+# Optional regression for the saved-plan memory-index early-return P1.
+# The old broad keywords would intercept both execution turns before M4.
+PLAN_MEMORY_PHRASE_CASES = (
+    ("plan_create", PLAN_CASES[0][1], "plan_created_pending_execution"),
+    ("plan_first", "请执行已保存的计划的第一步，其他步骤保持待执行。", None),
+    ("plan_resume", "请继续执行之前保存的计划的剩余步骤。", None),
+)
+
 
 def inspect_response(case_id, response, Session, cid, expected=None):
     """Independent ground truth from durable rows, not from model prose."""
@@ -144,7 +152,7 @@ def isolated_read_sessions(url):
         engine.dispose()
 
 
-def evaluate(repeats=1, case_ids=None):
+def evaluate(repeats=1, case_ids=None, *, plan_memory_phrase=False):
     if os.getenv("RUN_S25_05_LIVE") != "1":
         raise RuntimeError("RUN_S25_05_LIVE=1 is required for real-provider testing")
     if not 1 <= repeats <= 5:
@@ -159,6 +167,7 @@ def evaluate(repeats=1, case_ids=None):
     if selected - known:
         raise ValueError("unknown case ids: " + ",".join(sorted(selected - known)))
     records = []
+    active_plan_cases = PLAN_MEMORY_PHRASE_CASES if plan_memory_phrase else PLAN_CASES
     with tempfile.TemporaryDirectory(prefix="s25-05-live-") as directory:
         for repeat in range(repeats):
             dbpath = (Path(directory) / f"isolated-{repeat}.sqlite").resolve()
@@ -217,10 +226,10 @@ def evaluate(repeats=1, case_ids=None):
                         response.raise_for_status()
                     send(cid, case_id, prompt, expected)
 
-                if selected & {x[0] for x in PLAN_CASES}:
+                if selected & {x[0] for x in active_plan_cases}:
                     cid = client.post("/conversations").json()["id"]
                     creation = None
-                    for case_id, prompt, expected in PLAN_CASES:
+                    for case_id, prompt, expected in active_plan_cases:
                         if case_id not in selected:
                             continue
                         if case_id != "plan_create" and creation is not True:
@@ -255,9 +264,12 @@ def main():
     parser.add_argument("--output", default="artifacts/s25-05-step5-live.json")
     parser.add_argument("--repeats", type=int, default=1)
     parser.add_argument("--cases", default="", help="comma-separated case IDs")
+    parser.add_argument("--plan-memory-phrase", action="store_true",
+                        help="use saved-plan execution turns containing '保存的'/'之前保存的'")
     args = parser.parse_args()
     report = evaluate(args.repeats, [x.strip() for x in args.cases.split(",")
-                                    if x.strip()] or None)
+                                    if x.strip()] or None,
+                      plan_memory_phrase=args.plan_memory_phrase)
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
