@@ -7,8 +7,11 @@ def test_fresh_migration(tmp_path):
     assert migrate(url) == "fresh"
     engine, _ = database(url)
     with engine.connect() as connection:
-        assert connection.execute(text("select version_num from alembic_version")).scalar() == "0018_pending_expiry"
-        assert set(Base.metadata.tables).issubset(set(inspect(engine).get_table_names()))
+        assert connection.execute(text("select version_num from alembic_version")).scalar() == "0019_tool_versions"
+        inspector = inspect(engine)
+        assert set(Base.metadata.tables).issubset(set(inspector.get_table_names()))
+        assert "tool_version" in {c["name"] for c in inspector.get_columns("agent_attempts")}
+        assert "tool_version" in {c["name"] for c in inspector.get_columns("plan_tool_dispatches")}
     engine.dispose()
 
 def test_existing_database_stamped_without_losing_data(tmp_path):
