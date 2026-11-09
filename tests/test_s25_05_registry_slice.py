@@ -1085,6 +1085,7 @@ def test_http_saved_plan_binding_allows_first_then_resume(tmp_path, monkeypatch)
                 "completed", "pending"]
             assert len(entries) == 1
             assert entries[0].status == "checkpointed"
+            assert entries[0].tool_version is None  # M4 version not yet pinned
 
         resumed = client.post(f"/conversations/{cid}/agent/messages", json={
             "content": "继续执行已保存计划的剩余步骤",
@@ -1100,6 +1101,7 @@ def test_http_saved_plan_binding_allows_first_then_resume(tmp_path, monkeypatch)
             assert all(step["status"] == "completed" for step in snapshot["steps"])
             assert len(entries) == 2
             assert all(entry.status == "checkpointed" for entry in entries)
+            assert all(entry.tool_version is None for entry in entries)
 
 
 def test_tool_version_evidence_preserves_legacy_unknown_and_guarded_completion(tmp_path):
