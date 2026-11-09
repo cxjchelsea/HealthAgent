@@ -32,3 +32,13 @@ These are narrow scripted regression tests, **not** PostgreSQL concurrency/crash
 4. Only after independent review enable the saved-plan invoker by default. Do not migrate any write or Pending path in this work package.
 
 PR #33 remains Draft until separate user authorization.
+
+## Non-executing PlanInvocation slice (2026-11-09)
+
+`agent/plan_invocation.py` now provides `inspect_plan_invocations(checkpoint, control)` as a **pure structural inspection** of the current saved-plan checkpoint. It returns frozen descriptors (plan revision, step ID, control, tool name, canonical arguments digest, tool_version=None). It validates **all** pending tools/arguments, including later steps when `execute_first` was requested, before returning only the first binding.
+
+This object is NOT a Host-issued grant. It has no owner, Turn CAS, journal claim, API authorization or dispatch capability, and it does not invoke any tools. Historical checkpoint tool versions remain unknown, not guessed as the current Registry version. Ordinary `ReadInvocation` remains a distinct type. Existing `AgentLoop` plan and M4 pathways were not rewired.
+
+Tests assert snapshot binding/digests, no version invention, rejection of writes, invalid args, bad controls, exhausted plans, and invalid later steps. Exact-head CI is required to establish compatibility.
+
+**Next gate:** independent review of the Host Turn/owner/CAS + M4 journal service to design a genuinely Host-issued versioned plan execution permit, separate from this descriptive data model. Do not pass `PlanInvocation` directly into `OrdinaryReadInvoker`.
