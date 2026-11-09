@@ -10,6 +10,7 @@ from agent.decision import NativeToolDecision
 from agent.tools import TOOL_SCHEMAS, execute_tool
 from agent.tool_registry import READ_REGISTRY, ReadToolRuntime
 from agent.tool_invoker import OrdinaryReadInvoker, ReadInvocation
+from agent.plan_tool_versions import plan_versions_compatible
 from agent.skills import (exposed_tools, load_instructions, SKILL_VERSION,
                           select_tool_exposure, exposure_schemas, exposure_instructions, SEMANTIC_GUIDANCE)
 from agent.semantic_topk import select_read_tools
@@ -576,6 +577,16 @@ class AgentLoop:
         # model to recreate or revise it. A changed goal follows the ordinary loop.
         outstanding = [step for step in resumed.snapshot()
                        if step["status"] == "pending"]
+        if (plan_control in {"execute_first", "resume"} and outstanding
+                and not plan_versions_compatible(resumed.checkpoint(), plan_control)):
+            return {"run_id": run_id, "status": "partial",
+                    "answer": "已保存计划的工具执行版本不匹配，未执行任何步骤；请重新审核并建立计划。",
+                    "trace": [{"step": 0, "type": "plan_tool_version_fenced"}],
+                    "termination_reason": "plan_tool_version_mismatch",
+                    "steps": 0, "plan": resumed.snapshot(),
+                    "plan_revision": resumed.revision,
+                    "plan_checkpoint": resumed.checkpoint(),
+                    "prompt_version": PROMPT_VERSION}
         authorized_plan_run = (
             plan_control in {"execute_first", "resume"}
             and bool(outstanding)
@@ -600,7 +611,13 @@ class AgentLoop:
                 arguments = step["expected_arguments"]
                 dispatch_id = None
                 if self.dispatch_journal is not None:
-                    dispatch_id = self.dispatch_journal.begin(step["id"], name, arguments)
+                    version = step.get("tool_version")
+                    if version is None:
+                        dispatch_id = self.dispatch_journal.begin(
+                            step["id"], name, arguments)
+                    else:
+                        dispatch_id = self.dispatch_journal.begin(
+                            step["id"], name, arguments, tool_version=version)
                 result = execute_tool(
                     name, arguments, [],
                     self.clock, task_store=self.task_store,
