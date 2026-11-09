@@ -150,6 +150,7 @@ def test_http_primary_host_readonly_grant_and_attempt(tmp_path, monkeypatch, ena
                 assert len(rows) == 1
                 assert rows[0].tool_name == "text_stats"
                 assert rows[0].status == "succeeded"
+                assert rows[0].tool_version == "1.0.0"
                 import json
                 projection = json.loads(rows[0].result_projection)
                 assert projection == {"ok": True, "characters": 11, "words": 2}
@@ -1099,3 +1100,56 @@ def test_http_saved_plan_binding_allows_first_then_resume(tmp_path, monkeypatch)
             assert all(step["status"] == "completed" for step in snapshot["steps"])
             assert len(entries) == 2
             assert all(entry.status == "checkpointed" for entry in entries)
+
+
+def test_tool_version_evidence_preserves_legacy_unknown_and_guarded_completion(tmp_path):
+    from services.db import AgentAttempt, Conversation, Turn, database
+    from services.evidence_store import AttemptEvidenceStore, make_attempt
+    from sqlalchemy import select
+
+    _, Session = database(f"sqlite:///{tmp_path / 'version_provenance.db'}")
+    from services.db import Base
+    engine = Session.kw["bind"]
+    Base.metadata.create_all(engine)
+    with Session.begin() as db:
+        conversation = Conversation(owner_id="version-provenance-owner")
+        db.add(conversation)
+        db.flush()
+        turn = Turn(conversation_id=conversation.id, request_id="version-provenance-request")
+        db.add(turn)
+        db.flush()
+        cid, tid = conversation.id, turn.id
+    journal = AttemptEvidenceStore(cid, tid)
+
+    old = make_attempt("run-old", "calculate", {"expression": "1+2"},
+                       {"ok": True, "value": 3})
+    assert old["tool_version"] is None
+    with Session.begin() as db:
+        journal.save_in_session(db, [old])
+
+    current = make_attempt("run-new", "calculate", {"expression": "19+23"},
+                           {"ok": False, "error": "prepared"},
+                           tool_version="1.0.0")
+    journal.begin(Session, current)
+    current["status"] = "succeeded"
+    current["error_code"] = None
+    current["result_projection"] = {"ok": True, "value": 42}
+    journal.finish(Session, current)
+    with Session() as db:
+        rows = db.scalars(select(AgentAttempt).where(
+            AgentAttempt.conversation_id == cid)).all()
+        mapping = {row.id: row for row in rows}
+        assert mapping[old["attempt_id"]].tool_version is None
+        assert mapping[current["attempt_id"]].tool_version == "1.0.0"
+        assert mapping[current["attempt_id"]].status == "succeeded"
+
+    # A different version cannot finalize the already prepared attempt.
+    mismatched = make_attempt("run-other", "calculate", {"expression": "4+5"},
+                              {"ok": False, "error": "prepared"},
+                              tool_version="1.0.0")
+    journal.begin(Session, mismatched)
+    mismatched["tool_version"] = "2.0.0"
+    mismatched["status"] = "succeeded"
+    mismatched["result_projection"] = {"ok": True, "value": 9}
+    with pytest.raises(RuntimeError, match="attempt_outcome_conflict"):
+        journal.finish(Session, mismatched)
