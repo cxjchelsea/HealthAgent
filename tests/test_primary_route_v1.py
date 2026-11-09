@@ -656,39 +656,22 @@ def test_primary_pending_withdrawal_prompt_does_not_grant_write():
     assert "not the missing title" in _PRIMARY_SYSTEM
 
 
-def test_primary_generation_schema_forbids_pending_read_on_nonclarify_route():
-    # Verify the decoder contract itself, not just Pydantic validation after
-    # generation. In particular a model must not emit ordinary_tool together
-    # with a pending_read marker in the same JSON object.
+def test_primary_generation_schema_keeps_root_object_for_ollama_proxy():
+    """Root conditional oneOf caused missing schema_version/quote in real Qwen."""
     from agent.primary_route_v1 import primary_route_generation_schema
     from jsonschema import Draft202012Validator
 
     schema = primary_route_generation_schema("请通过 MCP 查询 RAG")
     Draft202012Validator.check_schema(schema)
-    validate = Draft202012Validator(schema)
-    ordinary = signal(
-        "ordinary_tool", "请通过 MCP 查询 RAG",
-        effect_intent="read_only", pending_read_tool_name=None)
-    assert validate.is_valid(ordinary)
-    assert not validate.is_valid({
-        **ordinary, "pending_read_tool_name": "mcp_reference_lookup"})
-    assert not validate.is_valid({
-        **ordinary, "pending_write_tool_name": "create_task"})
+    assert schema["type"] == "object"
+    assert "oneOf" not in schema
+    assert "schema_version" in schema["properties"]
+    assert "quote" in schema["properties"]
+    assert schema["properties"]["quote"]["const"] == "请通过 MCP 查询 RAG"
 
-    clarification = signal(
-        "clarify", "请通过 MCP 查询 RAG",
-        clarification_question="请说明需要查询的术语",
-        pending_read_tool_name="mcp_reference_lookup")
-    assert validate.is_valid(clarification)
-    assert not validate.is_valid({
-        **clarification, "route_kind": "ordinary_tool"})
-
-    # Verified Pending replies cannot mint a fresh missing-value marker.
-    pending_schema = primary_route_generation_schema(
-        "rag", pending_origin_verified=True)
-    assert validate.__class__(pending_schema).is_valid(
-        signal("clarify_response", "rag"))
-    assert not validate.__class__(pending_schema).is_valid(
-        signal("clarify_response", "rag",
-               pending_read_tool_name="mcp_reference_lookup"))
-
+    # Runtime validation, not model-output schema, is the authority for
+    # cross-field mutual exclusion and must remain fail-closed.
+    with pytest.raises(ValidationError):
+        RouteSignal.model_validate(signal(
+            "ordinary_tool", "查询 RAG", effect_intent="read_only",
+            pending_read_tool_name="mcp_reference_lookup"))
