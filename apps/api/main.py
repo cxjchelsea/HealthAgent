@@ -678,6 +678,7 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                 ordinary_attempt_journal=AttemptEvidenceStore(
                                     cid, turn_id),
                                 ordinary_attempt_session_factory=Session,
+                                require_ordinary_read_evidence=True,
                                 host_read_grants=approved_read_grants(
                                     host_disposition=v1_admission.disposition,
                                     host_route=primary_proposal.route_kind,
