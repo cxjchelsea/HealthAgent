@@ -76,3 +76,44 @@ def test_step5_live_evidence_requires_actual_durable_rows(tmp_path):
     assert no_tool["pass"] is True
     assert "safe text" not in str(no_tool)
     engine.dispose()
+
+
+def test_step5_evidence_reader_engine_disposed_on_success_and_failure(monkeypatch):
+    from evals import s25_05_step5_live as harness
+
+    engines = []
+    class Engine:
+        def __init__(self):
+            self.disposed = False
+        def dispose(self):
+            self.disposed = True
+    def factory(url):
+        engine = Engine()
+        engines.append(engine)
+        return engine, object()
+    monkeypatch.setattr(harness, "database", factory)
+
+    with harness.isolated_read_sessions("sqlite:///temporary.sqlite") as Session:
+        assert Session is not None
+        assert not engines[-1].disposed
+    assert engines[-1].disposed
+
+    with pytest.raises(RuntimeError, match="intentional"):
+        with harness.isolated_read_sessions("sqlite:///temporary.sqlite"):
+            raise RuntimeError("intentional")
+    assert len(engines) == 2
+    assert all(engine.disposed for engine in engines)
+
+
+def test_step5_temp_sqlite_can_be_removed_after_reader_pool_is_disposed(tmp_path):
+    from evals.s25_05_step5_live import isolated_read_sessions
+    from sqlalchemy import text
+    dbpath = tmp_path / "s25-05-windows-disposal.sqlite"
+    url = "sqlite:///" + dbpath.as_posix()
+    with isolated_read_sessions(url) as Session:
+        with Session() as db:
+            db.execute(text("CREATE TABLE acceptance_probe (id INTEGER)"))
+            db.commit()
+        assert dbpath.exists()
+    dbpath.unlink()
+    assert not dbpath.exists()
