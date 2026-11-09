@@ -1028,10 +1028,12 @@ def test_http_saved_plan_binding_gate_denies_before_dispatch(tmp_path, monkeypat
         assert dispatches == []
 
 
-def test_http_saved_plan_binding_allows_first_then_resume(tmp_path, monkeypatch):
+@pytest.mark.parametrize("versioned", [False, True])
+def test_http_saved_plan_binding_allows_first_then_resume(tmp_path, monkeypatch, versioned):
     import json
     import apps.api.main as api
     from agent.planning import PlanLedger
+    from agent.plan_tool_versions import pin_new_plan_checkpoint
     from services.db import ConversationPlan, PlanToolDispatch
 
     async def primary(*args, **kwargs):
@@ -1066,9 +1068,12 @@ def test_http_saved_plan_binding_allows_first_then_resume(tmp_path, monkeypatch)
              "expected_arguments": {"expression": "4*5"}},
         ])["ok"]
         _, Session = database(cfg.database_url)
+        checkpoint = (pin_new_plan_checkpoint(ledger.checkpoint())
+                      if versioned else ledger.checkpoint())
+        expected_version = "legacy-plan-v1" if versioned else None
         with Session.begin() as db:
             db.add(ConversationPlan(
-                conversation_id=cid, snapshot=json.dumps(ledger.checkpoint())))
+                conversation_id=cid, snapshot=json.dumps(checkpoint)))
 
         first = client.post(f"/conversations/{cid}/agent/messages", json={
             "content": "只执行已保存计划的第一步",
@@ -1085,7 +1090,7 @@ def test_http_saved_plan_binding_allows_first_then_resume(tmp_path, monkeypatch)
                 "completed", "pending"]
             assert len(entries) == 1
             assert entries[0].status == "checkpointed"
-            assert entries[0].tool_version is None  # M4 version not yet pinned
+            assert entries[0].tool_version == expected_version
 
         resumed = client.post(f"/conversations/{cid}/agent/messages", json={
             "content": "继续执行已保存计划的剩余步骤",
@@ -1101,7 +1106,7 @@ def test_http_saved_plan_binding_allows_first_then_resume(tmp_path, monkeypatch)
             assert all(step["status"] == "completed" for step in snapshot["steps"])
             assert len(entries) == 2
             assert all(entry.status == "checkpointed" for entry in entries)
-            assert all(entry.tool_version is None for entry in entries)
+            assert all(entry.tool_version == expected_version for entry in entries)
 
 
 def test_tool_version_evidence_preserves_legacy_unknown_and_guarded_completion(tmp_path):
