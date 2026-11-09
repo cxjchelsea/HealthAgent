@@ -23,15 +23,14 @@ Base：`main@b2a17593ec062b030933e25ca7a35a1f6025701b`
 
 未发现需要阻断合并的、已有复现依据的高严重度缺陷；权限、执行与存储边界的已知回归均有对应测试。
 
-### P2-01 — Primary 有界重试的触发条件比设计合同宽
+### P3-01 — Primary 格式重试条件可进一步提高可读性（非已证实缺陷）
 
-- **位置**：`agent/primary_route_v1.py` 中 `propose_primary_route`，条件 `any(item["category"] == "primary_route_pending_read_invalid" for item in issues)`。
-- **事实**：只要前 8 条安全的 Pydantic 错误中含该错误，即使**同时还有其他独立 Schema 错误**，仍会触发第二次完整模型生成。设计/文档表述是“仅在特定 Pending read 字段冲突时”触发；实际是“含该冲突时”触发。
-- **影响**：增加一次模型调用、延迟和诊断歧义；**不是授权绕过**，因为第二次输出仍会进行完整 `RouteSignal` 校验、quote 来源绑定和 Host 准入；不成功则拒绝。
-- **建议**：若要严格实现“仅一种错误”合同，将该条件改为“错误集合精确等于唯一 `primary_route_pending_read_invalid`”，并新增同一提案兼有 `schema_version` 缺失及 Pending 冲突时**不得重试**的回归。此改动改变模型调用策略，应独立测试后再合并。**此复审只记录发现，未修改代码**。
-- **优先级**：P2，建议合并前收紧或由维护者明确接受为有限调用成本债务；不应在没有真实模型复验时进行大规模路由重构。
+- **位置**：`agent/primary_route_v1.py` 中 `propose_primary_route`，`any(item["category"] == "primary_route_pending_read_invalid" for item in issues)`。
+- **复核事实**：`primary_route_pending_read_invalid` 由 Pydantic `@model_validator(mode="after")` 抛出。字段级错误（例如缺少 `schema_version`）通常会阻止后置 validator 执行；后置 validator 自身一次只抛出一个错误。因此不能从 `any(...)` 写法推断存在“其他独立 Schema 错误与此错误同时触发重试”的可达情况，先前怀疑**未被证明**。
+- **建议**：未来若调整校验器或合并多个错误来源，可增加多错误诊断测试并重新考察是否写成唯一错误集合检查。当前**不建议仅为该假设修改已通过真实模型的逻辑**。
+- **优先级**：P3/维护性提示，**不阻断合并**。
 
-### P2-02 — 版本兼容范围是 Legacy 执行器，不是自动迁移承诺
+### P2-01 — 版本兼容范围是 Legacy 执行器，不是自动迁移承诺
 
 - **位置**：`agent/plan_tool_versions.py`、`agent/plan_read_invoker.py`、`services/plan_dispatch.py`、`alembic/versions/0019_tool_versions.py`。
 - **事实**：完全未版本化的历史 Checkpoint 仍允许在当前 `legacy-plan-v1` 执行器兼容条件下运行；新计划步骤/Dispatch 显式标记 `legacy-plan-v1`，历史 Attempt/Dispatch 的版本可为 NULL。已有回归覆盖版本不匹配、混合、篡改和升级后的拒绝。
@@ -39,7 +38,7 @@ Base：`main@b2a17593ec062b030933e25ca7a35a1f6025701b`
 - **建议**：作为后续版本升级的必查项，并在发布变更说明保留。**不建议为了本期 05 补写历史版本**。
 - **优先级**：P2/已知设计债务，当前兼容策略下不构成已证实功能错误。
 
-### P2-03 — 受限模型重试仍增加成本与延迟
+### P2-02 — 受限模型重试仍增加成本与延迟
 
 - **位置**：`agent/primary_route_v1.py` 的 Schema 冲突重生成、`agent/loop.py` 的 ordinary read 无 Observation 重决策。
 - **事实**：MCP 自然语言调用在最后两轮测试中每轮记录 **5** 次 HTTP model attempts，显式为 **4** 次；整体端到端模型耗时中位数为 6070.5 ms。
@@ -62,13 +61,12 @@ Base：`main@b2a17593ec062b030933e25ca7a35a1f6025701b`
 
 ## 4. 合并门禁与下一步
 
-**代码复审裁决：CONDITIONAL APPROVAL FOR ENGINEERING CLOSEOUT（技术复审有条件通过），不是 GitHub Approved Review。**
+**代码复审裁决：ENGINEERING REVIEW PASSED WITH DOCUMENTED LIMITATIONS（技术代码复审通过，保留已知限制），不是 GitHub Approved Review。**
 
 - [x] 代码/授权关键边界二次核对，无已证实 P0/P1。
 - [x] 精确 HEAD CI 通过，完整真实模型 26/26。
-- [x] P2-01/P2-02/P2-03 已具体验证、分级并记录。
-- [ ] 合并前明确 **P2-01** 是收紧测试并验证，还是由维护者显式接受当前触发宽度。
+- [x] P2-01/P2-02（历史版本兼容与模型调用性能债务）记录；P3-01 为未经证实的维护性提示，不列入缺陷。
 - [ ] 请独立维护者或第二人审阅 PR（GitHub 当前没有 review）；必要时对 143 个提交的范围拆分审计，而非假定这一轮替代同行审查。
 - [ ] 仍需用户对 PR #33 的显式合并授权；保持 Draft，未合并。
 
-本次复审**未引入新的生产逻辑修改**。若处理 P2-01，应以最小代码+定向单元测试+最新 HEAD 全量 CI 为准。
+本次复审**未引入新的生产逻辑修改**。不因未经证实的 P3-01 猜测改动代码。
