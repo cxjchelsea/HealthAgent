@@ -709,3 +709,38 @@ def test_b3b_agentloop_fixed_mcp_registry_parity(enabled):
     assert len(observations) == 1 and observations[0]["ok"]
     assert observations[0]["term"] == "rag"
     assert ("tool_version" in observations[0]) is enabled
+
+
+def test_minimal_ordinary_invoker_is_fail_closed_and_version_bound():
+    from agent.tool_invoker import OrdinaryReadInvoker, ReadInvocation
+
+    invoker = OrdinaryReadInvoker()
+
+    def attempt(granted=(), exposed=("calculate",), version="1.0.0", arguments=None):
+        return invoker.invoke(ReadInvocation(
+            name="calculate",
+            arguments={"expression": "19+23"} if arguments is None else arguments,
+            granted_names=granted,
+            exposed_names=exposed,
+            expected_version=version,
+        ))
+
+    assert attempt()["error"] == "permission_denied"
+    assert attempt(granted=("calculate",), exposed=())["error"] == "tool_not_exposed"
+    assert attempt(granted=("calculate",), version=None)["error"] == "tool_version_mismatch"
+    assert attempt(granted=("calculate",), arguments={"expression": "1+2", "extra": True})["error"] == "invalid_arguments"
+    passed = attempt(granted=("calculate",))
+    assert passed["ok"] is True and passed["value"] == 42
+    assert passed["tool_name"] == "calculate"
+    assert passed["tool_version"] == "1.0.0"
+
+
+def test_minimal_invoker_does_not_authorize_write_tools():
+    from agent.tool_invoker import OrdinaryReadInvoker, ReadInvocation
+
+    result = OrdinaryReadInvoker().invoke(ReadInvocation(
+        name="create_task", arguments={"title": "unsafe"},
+        granted_names=("create_task",), exposed_names=("create_task",),
+        expected_version="1.0.0",
+    ))
+    assert result == {"ok": False, "error": "unknown_tool"}
