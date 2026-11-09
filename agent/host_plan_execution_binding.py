@@ -70,3 +70,26 @@ def bind_host_plan_execution(
         control=decision.plan_control,
         invocations=invocations,
     )
+
+
+def host_plan_binding_matches(
+    *, decision: PrimaryHostDecision,
+    owner_id: str, conversation_id: str, turn_id: str, request_id: str,
+    checkpoint_raw: str | None, checkpoint: dict | None,
+    expected_control: str,
+) -> bool:
+    """Additional Host-side rejection gate, NOT a durable execution permit."""
+    if checkpoint_raw is None or checkpoint is None:
+        return False
+    try:
+        bound = bind_host_plan_execution(
+            decision=decision, owner_id=owner_id,
+            conversation_id=conversation_id, turn_id=turn_id,
+            request_id=request_id, checkpoint_raw=checkpoint_raw,
+            checkpoint=checkpoint,
+        )
+    except (ValueError, TypeError, KeyError):
+        return False
+    return (bound.control == expected_control
+            and bound.plan_revision == checkpoint.get("revision")
+            and bool(bound.invocations))
