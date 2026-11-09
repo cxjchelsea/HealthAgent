@@ -852,6 +852,10 @@ class AgentLoop:
         # A bounded re-decision only for explicit saved-memory requests.
         recall_required = (execution_mode != "respond_only"
                            and understanding_result is None
+                           # Likewise, do not convert Host-admitted ordinary
+                           # reads into legacy memory retries based on a
+                           # substring such as "保存的" in the user's task.
+                           and not self.require_ordinary_read_evidence
                            and any(phrase in goal for phrase in (
             "还记得", "记得我", "之前保存", "之前记住", "保存的",
             "记住的", "测试偏好是什么", "测试偏好吗")))
