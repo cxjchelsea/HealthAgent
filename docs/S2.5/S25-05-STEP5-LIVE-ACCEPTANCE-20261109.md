@@ -106,3 +106,19 @@ python -m evals.s25_05_step5_live --repeats 2 --cases list_tasks,list_tasks_expl
 本地定向测试复现 `PermissionError [WinError 32]`，Windows 拒绝删除 `%TEMP%/s25-05-live-*/isolated-0.sqlite`。定位到验收工具自身创建的第二个 `database(settings.database_url)` 的独立 SQLAlchemy Engine 没有显式 `dispose()`；API 的 TestClient 生命周期仅关闭 API 持有的 Engine，不会自动释放这个证据读取 Engine。修复为在 `isolated_read_sessions` context manager 的 `finally` 中释放该池，保证其在 `TemporaryDirectory` 退出前释放。增加成功、异常和 SQLite 删除的离线测试。**此故障不属于模型/Host/Registry 失败，也没有产生有效的新 8-case 诊断报告。**
 
 更新到修复提交后运行同样的 4 个用例、2 次重复即可，不必清空或覆盖原始 `artifacts/`。如果再次出现锁文件异常，先检查是否有外部进程在使用临时数据库；不得直接删除还在使用中的 SQLite 文件。针对已经遗留且确认无进程使用的临时测试数据库，可在验收结束后人工清理；脚本不会自动清理其他旧临时目录。
+
+## Step 5 定向诊断与有限整改（2026-11-09）
+
+真实 `ollama_proxy/qwen3:14b` 定向对照：**2/8 PASS**。
+
+- `list_tasks` 两轮：Primary `ordinary_tool`，Host `allow/read_only`，但无工具 Trace/Attempt；显式 `list_tasks_explicit` 两轮均调用 `list_tasks`，Attempt version `1.0.0`。因此权限和 Registry Adapter 正常，失败在模型首次工具决策。
+- `mcp_reference_lookup` 两轮：Primary `clarify` / Host `primary_v1_clarification_required`，但自然语言已包含查询对象 RAG，属于主语义误澄清。 `mcp_explicit_term` 两轮：`primary_route_invalid_signal`；原诊断 **未捕获安全 schema issue 字段**，不能断言具体格式错误。
+- 同一批中 Host 和 Adapter 均未出现越权执行，不能据此推断 MCP 后端错误。
+
+已进行针对性整改：
+1. HTTP Unified 主路由准入 ordinary/read_only 时，`AgentLoop` 若无任何工具 Observation，**仅重决策一次**，仍不调用则返回 `ordinary_read_unverified`、不把未核实答案记为完成；不硬编码选择 `list_tasks` 或任何关键词，不改变 Registry/Host 授权，也不影响直接 Legacy 调用。增加单元回归。
+2. Primary 系统提示增强“新检索已提供具体术语”与“确实缺少术语”的对比；不绑定 RAG 字符串，不允许绕过原 Schema/Host 校验。
+3. 验收 JSON 增加已由 `safe_route_validation_issues` 白名单化的 `validation_issues` 字段，用于定位显式 MCP 失败，不存放模型原始响应。
+4. 后续 **只重复失败的 4 类场景**，不将自动化 CI 通过冒称真实模型重新通过。
+
+*验收裁决*: 代码修复需精确 HEAD CI，真实 Qwen 故障仍需新报告复验。保留 PR #33 Draft，未授权合并。
