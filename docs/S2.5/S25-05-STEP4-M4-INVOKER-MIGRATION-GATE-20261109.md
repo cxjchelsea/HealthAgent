@@ -82,3 +82,29 @@ Guarded API Host newly authored checkpoints now get `tool_version` on every plan
 **Scope:** No `OrdinaryReadInvoker` migration, no write-tool authorization expansion and no claim of exactly-once external effect. Version checks are strict for version-pinned plans but not retroactive for existing legacy plans.
 
 Acceptance gates: exact-head CI, first/resume HTTP with newly created Host-pinned checkpoints, PostgreSQL dispatch version persistence and crash/recovery tests, plus historical data review. PR remains Draft.
+
+## Version-upgrade and recovery hardening (2026-11-09)
+
+The pre-versioned plan compatibility is now explicitly limited to the original
+`UNVERSIONED_LEGACY_COMPATIBLE_VERSION = "legacy-plan-v1"`. As soon as the
+running `LEGACY_PLAN_EXECUTOR_VERSION` is bumped, unversioned checkpoints
+are **fenced before tool dispatch** (both Host admission and AgentLoop).
+They must be manually reviewed/recreated; the system does not silently pin
+them to a new version. A version-pinned old checkpoint also fails closed
+on an incompatible version bump.
+
+In the *offline* M4 `reconcile_verified_receipts` path, a persisted observed
+dispatch must carry the **exact same nullable tool version** as the checkpoint
+step before it may mark a step completed. The normal M4
+`checkpoint_in_session` applies the same exact equality, including rejecting
+versionless receipts for version-pinned steps. Quarantine still never replays.
+
+PostgreSQL subprocess crash verification now exercises both legacy unversioned
+and pinned `legacy-plan-v1` dispatches, with/without a receipt, and a
+tampered-version challenge before offline reconciliation. This is not
+external-effect exactly-once proof. Tests also simulate an executor version
+upgrade and verify zero M4 dispatch.
+
+No automatic historical version backfill, permission change, or M4-to-Registry
+dispatch migration is part of this slice. CI result for exact HEAD remains
+the next acceptance gate.
