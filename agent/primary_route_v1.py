@@ -703,27 +703,6 @@ def primary_route_generation_schema(message: str, *,
                 "type": "null",
                 "description": "Verified Pending origin belongs to Host; this reply cannot propose new write or pending authority",
             }
-    else:
-        # Route-conditional OUTPUT grammar, not a guessed route or a rewrite.
-        # The flat optional marker is semantically valid only for NEW
-        # clarifications. Ollama's constrained JSON generator previously
-        # produced ordinary_tool with a non-null Pending marker, correctly
-        # rejected by RouteSignal. Enforce the same invariant while decoding
-        # rather than piling on natural-language prompt instructions.
-        schema.setdefault("oneOf", []).extend([
-            {
-                "properties": {"route_kind": {"const": "clarify"}},
-                "required": ["route_kind"],
-            },
-            {
-                "properties": {
-                    "route_kind": {"not": {"const": "clarify"}},
-                    "pending_read_tool_name": {"type": "null"},
-                    "pending_write_tool_name": {"type": "null"},
-                },
-                "required": ["route_kind"],
-            },
-        ])
     return schema
 
 
