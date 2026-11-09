@@ -100,3 +100,9 @@ python -m evals.s25_05_step5_live --repeats 2 --cases list_tasks,list_tasks_expl
 判定规则：若原提示失败、显式提示成功且 Primary route 不同，优先集中整改主语义 Tool-or-Respond/Clarify 提示与对照评测；若 Primary ordinary/read_only/Host allow 但无调用，检查 AgentLoop 工具曝光、决策及工具调用；若 Host restrict/deny，检查准入事实。只有确认实际根因后才修改生产路由。**不能将只含 4 组的局部复验视为完整 Step 5 通过**。
 
 保持 Draft，不合并，不默认开启。
+
+## Windows 临时 SQLite 清理故障整改（2026-11-09）
+
+本地定向测试复现 `PermissionError [WinError 32]`，Windows 拒绝删除 `%TEMP%/s25-05-live-*/isolated-0.sqlite`。定位到验收工具自身创建的第二个 `database(settings.database_url)` 的独立 SQLAlchemy Engine 没有显式 `dispose()`；API 的 TestClient 生命周期仅关闭 API 持有的 Engine，不会自动释放这个证据读取 Engine。修复为在 `isolated_read_sessions` context manager 的 `finally` 中释放该池，保证其在 `TemporaryDirectory` 退出前释放。增加成功、异常和 SQLite 删除的离线测试。**此故障不属于模型/Host/Registry 失败，也没有产生有效的新 8-case 诊断报告。**
+
+更新到修复提交后运行同样的 4 个用例、2 次重复即可，不必清空或覆盖原始 `artifacts/`。如果再次出现锁文件异常，先检查是否有外部进程在使用临时数据库；不得直接删除还在使用中的 SQLite 文件。针对已经遗留且确认无进程使用的临时测试数据库，可在验收结束后人工清理；脚本不会自动清理其他旧临时目录。
