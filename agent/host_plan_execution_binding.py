@@ -10,6 +10,7 @@ from dataclasses import dataclass
 
 from agent.plan_invocation import PlanInvocation, inspect_plan_invocations
 from agent.primary_host_admission_v1 import PrimaryHostDecision
+from agent.plan_tool_versions import plan_versions_compatible
 
 
 @dataclass(frozen=True)
@@ -80,6 +81,8 @@ def host_plan_binding_matches(
 ) -> bool:
     """Additional Host-side rejection gate, NOT a durable execution permit."""
     if checkpoint_raw is None or checkpoint is None:
+        return False
+    if not plan_versions_compatible(checkpoint, expected_control):
         return False
     try:
         bound = bind_host_plan_execution(
