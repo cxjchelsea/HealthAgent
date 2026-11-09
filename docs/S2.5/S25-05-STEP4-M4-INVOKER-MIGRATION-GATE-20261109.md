@@ -42,3 +42,11 @@ This object is NOT a Host-issued grant. It has no owner, Turn CAS, journal claim
 Tests assert snapshot binding/digests, no version invention, rejection of writes, invalid args, bad controls, exhausted plans, and invalid later steps. Exact-head CI is required to establish compatibility.
 
 **Next gate:** independent review of the Host Turn/owner/CAS + M4 journal service to design a genuinely Host-issued versioned plan execution permit, separate from this descriptive data model. Do not pass `PlanInvocation` directly into `OrdinaryReadInvoker`.
+
+## Host-bound plan execution descriptor (2026-11-09)
+
+Added `agent/host_plan_execution_binding.py` with `bind_host_plan_execution` for a **non-executing** Host-admitted plan descriptor. Inputs include a `PrimaryHostDecision`, trustworthy owner/conversation/Turn/request identifiers from the API Host, and the exact serialized pre-Turn checkpoint. It requires `allow/read_only` with matching `plan_execute_first` or `plan_resume` control and known Host reason, checks the parsed raw snapshot against the checkpoint, and produces a SHA-256 digest of the **raw snapshot** plus validated step binding digests. Historical tool versions remain unknown. It rejects mismatched route/control, missing identity, malformed snapshot and invalid step arguments.
+
+**Security boundary:** The Python dataclass is *not a bearer token, cryptographic signature, authenticated identity or self-sufficient capability*. Any in-process caller could construct it. The only permissible future construction point is the trusted API Host after owner-scoped Turn creation and deterministic admission; the existing durable snapshot claim, Turn CAS, M4 dispatch journal and checkpoint checks are still required at actual execution. Do not pass an object from clients, model output or a restored checkpoint as an already-approved permit.
+
+The builder is not yet called by the API or AgentLoop. This slice changes no production routing or effects; next gate is mapping the exact production Host handoff and DB ownership/CAS before a separately gated integration.
