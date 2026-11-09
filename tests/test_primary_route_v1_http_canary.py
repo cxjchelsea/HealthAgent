@@ -583,3 +583,76 @@ def test_primary_bound_cancel_accepts_nonlegacy_plan_noun_with_host_and_cas(
         _, Session = database(cfg.database_url)
         with Session() as db:
             assert db.get(ConversationPlan, cid) is None
+
+
+def test_canary_admitted_saved_plan_with_memory_phrase_reaches_m4(tmp_path, monkeypatch):
+    """P1: actual HTTP Host -> bound plan -> M4 despite '已保存的' substring."""
+    from sqlalchemy import select
+    from services.db import PlanToolDispatch
+
+    first_text = "请执行已保存的计划的第一步，其他步骤保持待执行。"
+    resume_text = "请继续执行之前保存的计划的剩余步骤。"
+    route_calls = []
+
+    async def route(*args, **kwargs):
+        content = args[2]
+        route_calls.append(content)
+        if not kwargs["saved_plan_present"]:
+            return bound_create()
+        if content == first_text:
+            kind, scope, quote = "plan_execute_first", "first_step", "第一步"
+        elif content == resume_text:
+            kind, scope, quote = "plan_resume", "remaining_steps", "剩余步骤"
+        else:
+            raise AssertionError("unexpected saved-plan route")
+        return bind_route_signal(RouteSignal.model_validate({
+            "schema_version": "primary-route-v1",
+            "route_kind": kind, "quote": quote,
+            "execution_scope": scope, "effect_intent": "read_only",
+        }), content, saved_plan_present=True, pending_action=None)
+
+    monkeypatch.setattr("apps.api.main.propose_primary_route", route)
+    cfg = settings(tmp_path)
+    with TestClient(create_app(cfg)) as client:
+        cid = client.post("/conversations").json()["id"]
+        # Populate a real user-scoped MemoryStore. Before the fix, the read
+        # shortcut would return its index and skip PlanReadInvoker completely.
+        stored = client.put("/memories/p1-synthetic-key",
+                            json={"value": "synthetic-only"})
+        assert stored.status_code == 200, stored.text
+
+        def send(content, request_id):
+            response = client.post(f"/conversations/{cid}/agent/messages",
+                json={"content": content, "client_request_id": request_id})
+            assert response.status_code == 200, response.text
+            return response.json()
+
+        created = send(CREATE, "p1-memory-create")
+        assert created["termination_reason"] == "plan_created_pending_execution"
+        first = send(first_text, "p1-memory-first")
+        assert first["status"] == "partial"
+        assert first["termination_reason"] == "pending_plan_steps"
+        assert [step["status"] for step in first["plan"]] == ["completed", "pending"]
+        assert not any(x["type"] == "memory_index_lookup" for x in first["trace"])
+        _, Session = database(cfg.database_url)
+        with Session() as db:
+            dispatched = list(db.scalars(select(PlanToolDispatch).where(
+                PlanToolDispatch.conversation_id == cid)))
+            assert len(dispatched) == 1
+            assert dispatched[0].status == "checkpointed"
+            assert dispatched[0].tool_version == "legacy-plan-v1"
+
+        resumed = send(resume_text, "p1-memory-resume")
+        assert resumed["status"] == "completed"
+        assert resumed["termination_reason"] == "plan_execution_completed"
+        assert [step["status"] for step in resumed["plan"]] == [
+            "completed", "completed"]
+        assert not any(x["type"] == "memory_index_lookup" for x in resumed["trace"])
+        with Session() as db:
+            dispatched = list(db.scalars(select(PlanToolDispatch).where(
+                PlanToolDispatch.conversation_id == cid)))
+            assert len(dispatched) == 2
+            assert all(x.status == "checkpointed"
+                       and x.tool_version == "legacy-plan-v1"
+                       for x in dispatched)
+    assert route_calls == [CREATE, first_text, resume_text]
