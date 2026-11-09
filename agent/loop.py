@@ -11,6 +11,7 @@ from agent.tools import TOOL_SCHEMAS, execute_tool
 from agent.tool_registry import READ_REGISTRY, ReadToolRuntime
 from agent.tool_invoker import OrdinaryReadInvoker, ReadInvocation
 from agent.plan_tool_versions import plan_versions_compatible
+from agent.plan_read_invoker import PlanReadInvoker, PlanReadRequest
 from agent.skills import (exposed_tools, load_instructions, SKILL_VERSION,
                           select_tool_exposure, exposure_schemas, exposure_instructions, SEMANTIC_GUIDANCE)
 from agent.semantic_topk import select_read_tools
@@ -609,21 +610,19 @@ class AgentLoop:
                     break
                 name = step["expected_tool"]
                 arguments = step["expected_arguments"]
-                dispatch_id = None
-                if self.dispatch_journal is not None:
-                    version = step.get("tool_version")
-                    if version is None:
-                        dispatch_id = self.dispatch_journal.begin(
-                            step["id"], name, arguments)
-                    else:
-                        dispatch_id = self.dispatch_journal.begin(
-                            step["id"], name, arguments, tool_version=version)
-                result = execute_tool(
-                    name, arguments, [],
-                    self.clock, task_store=self.task_store,
+                result = PlanReadInvoker(execute=execute_tool).invoke(
+                    PlanReadRequest(step_id=step["id"], name=name,
+                                    arguments=arguments,
+                                    tool_version=step.get("tool_version")),
+                    execution_guard=guard, dispatch_journal=self.dispatch_journal,
+                    clock=self.clock, task_store=self.task_store,
                     memory_store=self.memory_store, mcp_client=self.mcp_client)
-                if dispatch_id is not None:
-                    self.dispatch_journal.record_receipt(dispatch_id, result)
+                if result.get("error") in {
+                        "plan_execution_guard_conflict", "plan_tool_version_mismatch",
+                        "invalid_plan_invocation"}:
+                    trace.append({"step": len(trace) + 1,
+                                  "type": "plan_execution_guard_conflict"})
+                    break
                 resumed.observe(name, result, arguments)
                 # Preserve only the bounded, tool-observed output for delivery.
                 # Never synthesize results for previously completed steps.
