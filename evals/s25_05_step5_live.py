@@ -66,6 +66,16 @@ def inspect_response(case_id, response, Session, cid, expected=None):
         checkpoint = json.loads(plan.snapshot) if plan else None
     own = [x for x in attempts if x.tool_name == expected] if expected else []
     reason = data.get("termination_reason")
+    # The API already sanitizes validation diagnostics to whitelisted field
+    # names and fixed Pydantic error categories. Store only those safe enums.
+    raw_issues = data.get("primary_v1_validation_issues") or []
+    safe_issues = [
+        {"field": issue["field"], "category": issue["category"]}
+        for issue in raw_issues[:8]
+        if isinstance(issue, dict)
+        and isinstance(issue.get("field"), str)
+        and isinstance(issue.get("category"), str)
+    ]
     passed = response.status_code == 200
     if case_id in {"text_stats", "calculate", "utc_time", "list_tasks", "list_tasks_explicit", "mcp_reference_lookup", "mcp_explicit_term", "recall_memory"}:
         passed = passed and expected in tools and any(
@@ -110,6 +120,7 @@ def inspect_response(case_id, response, Session, cid, expected=None):
             "primary_route": primary, "host_disposition": admission.get("disposition"),
             "host_reason": admission.get("reason"),
             "refusal_code": data.get("primary_v1_refusal_code"),
+            "validation_issues": safe_issues,
             "called_tools": [x.get("name") for x in events],
             "successful_tools": tools,
             "attempt_count": len(attempts), "dispatch_count": len(dispatches),
