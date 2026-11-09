@@ -571,6 +571,10 @@ class AgentLoop:
         # Do not leave correctness to optional model tool choice.
         if (execution_mode != "respond_only"
                 and understanding_result is None
+                # An admitted saved-plan control always takes precedence over
+                # legacy substring memory shortcuts. Otherwise a request like
+                # "请执行已保存的计划" can falsely finish without an M4 dispatch.
+                and plan_control not in {"execute_first", "resume"}
                 # A verified Primary/Host ordinary read must reach the actual
                 # tool loop. The old substring memory shortcut ("保存的")
                 # intercepted unrelated task reads before any model decision
