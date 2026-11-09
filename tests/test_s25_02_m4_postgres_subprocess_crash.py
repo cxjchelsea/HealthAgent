@@ -15,15 +15,18 @@ import pytest
 from sqlalchemy import delete, select
 from services.db import (Conversation, ConversationPlan, Message, Turn,
                          PlanExecutionClaim, PlanToolDispatch, PlanRecoveryAudit, database)
-from services.m4_offline_recovery import quarantine, reconcile_verified_receipts
+from services.m4_offline_recovery import RecoveryRefused, quarantine, reconcile_verified_receipts
 
 
 @pytest.mark.skipif(not os.getenv("TEST_POSTGRES_URL"),
                     reason="requires isolated TEST_POSTGRES_URL")
 @pytest.mark.parametrize("receipt_written", [False, True])
 @pytest.mark.parametrize("versioned", [False, True])
+@pytest.mark.parametrize("tamper_version", [False, True])
 def test_real_subprocess_crash_postgres_durable_dispatch_recovery(
-        tmp_path, receipt_written, versioned):
+        tmp_path, receipt_written, versioned, tamper_version):
+    if tamper_version and not receipt_written:
+        pytest.skip("version-bound receipt reconciliation requires an observed receipt")
     url = os.environ["TEST_POSTGRES_URL"]
     assert url.startswith("postgresql"), "physical acceptance requires PostgreSQL"
     engine, Session = database(url)
@@ -98,6 +101,25 @@ os._exit(73)
             assert journal[0].tool_version == (
                 "legacy-plan-v1" if versioned else None)
             assert json.loads(db.get(ConversationPlan, cid).snapshot)["steps"][0]["status"] == "pending"
+        if tamper_version:
+            # Corrupt-version challenge: the observed receipt cannot complete
+            # a step with mismatched checkpoint version.
+            with Session.begin() as db:
+                row = db.scalar(select(PlanToolDispatch).where(
+                    PlanToolDispatch.conversation_id == cid))
+                row.tool_version = "legacy-plan-v2" if versioned else "legacy-plan-v1"
+            with pytest.raises(RecoveryRefused, match="receipt_binding_mismatch"):
+                reconcile_verified_receipts(
+                    database_url=url, conversation_id=cid, turn_id=tid,
+                    snapshot_sha256=hashlib.sha256(snapshot.encode()).hexdigest(),
+                    evidence_file=evidence_path, operator_id="ci-test-operator")
+            with Session.begin() as db:
+                row = db.scalar(select(PlanToolDispatch).where(
+                    PlanToolDispatch.conversation_id == cid))
+                assert row.status == "observed"
+                assert json.loads(db.get(ConversationPlan, cid).snapshot)[
+                    "steps"][0]["status"] == "pending"
+                row.tool_version = "legacy-plan-v1" if versioned else None
         action = reconcile_verified_receipts if receipt_written else quarantine
         outcome = action(database_url=url, conversation_id=cid, turn_id=tid,
                          snapshot_sha256=hashlib.sha256(snapshot.encode()).hexdigest(),
