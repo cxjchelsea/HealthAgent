@@ -40,12 +40,11 @@ def inspect_plan_invocations(
     pending = [step for step in ledger.snapshot() if step["status"] == "pending"]
     if not pending:
         raise ValueError("plan_has_no_pending_steps")
-    selected = pending[:1] if control == "execute_first" else pending
     result = []
-    for step in selected:
+    for step in pending:
         name = step.get("expected_tool")
         args = step.get("expected_arguments")
-        if name not in READ_TOOLS or not isinstance(args, dict):
+        if not isinstance(name, str) or name not in READ_TOOLS or not isinstance(args, dict):
             raise ValueError("invalid_plan_binding")
         if name not in SCHEMAS:
             raise ValueError("invalid_plan_binding")
@@ -60,4 +59,4 @@ def inspect_plan_invocations(
             tool_name=name,
             arguments_digest=arguments_digest(validated),
         ))
-    return tuple(result)
+    return tuple(result[:1] if control == "execute_first" else result)
