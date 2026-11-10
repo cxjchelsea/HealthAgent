@@ -48,14 +48,16 @@ class PlanDispatchJournal:
         # legacy receipts with only ok/error/value remain readable.
         from services.evidence_store import bounded_projection
         with self.sessions.begin() as db:
-            # Before altering the recorded outcome, reject any generation
-            # revoked by operator recovery or superseded by another Turn.
+            entry = db.execute(select(PlanToolDispatch).where(
+                PlanToolDispatch.id == dispatch_id
+            ).with_for_update()).scalar_one_or_none()
+            if not entry or entry.turn_id != self.turn_id or entry.status != "dispatch_unknown":
+                raise DispatchConflict("dispatch_not_current")
+            # Lock order: Dispatch → Fence, consistent with operator
+            # reconciliation. A revoked worker can never save its receipt.
             assert_dependency_fence_in_session(
                 db, conversation_id=self.conversation_id,
                 turn_id=self.turn_id, fence=fence)
-            entry = db.get(PlanToolDispatch, dispatch_id)
-            if not entry or entry.turn_id != self.turn_id or entry.status != "dispatch_unknown":
-                raise DispatchConflict("dispatch_not_current")
             bounded = bounded_projection(entry.tool_name, observation)
             # Retain the historical receipt's bounded error field and the
             # string value convention expected by legacy offline recovery.
