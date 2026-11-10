@@ -63,7 +63,9 @@ class PlanDispatchJournal:
             entry = db.execute(select(PlanToolDispatch).where(
                 PlanToolDispatch.id == dispatch_id
             ).with_for_update()).scalar_one_or_none()
-            if not entry or entry.turn_id != self.turn_id or entry.status != "dispatch_unknown":
+            if (not entry or entry.conversation_id != self.conversation_id
+                    or entry.turn_id != self.turn_id
+                    or entry.status != "dispatch_unknown"):
                 raise DispatchConflict("dispatch_not_current")
             # Legacy M4 dispatches have no generation and must not inherit
             # an unrelated S25-06 fence. A generation-bound dispatch always
