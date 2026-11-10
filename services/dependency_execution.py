@@ -188,6 +188,12 @@ def checkpoint_dependency_step_in_session(
             or dispatch.tool_version != binding.tool_version
             or dispatch.status != "observed"):
         _deny("dependency_execution_receipt_conflict")
+    if dispatch.worker_generation is not None and (
+            fence is None
+            or fence.generation != dispatch.worker_generation
+            or hashlib.sha256(fence.secret.encode("utf-8")).hexdigest()
+               != dispatch.worker_token_digest):
+        _deny("dependency_worker_fenced")
     try:
         actual = json.loads(dispatch.arguments_json)
     except (ValueError, TypeError):
