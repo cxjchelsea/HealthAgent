@@ -716,7 +716,9 @@ _PRIMARY_MCP_FOCUSED_SYSTEM = (
 
 def primary_route_generation_schema(message: str, *,
                                     pending_origin_verified: bool = False,
-                                    dependency_plan_enabled: bool = False) -> dict:
+                                    dependency_plan_enabled: bool = False,
+                                    saved_plan_present: bool = False,
+                                    pending_action_present: bool = False) -> dict:
     """Constrain generation, never rewrite or authorize a model proposal.
 
     For a short request the whole request is already a unique source span.
@@ -726,8 +728,11 @@ def primary_route_generation_schema(message: str, *,
     route_kind: a user can withdraw or change a Pending request.
     """
     schema = RouteSignal.model_json_schema()
-    if not dependency_plan_enabled:
-        # Do not expose the Slice E proposal to existing Primary generations.
+    if (not dependency_plan_enabled or saved_plan_present
+            or pending_origin_verified or pending_action_present):
+        # Only advertise the new payload for a fresh, unencumbered Turn.
+        # Even if the caller misconfigures the experimental flag, never
+        # advertise it on saved-plan and pending-origin conversations.
         schema["properties"].pop("dependency_plan", None)
     if 1 <= len(message) <= 400:
         schema["properties"]["quote"] = {
@@ -776,8 +781,11 @@ async def propose_primary_route(provider, model: str, message: str, *,
     # A separate trailing system instruction is used ONLY for a verified
     # Pending context. It is adjacent to the current request in the model
     # context; it does not add a second model invocation or post-hoc route edit.
+    effective_dependency_creation = (
+        dependency_plan_enabled and not saved_plan_present
+        and pending_action is None and not pending_origin_verified)
     messages = [{"role": "system", "content": _PRIMARY_SYSTEM}]
-    if dependency_plan_enabled and not saved_plan_present and not pending_origin_verified:
+    if effective_dependency_creation:
         messages.append({"role": "system", "content": (
             "S25-06 EXPERIMENTAL dependent plan creation: when the user explicitly "
             "requests saving a multi-step read-only plan with a real data dependency, "
@@ -804,7 +812,9 @@ async def propose_primary_route(provider, model: str, message: str, *,
     generation_schema = primary_route_generation_schema(
         message, pending_origin_verified=bool(
             pending_action and pending_origin_verified),
-        dependency_plan_enabled=dependency_plan_enabled)
+        dependency_plan_enabled=effective_dependency_creation,
+        saved_plan_present=saved_plan_present,
+        pending_action_present=pending_action is not None)
     raw = await provider.complete(
         model=model, messages=messages, response_schema=generation_schema)
     try:
@@ -858,4 +868,4 @@ async def propose_primary_route(provider, model: str, message: str, *,
         signal, message, saved_plan_present=saved_plan_present,
         pending_action=pending_action, pending_origin_verified=pending_origin_verified,
         saved_step_count=saved_step_count,
-        dependency_plan_enabled=dependency_plan_enabled)
+        dependency_plan_enabled=effective_dependency_creation)
