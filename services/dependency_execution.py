@@ -174,24 +174,59 @@ def checkpoint_dependency_step_in_session(
             or arguments_digest(actual) != binding.arguments_digest):
         _deny("dependency_execution_receipt_conflict")
     receipt = _strict_receipt(dispatch.receipt_json)
+    definition_field = bounded_projection(binding.tool_name, receipt)
     if binding.tool_name == "mcp_reference_lookup":
+        binding_template = matches[0].get("argument_bindings")
+        term = (binding_template.get("term")
+                if type(binding_template) is dict else None)
         if (binding.source_dispatch_id is not None
+                or matches[0].get("depends_on") != []
+                or type(term) is not dict or term.get("kind") != "literal"
+                or actual != {"term": term.get("value")}
                 or type(receipt.get("definition")) is not str
                 or not receipt["definition"]
+                or definition_field.get("definition") != receipt["definition"]
                 or receipt.get("definition_availability") == "truncated"):
             _deny("dependency_untrusted_observation")
     elif binding.tool_name == "text_stats":
+        template = matches[0].get("argument_bindings")
+        text_binding = (template.get("text") if type(template) is dict else None)
         if (type(receipt.get("characters")) is not int
                 or type(receipt.get("words")) is not int
+                or type(text_binding) is not dict
+                or text_binding.get("kind") != "observation_ref"
+                or text_binding.get("field") != "definition"
                 or binding.source_dispatch_id is None):
             _deny("dependency_untrusted_observation")
+        source_id = text_binding.get("source_step_id")
+        if (type(source_id) is not int
+                or source_id not in matches[0].get("depends_on", [])):
+            _deny("dependency_untrusted_observation")
+        source_record = checkpoint["executions"].get(str(source_id))
+        source_step = next(
+            (step for step in steps if step.get("id") == source_id), None)
+        if (type(source_record) is not dict
+                or source_record.get("dispatch_id") != binding.source_dispatch_id
+                or type(source_step) is not dict
+                or source_step.get("status") != "completed"):
+            _deny("dependency_untrusted_observation")
         source = db.get(PlanToolDispatch, binding.source_dispatch_id)
+        source_attempt = db.get(AgentAttempt, binding.source_dispatch_id)
         if (source is None or source.conversation_id != binding.conversation_id
+                or source.step_id != source_id
                 or source.status != "checkpointed"
-                or source.tool_name != "mcp_reference_lookup"):
+                or source.tool_name != "mcp_reference_lookup"
+                or source.tool_version != source_step.get("tool_version")
+                or source_attempt is None
+                or source_attempt.status != "succeeded"
+                or source_attempt.conversation_id != binding.conversation_id
+                or source_attempt.step_id != source_id):
             _deny("dependency_untrusted_observation")
         source_receipt = _strict_receipt(source.receipt_json)
-        if source_receipt.get("definition") != actual.get("text"):
+        if (type(source_receipt.get("definition")) is not str
+                or source_receipt.get("definition") != actual.get("text")
+                or receipt["characters"] != len(actual["text"])
+                or receipt["words"] != len(actual["text"].split())):
             _deny("dependency_untrusted_observation")
     else:
         _deny("dependency_host_tool_denied")
