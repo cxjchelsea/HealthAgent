@@ -142,9 +142,6 @@ def checkpoint_dependency_step_in_session(
     claim = db.execute(select(PlanExecutionClaim).where(
         PlanExecutionClaim.conversation_id == binding.conversation_id
     ).with_for_update()).scalar_one_or_none()
-    assert_dependency_fence_in_session(
-        db, conversation_id=binding.conversation_id,
-        turn_id=binding.turn_id, fence=fence)
     turn = db.get(Turn, binding.turn_id)
     if (plan_row is None or plan_row.snapshot != expected_raw
             or claim is None or claim.turn_id != binding.turn_id
@@ -188,6 +185,11 @@ def checkpoint_dependency_step_in_session(
             or dispatch.tool_version != binding.tool_version
             or dispatch.status != "observed"):
         _deny("dependency_execution_receipt_conflict")
+    # Lock order: Plan → Claim → Dispatch → Fence, matching recovery and
+    # receipt writers; otherwise a concurrent Receipt can deadlock checkpoint.
+    assert_dependency_fence_in_session(
+        db, conversation_id=binding.conversation_id,
+        turn_id=binding.turn_id, fence=fence)
     if dispatch.worker_generation is not None and (
             fence is None
             or fence.generation != dispatch.worker_generation
