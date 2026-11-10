@@ -214,3 +214,41 @@ def test_e2_new_create_flag_off_cannot_save(tmp_path, monkeypatch):
             assert db.get(ConversationPlan, cid) is None
             assert db.query(PlanToolDispatch).count() == 0
             assert db.query(AgentAttempt).count() == 0
+
+
+
+def test_e2_failed_terminal_commit_rolls_back_plan_and_closes_turn(
+        tmp_path, monkeypatch):
+    _install_primary(monkeypatch)
+    original = ConversationPlanStore.compare_and_swap_in_session
+
+    def fail_after_plan_flush(self, db, **kwargs):
+        original(self, db, **kwargs)
+        if kwargs["expected_raw"] is None and (
+                kwargs["snapshot"].get("plan_schema_version") == "dependency-plan-v1"):
+            raise RuntimeError("synthetic_transaction_failure_after_plan_flush")
+
+    monkeypatch.setattr(
+        ConversationPlanStore, "compare_and_swap_in_session", fail_after_plan_flush)
+    cfg = _config(tmp_path)
+    with TestClient(create_app(cfg)) as client:
+        cid = client.post("/conversations").json()["id"]
+        resp = client.post(f"/conversations/{cid}/agent/messages", json={
+            "content": CREATE, "client_request_id": "e2-failure-001"})
+        assert resp.status_code == 503, resp.text
+        _, Session = database(cfg.database_url)
+        with Session() as db:
+            assert db.get(ConversationPlan, cid) is None
+            assert db.query(PlanToolDispatch).count() == 0
+            assert db.query(AgentAttempt).count() == 0
+            assert db.query(PlanExecutionClaim).count() == 0
+            assert db.query(DependencyWorkerFence).count() == 0
+            turn = db.query(Turn).filter_by(conversation_id=cid).one()
+            assistant = db.get(Message, turn.assistant_message_id)
+            assert turn.state == "partial"
+            assert turn.failure_code == "dependency_plan_create_commit_failed"
+            assert assistant.status == "partial"
+            assert "已保存" not in assistant.content
+            # The first, immutable Primary admission can remain as forensic
+            # evidence, but is not itself a saved plan or a tool authority.
+            assert db.get(PrimaryRouteEvidence, turn.id) is not None
