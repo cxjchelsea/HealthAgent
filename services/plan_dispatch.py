@@ -4,6 +4,7 @@ A missing receipt means unknown, not safe-to-retry. The host must reconcile
 before any further automatic execution. No claims of external exactly-once.
 """
 import json
+import hashlib
 from sqlalchemy import select
 from services.db import PlanToolDispatch, Turn
 from services.dependency_fencing import assert_dependency_fence_in_session
@@ -57,7 +58,9 @@ class PlanDispatchJournal:
             # an unrelated S25-06 fence. A generation-bound dispatch always
             # requires the exact token even if the old worker was replaced.
             if entry.worker_generation is not None:
-                if (fence is None or fence.generation != entry.worker_generation):
+                if (fence is None or fence.generation != entry.worker_generation
+                        or hashlib.sha256(fence.secret.encode("utf-8")).hexdigest()
+                            != entry.worker_token_digest):
                     raise DispatchConflict("dependency_worker_fenced")
                 assert_dependency_fence_in_session(
                     db, conversation_id=self.conversation_id,
