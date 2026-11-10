@@ -86,7 +86,12 @@ result = reconcile_dependency_orphan(
     Session, owner_id="crash-owner", conversation_id=cid, turn_id=tid,
     operator_id="isolated-operator", expected_plan_sha256=inspection.plan_sha256,
     expected_evidence_sha256=inspection.evidence_sha256,
-    worker_terminated_confirmed=True, operator_authorized=True)
+    worker_terminated_confirmed=True, operator_authorized=True,
+    # The test harness itself has just observed the exited first subprocess.
+    # These are fixtures, not real operator IAM or worker-liveness providers.
+    operator_access_verifier=lambda op, owner, cid, tid: (
+        op == "isolated-operator" and owner == "crash-owner"),
+    worker_termination_verifier=lambda cid, tid: True)
 assert result == inspection
 os._exit(74)
 """
@@ -210,7 +215,9 @@ def test_real_postgres_process_exit_retains_exact_atomic_state(
                 turn_id=tid, operator_id="operator-1",
                 expected_plan_sha256=inspected.plan_sha256,
                 expected_evidence_sha256=inspected.evidence_sha256,
-                worker_terminated_confirmed=False, operator_authorized=True)
+                worker_terminated_confirmed=False, operator_authorized=True,
+                operator_access_verifier=lambda *_: True,
+                worker_termination_verifier=lambda *_: True)
         # A newly started, independent second worker performs reconciliation.
         engine.dispose()
         worker2 = subprocess.run(
@@ -248,7 +255,9 @@ def test_real_postgres_process_exit_retains_exact_atomic_state(
                 turn_id=tid, operator_id="operator-1",
                 expected_plan_sha256=inspected.plan_sha256,
                 expected_evidence_sha256=inspected.evidence_sha256,
-                worker_terminated_confirmed=True, operator_authorized=True)
+                worker_terminated_confirmed=True, operator_authorized=True,
+                operator_access_verifier=lambda *_: True,
+                worker_termination_verifier=lambda *_: True)
     finally:
         engine, Session = database(url)
         with Session.begin() as db:
