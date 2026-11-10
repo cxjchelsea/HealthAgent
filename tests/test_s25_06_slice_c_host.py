@@ -285,3 +285,40 @@ def test_completed_step_cannot_follow_pending_step(case):
 def test_unknown_plan_fields_and_null_ids_are_denied(case):
     _replace_plan(case, lambda p: p.update(extra_field="unsafe"))
     _denied(case, "dependency_invalid_schema")
+
+
+def test_completed_prefix_requires_real_dispatch(case):
+    _complete_source(case)
+    _change(case, lambda db: db.delete(db.get(PlanToolDispatch, "dispatch1")))
+    _denied(case, "dependency_untrusted_observation",
+            decision=RESUME, control="resume", step_id=2)
+
+
+def test_completed_prefix_requires_successful_attempt(case):
+    _complete_source(case)
+    _change(case, lambda db: setattr(db.get(AgentAttempt, "dispatch1"),
+                                     "status", "failed"))
+    _denied(case, "dependency_untrusted_observation",
+            decision=RESUME, control="resume", step_id=2)
+
+
+def test_completed_prefix_rejects_forged_dispatch_digest(case):
+    _complete_source(case)
+    def change(db):
+        row = db.get(ConversationPlan, "cid")
+        p = json.loads(row.snapshot)
+        p["executions"]["1"]["resolved_arguments_digest"] = "f" * 64
+        raw = json.dumps(p)
+        row.snapshot = raw
+        db.get(PlanExecutionClaim, "cid").snapshot = raw
+    _change(case, change)
+    _denied(case, "dependency_untrusted_observation",
+            decision=RESUME, control="resume", step_id=2)
+
+
+def test_completed_prefix_rejects_cross_conversation_evidence(case):
+    _complete_source(case)
+    _change(case, lambda db: setattr(db.get(PlanToolDispatch, "dispatch1"),
+                                     "conversation_id", "other"))
+    _denied(case, "dependency_untrusted_observation",
+            decision=RESUME, control="resume", step_id=2)
