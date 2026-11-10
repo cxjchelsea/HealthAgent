@@ -16,6 +16,7 @@ from sqlalchemy.exc import OperationalError
 
 from services.db import (
     AgentAttempt, AgentStateTransition, AgentTaskState, Conversation,
+    DependencyWorkerFence,
     ConversationPlan, PlanExecutionClaim, PlanToolDispatch,
     PrimaryRouteEvidence, Turn, database,
 )
@@ -38,6 +39,7 @@ from agent.primary_host_admission_v1 import PrimaryHostDecision
 from services.db import database
 from services.dependency_dispatch import begin_dependency_dispatch_in_session
 from services.dependency_execution import checkpoint_dependency_step_in_session
+from services.dependency_fencing import acquire_dependency_fence
 from services.plan_dispatch import PlanDispatchJournal
 
 url, cid, tid, initial, mode = sys.argv[1:]
@@ -50,20 +52,25 @@ binding = bind_dependency_plan_read(
     Session, settings=settings, decision=decision, owner_id="crash-owner",
     conversation_id=cid, turn_id=tid, request_id="req-" + tid,
     expected_raw=initial, control="resume", step_id=1)
+fence = acquire_dependency_fence(
+    Session, conversation_id=cid, turn_id=tid, expected_raw=initial)
 with Session.begin() as db:
     did = begin_dependency_dispatch_in_session(
-        db, binding=binding, expected_raw=initial, initial_turn_raw=initial)
+        db, binding=binding, expected_raw=initial,
+        initial_turn_raw=initial, fence=fence)
 if mode == "after_dispatch":
     os._exit(73)
 observation = {
     "ok": True, "definition": "retrieval augmented generation",
     "source": "trusted-reference"}
-PlanDispatchJournal(Session, cid, tid).record_receipt(did, observation)
+PlanDispatchJournal(Session, cid, tid).record_receipt(
+    did, observation, fence=fence)
 if mode == "after_receipt":
     os._exit(73)
 with Session.begin() as db:
     checkpoint_dependency_step_in_session(
-        db, binding=binding, expected_raw=initial, dispatch_id=did)
+        db, binding=binding, expected_raw=initial,
+        dispatch_id=did, fence=fence)
     if mode == "inside_checkpoint":
         db.flush()
         os._exit(73)
@@ -274,6 +281,8 @@ def test_real_postgres_process_exit_retains_exact_atomic_state(
                 PlanToolDispatch.conversation_id == cid))
             db.execute(delete(PrimaryRouteEvidence).where(
                 PrimaryRouteEvidence.conversation_id == cid))
+            db.execute(delete(DependencyWorkerFence).where(
+                DependencyWorkerFence.conversation_id == cid))
             db.execute(delete(PlanExecutionClaim).where(
                 PlanExecutionClaim.conversation_id == cid))
             db.execute(delete(ConversationPlan).where(
