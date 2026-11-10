@@ -1,4 +1,4 @@
-"""S25-06 E2 physical two-process HTTP creation CAS race on PostgreSQL."""
+"""S25-06 E2 physical two-process HTTP single-running-Turn creation gate."""
 import json
 import os
 import subprocess
@@ -82,7 +82,7 @@ with TestClient(api.create_app(cfg)) as client:
 
 @pytest.mark.skipif(not os.getenv("TEST_POSTGRES_URL"),
                     reason="requires isolated real PostgreSQL")
-def test_two_independent_http_workers_create_exactly_one_plan(tmp_path):
+def test_two_independent_http_workers_only_one_turn_enters_creation(tmp_path):
     url = os.environ["TEST_POSTGRES_URL"]
     assert url.startswith("postgresql")
     engine, Session = database(url)
@@ -102,22 +102,27 @@ def test_two_independent_http_workers_create_exactly_one_plan(tmp_path):
                 cwd=str(Path(__file__).resolve().parents[1]),
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True))
         deadline = time.monotonic() + 25
-        while not all(p.exists() for p in markers) and time.monotonic() < deadline:
-            for proc in procs:
-                if proc.poll() is not None:
-                    raise AssertionError(proc.communicate()[1][-3500:])
+        while not markers[0].exists() and time.monotonic() < deadline:
+            if procs[0].poll() is not None:
+                raise AssertionError(procs[0].communicate()[1][-3500:])
             time.sleep(.05)
-        assert all(p.exists() for p in markers), "workers did not enter create"
+        assert markers[0].exists(), "first worker did not enter create"
+        # A single running Turn is a durable conversation-wide invariant.
+        # The second HTTP worker is rejected with 409 before it can reach
+        # Primary proposal or the plan CAS transaction. The separate CAS
+        # race-with-external-writer test covers the later snapshot conflict.
+        _, second_stderr = procs[1].communicate(timeout=35)
+        assert procs[1].returncode == 0, second_stderr[-3500:]
+        second = json.loads(outputs[1].read_text(encoding="utf-8"))
+        assert second["http"] == 409, second
+        assert not markers[1].exists()
         gate.touch()
-        for proc in procs:
-            _, stderr = proc.communicate(timeout=35)
-            assert proc.returncode == 0, stderr[-3500:]
-        results = [json.loads(p.read_text(encoding="utf-8")) for p in outputs]
-        assert all(x["http"] == 200 for x in results), results
-        reasons = [x["response"]["termination_reason"] for x in results]
-        assert sorted(reasons) == sorted([
-            "dependency_plan_created_pending_execution",
-            "dependency_plan_create_conflict"])
+        _, first_stderr = procs[0].communicate(timeout=35)
+        assert procs[0].returncode == 0, first_stderr[-3500:]
+        first = json.loads(outputs[0].read_text(encoding="utf-8"))
+        assert first["http"] == 200, first
+        assert first["response"]["termination_reason"] == (
+            "dependency_plan_created_pending_execution")
         with Session() as db:
             saved = json.loads(db.get(ConversationPlan, cid).snapshot)
             assert saved["plan_schema_version"] == "dependency-plan-v1"
@@ -126,7 +131,7 @@ def test_two_independent_http_workers_create_exactly_one_plan(tmp_path):
             assert db.query(AgentAttempt).filter_by(conversation_id=cid).count() == 0
             assert db.query(PlanExecutionClaim).filter_by(conversation_id=cid).count() == 0
             assert db.query(Turn).filter_by(conversation_id=cid, state="running").count() == 0
-            assert db.query(PrimaryRouteEvidence).filter_by(conversation_id=cid).count() == 2
+            assert db.query(PrimaryRouteEvidence).filter_by(conversation_id=cid).count() == 1
     finally:
         gate.touch()
         for proc in procs:
