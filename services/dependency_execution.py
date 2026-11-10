@@ -217,13 +217,36 @@ def checkpoint_dependency_step_in_session(
                 or source.status != "checkpointed"
                 or source.tool_name != "mcp_reference_lookup"
                 or source.tool_version != source_step.get("tool_version")
+                or source_record.get("plan_revision") != binding.plan_revision
+                or source_record.get("tool_name") != source.tool_name
+                or source_record.get("tool_version") != source.tool_version
                 or source_attempt is None
                 or source_attempt.status != "succeeded"
                 or source_attempt.conversation_id != binding.conversation_id
+                or source_attempt.turn_id != source.turn_id
+                or source_attempt.tool_version != source.tool_version
+                or source_attempt.tool_name != source.tool_name
                 or source_attempt.step_id != source_id):
             _deny("dependency_untrusted_observation")
+        try:
+            source_arguments = json.loads(source.arguments_json)
+        except (ValueError, TypeError):
+            _deny("dependency_untrusted_observation")
+        if (type(source_arguments) is not dict
+                or arguments_digest(source_arguments)
+                    != source_record.get("resolved_arguments_digest")
+                or source_attempt.arguments_digest
+                    != source_record.get("resolved_arguments_digest")):
+            _deny("dependency_untrusted_observation")
         source_receipt = _strict_receipt(source.receipt_json)
-        if (type(source_receipt.get("definition")) is not str
+        try:
+            source_projection = json.loads(source_attempt.result_projection)
+        except (ValueError, TypeError):
+            _deny("dependency_untrusted_observation")
+        if (type(source_projection) is not dict
+                or source_projection
+                    != bounded_projection("mcp_reference_lookup", source_receipt)
+                or type(source_receipt.get("definition")) is not str
                 or source_receipt.get("definition") != actual.get("text")
                 or receipt["characters"] != len(actual["text"])
                 or receipt["words"] != len(actual["text"].split())):
