@@ -13,6 +13,7 @@ from agent.primary_route_v1 import RouteSignal, bind_route_signal
 from apps.api.main import create_app
 from services.db import (
     AgentAttempt, AgentStateTransition, AgentTaskState, ConversationPlan, PlanExecutionClaim,
+    DependencyWorkerFence,
     PlanToolDispatch, Turn, database,
 )
 
@@ -321,3 +322,38 @@ def test_http_disabled_followup_never_reprojects_existing_dependency_task(
             assert db.query(AgentStateTransition).count() == transitions
             assert db.query(AgentAttempt).count() == attempts
             assert db.query(PlanToolDispatch).count() == 1
+
+
+def test_http_failed_generation_mint_does_not_revoke_other_turn_fence(
+        tmp_path, monkeypatch):
+    """An earlier stranded Fence must not turn a denied mint into an unsafe revoke."""
+    async def primary(*args, **kwargs):
+        return _route(args[2])
+
+    monkeypatch.setattr("apps.api.main.propose_primary_route", primary)
+    cfg = _settings(tmp_path)
+    with TestClient(create_app(cfg)) as client:
+        cid = client.post("/conversations").json()["id"]
+        _, Session = database(cfg.database_url)
+        _seed(Session, cid)
+        with Session.begin() as db:
+            previous = Turn(
+                id="previous-generation-turn", conversation_id=cid,
+                request_id="previous-generation-request", state="partial")
+            db.add(previous)
+            db.flush()
+            db.add(DependencyWorkerFence(
+                conversation_id=cid, turn_id=previous.id,
+                generation=7, token_digest="a" * 64, state="active"))
+        response = client.post(f"/conversations/{cid}/agent/messages", json={
+            "content": FIRST,
+            "client_request_id": "s2506-denied-mint-followup-001"})
+        assert response.status_code == 503, response.text
+        with Session() as db:
+            fence = db.get(DependencyWorkerFence, cid)
+            assert (fence.turn_id, fence.state, fence.generation) == (
+                "previous-generation-turn", "active", 7)
+            assert db.get(PlanExecutionClaim, cid) is None
+            turns = db.query(Turn).filter_by(conversation_id=cid).all()
+            assert all(t.state != "running" for t in turns)
+            assert db.query(PlanToolDispatch).count() == 0
