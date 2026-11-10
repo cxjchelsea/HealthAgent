@@ -4,16 +4,17 @@ Returns typed arguments and source evidence; NEVER grants tool execution.
 No writes, dispatch, tool invocation, or plan checkpoint mutation occur here.
 """
 from dataclasses import dataclass
+import hashlib
 import json
 
 from pydantic import ValidationError
-from sqlalchemy import select
 
 from agent.dependency_plan_schema import (
     DependencyPlanError, PLAN_SCHEMA_VERSION, PLAN_EXECUTOR_VERSION,
     PINNED_TOOL_VERSION,
 )
 from agent.tool_registry import TextStatsArgs
+from agent.tools import ReferenceArgs
 from services.db import (
     AgentAttempt, Conversation, ConversationPlan, PlanToolDispatch,
 )
@@ -39,6 +40,7 @@ class ResolvedDependencyRead:
     arguments_digest: str
     source_evidence: SourceEvidenceRef
     plan_revision: int
+    checkpoint_digest: str
 
 
 def _fail(code: str):
@@ -81,7 +83,11 @@ def resolve_checkpointed_definition(
         saved = db.get(ConversationPlan, conversation_id)
         if saved is None:
             _fail("dependency_invalid_schema")
-        plan = _decode(saved.snapshot)
+        # Bind the exact persisted snapshot; future Host admission must compare
+        # this digest again under its execution Claim immediately pre-dispatch.
+        raw_snapshot = saved.snapshot
+        snapshot_digest = hashlib.sha256(raw_snapshot.encode("utf-8")).hexdigest()
+        plan = _decode(raw_snapshot)
         if (plan.get("plan_schema_version") != PLAN_SCHEMA_VERSION
                 or plan.get("plan_executor_version") != PLAN_EXECUTOR_VERSION):
             _fail("dependency_version_mismatch")
@@ -103,7 +109,9 @@ def resolve_checkpointed_definition(
             _fail("dependency_version_mismatch")
         depends = target.get("depends_on")
         bindings = target.get("argument_bindings")
-        if type(depends) is not list or type(bindings) is not dict:
+        if (type(depends) is not list or type(bindings) is not dict
+                or any(type(item) is not int for item in depends)
+                or len(depends) != len(set(depends))):
             _fail("dependency_invalid_schema")
         if set(bindings) != {"text"}:
             _fail("dependency_invalid_schema")
@@ -123,6 +131,13 @@ def resolve_checkpointed_definition(
                 or parent.get("expected_tool") != "mcp_reference_lookup"
                 or parent.get("tool_version") != PINNED_TOOL_VERSION):
             _fail("dependency_untrusted_observation")
+        parent_bindings = parent.get("argument_bindings")
+        if type(parent_bindings) is not dict or set(parent_bindings) != {"term"}:
+            _fail("dependency_untrusted_observation")
+        parent_term = _object(parent_bindings["term"])
+        if (parent_term.get("kind") != "literal"
+                or type(parent_term.get("value")) is not str):
+            _fail("dependency_untrusted_observation")
         record = _object(executions.get(str(source_id)))
         dispatch_id = record.get("dispatch_id")
         if type(dispatch_id) is not str or not dispatch_id:
@@ -141,6 +156,13 @@ def resolve_checkpointed_definition(
                 or dispatch.status != "checkpointed"):
             _fail("dependency_untrusted_observation")
         args = _decode(dispatch.arguments_json)
+        try:
+            validated_source = ReferenceArgs.model_validate(args).model_dump()
+        except ValidationError:
+            _fail("dependency_untrusted_observation")
+        if (validated_source != args
+                or args != {"term": parent_term["value"]}):
+            _fail("dependency_untrusted_observation")
         digest = arguments_digest(args)
         if record.get("resolved_arguments_digest") != digest:
             _fail("dependency_untrusted_observation")
@@ -164,7 +186,9 @@ def resolve_checkpointed_definition(
         # Require the persisted Attempt to agree with the precise bounded
         # receipt, not a fabricated success-like projection.
         projection = _decode(attempt.result_projection)
-        if projection.get("ok") is not True or projection.get("definition") != definition:
+        expected_projection = bounded_projection("mcp_reference_lookup", receipt)
+        if (projection.get("ok") is not True
+                or projection != expected_projection):
             _fail("dependency_untrusted_observation")
         if bounded_projection("mcp_reference_lookup", receipt).get("definition") != definition:
             _fail("dependency_observation_truncated")
@@ -182,4 +206,5 @@ def resolve_checkpointed_definition(
                 tool_name=dispatch.tool_name, tool_version=dispatch.tool_version,
                 arguments_digest=digest, field="definition"),
             plan_revision=revision,
+            checkpoint_digest=snapshot_digest,
         )
