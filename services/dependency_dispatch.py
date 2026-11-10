@@ -116,15 +116,32 @@ def begin_dependency_dispatch_in_session(
                     or source.step_id != ref["source_step_id"]
                     or source.status != "checkpointed"
                     or source.tool_name != "mcp_reference_lookup"
+                    or source.tool_version != "1.0.0"
+                    or source_record.get("tool_name") != source.tool_name
+                    or source_record.get("tool_version") != source.tool_version
+                    or source_record.get("plan_revision") != binding.plan_revision
                     or attempt is None or attempt.conversation_id != binding.conversation_id
                     or attempt.turn_id != source.turn_id
+                    or attempt.step_id != source.step_id
+                    or attempt.tool_name != source.tool_name
+                    or attempt.tool_version != source.tool_version
                     or attempt.status != "succeeded"):
                 _deny("dependency_untrusted_observation")
             try:
+                source_args = json.loads(source.arguments_json)
                 receipt = json.loads(source.receipt_json)
+                projection = json.loads(attempt.result_projection)
             except (ValueError, TypeError):
                 _deny("dependency_untrusted_observation")
-            if (type(receipt) is not dict or receipt.get("ok") is not True
+            if (type(source_args) is not dict
+                    or type(receipt) is not dict
+                    or type(projection) is not dict
+                    or receipt.get("ok") is not True
+                    or arguments_digest(source_args)
+                        != source_record.get("resolved_arguments_digest")
+                    or attempt.arguments_digest
+                        != source_record.get("resolved_arguments_digest")
+                    or projection != bounded_projection("mcp_reference_lookup", receipt)
                     or type(receipt.get("definition")) is not str
                     or checked != {"text": receipt["definition"]}
                     or bounded_projection("mcp_reference_lookup", receipt).get("definition")
