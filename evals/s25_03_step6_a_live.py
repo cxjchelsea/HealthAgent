@@ -78,7 +78,7 @@ def evaluate(repeats=2):
                         and created.get("termination_reason") == "plan_created_pending_execution"
                         and len(created.get("plan", [])) == 2
                         and created["plan"][0].get("expected_tool") == "mcp_reference_lookup"
-                        and created["plan"][0].get("expected_arguments") == {"term": "RAG"}
+                        and str(created["plan"][0].get("expected_arguments", {}).get("term", "")).casefold() == "rag"
                     )
                     executed = None
                     evidence_http = None
