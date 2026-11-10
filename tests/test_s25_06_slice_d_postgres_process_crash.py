@@ -211,6 +211,17 @@ def test_real_postgres_process_exit_retains_exact_atomic_state(
             assert len(audits) == 1
             assert audits[0].evidence_sha256 == inspected.evidence_sha256
             assert audits[0].operator_id == "isolated-operator"
+        # PostgreSQL's running-Turn uniqueness fence is reopened only after
+        # explicit recovery. This is not a tool replay or plan reset.
+        next_tid = str(uuid.uuid4())
+        with Session.begin() as db:
+            followup = Turn(id=next_tid, conversation_id=cid,
+                            request_id="post-recovery-" + next_tid,
+                            state="running")
+            db.add(followup)
+            db.flush()
+            assert followup.state == "running"
+            followup.state = "partial"
         with pytest.raises(Exception, match="dependency_recovery_claim_unverified"):
             reconcile_dependency_orphan(
                 Session, owner_id="crash-owner", conversation_id=cid,
