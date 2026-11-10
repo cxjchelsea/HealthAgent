@@ -19,6 +19,9 @@ from services.db import (
     PrimaryRouteEvidence, Turn, database,
 )
 from services.evidence_store import arguments_digest
+from services.dependency_recovery import (
+    inspect_dependency_orphan, reconcile_dependency_orphan,
+)
 from services.primary_route_evidence import snapshot_digest
 
 
@@ -151,9 +154,53 @@ def test_real_postgres_process_exit_retains_exact_atomic_state(
             else:
                 assert db.get(AgentTaskState, cid) is None
                 assert rows[0].id not in plan["executions"]
+        # A replacement worker uses a NEW SQLAlchemy engine and resolves
+        # the orphan with explicit operator approval. No tool is invoked.
+        inspected = inspect_dependency_orphan(
+            Session, owner_id="crash-owner", conversation_id=cid, turn_id=tid)
+        assert inspected.classification == (
+            "checkpointed_unfinalized" if checkpointed
+            else "uncertain_no_replay")
+        if point == "after_dispatch":
+            assert inspected.dispatch_states[0][1] == "dispatch_unknown"
+        with pytest.raises(Exception, match="dependency_recovery_operator_required"):
+            reconcile_dependency_orphan(
+                Session, owner_id="crash-owner", conversation_id=cid,
+                turn_id=tid, operator_id="operator-1",
+                expected_plan_sha256=inspected.plan_sha256,
+                expected_evidence_sha256=inspected.evidence_sha256,
+                worker_terminated_confirmed=False, operator_authorized=True)
+        result = reconcile_dependency_orphan(
+            Session, owner_id="crash-owner", conversation_id=cid,
+            turn_id=tid, operator_id="operator-1",
+            expected_plan_sha256=inspected.plan_sha256,
+            expected_evidence_sha256=inspected.evidence_sha256,
+            worker_terminated_confirmed=True, operator_authorized=True)
+        assert result == inspected
+        with Session() as db:
+            assert db.get(PlanExecutionClaim, cid) is None
+            assert db.get(Turn, tid).state == "partial"
+            assert db.get(ConversationPlan, cid).snapshot == plan_row.snapshot
+            assert db.scalar(select(PlanToolDispatch.id).where(
+                PlanToolDispatch.conversation_id == cid)) is not None
+            from services.db import PlanRecoveryAudit
+            audits = db.scalars(select(PlanRecoveryAudit).where(
+                PlanRecoveryAudit.conversation_id == cid)).all()
+            assert len(audits) == 1
+            assert audits[0].evidence_sha256 == inspected.evidence_sha256
+        with pytest.raises(Exception, match="dependency_recovery_claim_unverified"):
+            reconcile_dependency_orphan(
+                Session, owner_id="crash-owner", conversation_id=cid,
+                turn_id=tid, operator_id="operator-1",
+                expected_plan_sha256=inspected.plan_sha256,
+                expected_evidence_sha256=inspected.evidence_sha256,
+                worker_terminated_confirmed=True, operator_authorized=True)
     finally:
         engine, Session = database(url)
         with Session.begin() as db:
+            from services.db import PlanRecoveryAudit
+            db.execute(delete(PlanRecoveryAudit).where(
+                PlanRecoveryAudit.conversation_id == cid))
             db.execute(delete(AgentStateTransition).where(
                 AgentStateTransition.conversation_id == cid))
             db.execute(delete(AgentAttempt).where(
