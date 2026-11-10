@@ -54,3 +54,26 @@ def test_real_http_plan_prompt_uses_primary_supported_bound_step_types():
         ProposedStep.model_validate({
             "goal": "UTC", "tool_name": "utc_time",
             "arguments": {}, "quote": "UTC"})
+
+
+@pytest.mark.parametrize("payload,shape", [
+    ('{"route_kind":"plan_create","steps":[{"tool_name":"mcp_reference_lookup","arguments":{"term":"rag"}},{"tool_name":"calculate","arguments":{"expression":"6*7"}}]}',
+     ["exact", "exact"]),
+    ('{"route_kind":"plan_create","steps":[{"tool_name":"mcp_reference_lookup","arguments":{"query":"rag"}},{"tool_name":"calculate","arguments":{"expression":"6*7","note":"x"}}]}',
+     ["missing_and_extra", "extra_only"]),
+    ('{"route_kind":"plan_create","steps":[{"tool_name":"mcp_reference_lookup","arguments":{}}]}',
+     ["missing_only"]),
+])
+def test_safe_primary_step_shape_report_has_no_argument_names_or_values(payload, shape):
+    from evals.s25_03_step6_a_live import safe_step_argument_shape
+    result = safe_step_argument_shape(payload)
+    assert [x["args_shape"] for x in result["steps"]] == shape
+    assert "rag" not in str(result)
+    assert "6*7" not in str(result)
+    assert "query" not in str(result)
+    assert "note" not in str(result)
+
+
+def test_safe_primary_step_shape_reports_untrusted_invalid_json_without_content():
+    from evals.s25_03_step6_a_live import safe_step_argument_shape
+    assert safe_step_argument_shape('TOP_SECRET') == {"shape": "invalid_json"}
