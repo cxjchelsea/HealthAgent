@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from sqlalchemy import select
 
 from agent.dependency_plan_schema import DependencyPlanError
+from services.evidence_store import arguments_digest, bounded_projection
 from services.db import (
     AgentAttempt, Conversation, ConversationPlan, Message, PlanExecutionClaim,
     PlanRecoveryAudit, PlanToolDispatch, PrimaryRouteEvidence, Turn,
@@ -94,14 +95,46 @@ def _inspect_locked(db, *, owner_id, conversation_id, turn_id):
         if item.status == "checkpointed":
             if (step.get("status") != "completed" or type(record) is not dict
                     or record.get("dispatch_id") != item.id
-                    or attempt is None or attempt.status != "succeeded"):
+                    or record.get("tool_version") != item.tool_version
+                    or record.get("tool_name") != item.tool_name
+                    or attempt is None or attempt.status != "succeeded"
+                    or attempt.conversation_id != conversation_id
+                    or attempt.turn_id != item.turn_id
+                    or attempt.step_id != item.step_id
+                    or attempt.tool_name != item.tool_name
+                    or attempt.tool_version != item.tool_version):
+                _deny("dependency_recovery_untrusted_dispatch")
+            try:
+                args = json.loads(item.arguments_json)
+                receipt = json.loads(item.receipt_json)
+                projection = json.loads(attempt.result_projection)
+            except (ValueError, TypeError):
+                _deny("dependency_recovery_untrusted_dispatch")
+            if (type(args) is not dict or type(receipt) is not dict
+                    or type(projection) is not dict
+                    or receipt.get("ok") is not True
+                    or record.get("resolved_arguments_digest") != arguments_digest(args)
+                    or attempt.arguments_digest != arguments_digest(args)
+                    or projection != bounded_projection(item.tool_name, receipt)):
                 _deny("dependency_recovery_untrusted_dispatch")
         elif (step.get("status") != "pending" or record is not None
               or attempt is not None):
             _deny("dependency_recovery_untrusted_dispatch")
-    # Hash stable IDs and states only, not mutable/raw tool receipts.
-    evidence = [{"id": item.id, "step": item.step_id, "status": item.status}
-                for item in dispatches]
+    # Bind operator approval to exact persisted metadata AND evidence bytes,
+    # but expose only a digest. A receipt altered after inspection must fail.
+    evidence = [
+        {"id": item.id, "step": item.step_id, "status": item.status,
+         "tool_name": item.tool_name, "tool_version": item.tool_version,
+         "arguments_sha256": hashlib.sha256(
+             item.arguments_json.encode("utf-8")).hexdigest(),
+         "receipt_sha256": hashlib.sha256(
+             (item.receipt_json or "").encode("utf-8")).hexdigest(),
+         "attempt_sha256": hashlib.sha256(
+             ((db.get(AgentAttempt, item.id).result_projection or "")
+              if db.get(AgentAttempt, item.id) is not None else "").encode()
+         ).hexdigest()}
+        for item in dispatches
+    ]
     evidence_sha = hashlib.sha256(
         json.dumps(evidence, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
