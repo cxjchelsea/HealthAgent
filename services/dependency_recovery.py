@@ -88,7 +88,13 @@ def _inspect_locked(db, *, owner_id, conversation_id, turn_id):
             _deny("dependency_recovery_invalid_plan")
     except (KeyError, TypeError, ValueError):
         _deny("dependency_recovery_invalid_plan")
+    locked_attempts = {}
     for item in dispatches:
+        # Lock the Attempt alongside its Dispatch: a concurrent metadata
+        # update must not invalidate the operator-approved evidence digest.
+        locked_attempts[item.id] = db.execute(select(AgentAttempt).where(
+            AgentAttempt.id == item.id
+        ).with_for_update()).scalar_one_or_none()
         # An observed receipt is bounded evidence, not a checkpoint; malformed
         # or inconsistent receipt states still require manual investigation.
         if item.status == "dispatch_unknown":
@@ -108,7 +114,7 @@ def _inspect_locked(db, *, owner_id, conversation_id, turn_id):
                 or item.tool_version != step.get("tool_version")):
             _deny("dependency_recovery_untrusted_dispatch")
         record = executions.get(str(item.step_id))
-        attempt = db.get(AgentAttempt, item.id)
+        attempt = locked_attempts[item.id]
         if item.status == "checkpointed":
             if (step.get("status") != "completed" or type(record) is not dict
                     or record.get("dispatch_id") != item.id
@@ -142,7 +148,7 @@ def _inspect_locked(db, *, owner_id, conversation_id, turn_id):
     # This is an evidence checksum, never a tool authorization token.
     evidence = []
     for item in dispatches:
-        attempt = db.get(AgentAttempt, item.id)
+        attempt = locked_attempts[item.id]
         attempt_meta = None if attempt is None else {
             "id": attempt.id,
             "conversation_id": attempt.conversation_id,
