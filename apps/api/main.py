@@ -1889,6 +1889,32 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                 turn.decision_steps = decision_steps
         except Exception:
             log.exception("conversation turn finalization failed turn=%s", turn_id)
+            if (result is not None and result.get("termination_reason")
+                    == "dependency_plan_created_pending_execution"):
+                # This is a *second* transaction after a failed finalization.
+                # Never claim that creation committed. Close the stranded
+                # running Turn, but leave a potentially in-doubt Plan untouched
+                # for operator inspection rather than deleting another writer.
+                try:
+                    with Session.begin() as cleanup_db:
+                        failed_turn = cleanup_db.get(Turn, turn_id)
+                        failed_response = cleanup_db.get(Message, assistant_id)
+                        if (failed_turn is not None
+                                and failed_turn.conversation_id == cid
+                                and failed_turn.state == "running"
+                                and failed_response is not None
+                                and failed_response.conversation_id == cid
+                                and failed_response.status == "pending"):
+                            failure_answer = (
+                                "计划保存事务未能确认完成；未执行工具，请检查已有计划后重试。")
+                            failed_turn.state = "partial"
+                            failed_turn.failure_code = "dependency_plan_create_commit_failed"
+                            failed_turn.output_chars = len(failure_answer)
+                            failed_response.content = failure_answer
+                            failed_response.status = "partial"
+                except Exception:
+                    log.exception("dependency create Turn failure cleanup failed turn=%s",
+                                  turn_id)
             raise HTTPException(503, "turn_finalization_failed")
         if status not in {"completed", "partial"}:
             # Only allowlisted metadata; never log messages, arguments or responses.
