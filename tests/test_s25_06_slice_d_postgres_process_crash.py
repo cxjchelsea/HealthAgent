@@ -70,6 +70,27 @@ os._exit(73)
 """
 
 
+_RECOVERY_CHILD = r"""
+import os
+import sys
+from services.db import database
+from services.dependency_recovery import (
+    inspect_dependency_orphan, reconcile_dependency_orphan,
+)
+url, cid, tid = sys.argv[1:]
+_, Session = database(url)
+inspection = inspect_dependency_orphan(
+    Session, owner_id="crash-owner", conversation_id=cid, turn_id=tid)
+result = reconcile_dependency_orphan(
+    Session, owner_id="crash-owner", conversation_id=cid, turn_id=tid,
+    operator_id="isolated-operator", expected_plan_sha256=inspection.plan_sha256,
+    expected_evidence_sha256=inspection.evidence_sha256,
+    worker_terminated_confirmed=True, operator_authorized=True)
+assert result == inspection
+os._exit(74)
+"""
+
+
 def _new_plan():
     return {
         "plan_schema_version": "dependency-plan-v1",
@@ -170,13 +191,14 @@ def test_real_postgres_process_exit_retains_exact_atomic_state(
                 expected_plan_sha256=inspected.plan_sha256,
                 expected_evidence_sha256=inspected.evidence_sha256,
                 worker_terminated_confirmed=False, operator_authorized=True)
-        result = reconcile_dependency_orphan(
-            Session, owner_id="crash-owner", conversation_id=cid,
-            turn_id=tid, operator_id="operator-1",
-            expected_plan_sha256=inspected.plan_sha256,
-            expected_evidence_sha256=inspected.evidence_sha256,
-            worker_terminated_confirmed=True, operator_authorized=True)
-        assert result == inspected
+        # A newly started, independent second worker performs reconciliation.
+        engine.dispose()
+        worker2 = subprocess.run(
+            [sys.executable, "-c", _RECOVERY_CHILD, url, cid, tid],
+            cwd=str(Path(__file__).resolve().parents[1]),
+            timeout=40, capture_output=True, text=True)
+        assert worker2.returncode == 74, worker2.stderr[-2500:]
+        engine, Session = database(url)
         with Session() as db:
             assert db.get(PlanExecutionClaim, cid) is None
             assert db.get(Turn, tid).state == "partial"
@@ -188,6 +210,7 @@ def test_real_postgres_process_exit_retains_exact_atomic_state(
                 PlanRecoveryAudit.conversation_id == cid)).all()
             assert len(audits) == 1
             assert audits[0].evidence_sha256 == inspected.evidence_sha256
+            assert audits[0].operator_id == "isolated-operator"
         with pytest.raises(Exception, match="dependency_recovery_claim_unverified"):
             reconcile_dependency_orphan(
                 Session, owner_id="crash-owner", conversation_id=cid,
