@@ -94,19 +94,25 @@ def test_two_independent_http_workers_only_one_turn_enters_creation(tmp_path):
     outputs = [tmp_path / "a.json", tmp_path / "b.json"]
     procs = []
     try:
-        for i in range(2):
-            procs.append(subprocess.Popen([
+        def launch(i):
+            return subprocess.Popen([
                 sys.executable, "-c", _CHILD, url, cid,
                 f"e2-pg-create-{i}-{uuid.uuid4()}", str(markers[i]),
                 str(gate), str(outputs[i])],
                 cwd=str(Path(__file__).resolve().parents[1]),
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True))
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+        # Establish a deterministic incumbent first. If both processes start
+        # simultaneously, PostgreSQL may correctly reject either one, and
+        # no fixed process number can be assumed to own the running Turn.
+        procs.append(launch(0))
         deadline = time.monotonic() + 25
         while not markers[0].exists() and time.monotonic() < deadline:
             if procs[0].poll() is not None:
                 raise AssertionError(procs[0].communicate()[1][-3500:])
             time.sleep(.05)
         assert markers[0].exists(), "first worker did not enter create"
+        procs.append(launch(1))
         # A single running Turn is a durable conversation-wide invariant.
         # The second HTTP worker is rejected with 409 before it can reach
         # Primary proposal or the plan CAS transaction. The separate CAS
