@@ -77,6 +77,13 @@ def _reconcile(Session, inspection, **overrides):
         "expected_evidence_sha256": inspection.evidence_sha256,
         "worker_terminated_confirmed": True,
         "operator_authorized": True,
+        # Test-only trusted authority stubs. No such verifier is configured
+        # in production yet; using caller flags without these must fail.
+        "operator_access_verifier": lambda op, owner, cid, tid: (
+            op == "operator-X" and owner == "actual-owner"
+            and cid == "cid" and tid == "tid"),
+        "worker_termination_verifier": lambda cid, tid: (
+            cid == "cid" and tid == "tid"),
     }
     kwargs.update(overrides)
     return reconcile_dependency_orphan(Session, **kwargs)
@@ -205,4 +212,23 @@ def test_recovery_revalidates_completed_attempt_metadata_after_inspection(orphan
     with orphan() as db:
         assert db.get(PlanExecutionClaim, "cid") is not None
         assert db.get(Turn, "tid").state == "running"
+        assert db.query(PlanRecoveryAudit).count() == 0
+
+
+def test_recovery_refuses_boolean_attestations_without_trusted_verifiers(orphan):
+    inspected = inspect_dependency_orphan(
+        orphan, owner_id="actual-owner", conversation_id="cid", turn_id="tid")
+    _refused(orphan, inspected, "dependency_recovery_operator_required",
+             operator_access_verifier=None)
+    _refused(orphan, inspected, "dependency_recovery_operator_required",
+             worker_termination_verifier=None)
+    _refused(orphan, inspected, "dependency_recovery_access_denied",
+             operator_access_verifier=lambda *_: False)
+    _refused(orphan, inspected, "dependency_recovery_worker_not_confirmed",
+             worker_termination_verifier=lambda *_: False)
+    _refused(orphan, inspected, "dependency_recovery_external_verification_failed",
+             worker_termination_verifier=lambda *_: 1 / 0)
+    with orphan() as db:
+        assert db.get(Turn, "tid").state == "running"
+        assert db.get(PlanExecutionClaim, "cid") is not None
         assert db.query(PlanRecoveryAudit).count() == 0
