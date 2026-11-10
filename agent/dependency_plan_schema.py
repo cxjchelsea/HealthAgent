@@ -59,7 +59,7 @@ InputBinding = Annotated[
 class DependencyStep(_Strict):
     id: StrictInt = Field(ge=1)
     goal: str = Field(min_length=1, max_length=160)
-    depends_on: list[StrictInt] = Field(default_factory=list, max_length=MAX_PLAN_STEPS)
+    depends_on: list[StrictInt] = Field(max_length=MAX_PLAN_STEPS)
     status: Literal["pending"]
     expected_tool: Literal["mcp_reference_lookup", "text_stats"]
     tool_version: Literal["1.0.0"]
@@ -74,7 +74,7 @@ class DependencyPlanCreation(_Strict):
     revision: Literal[1]
     next_step_id: StrictInt = Field(ge=3, le=MAX_PLAN_STEPS + 1)
     steps: list[DependencyStep] = Field(min_length=2, max_length=MAX_PLAN_STEPS)
-    executions: dict = Field(default_factory=dict)
+    executions: dict
 
 
 def classify_plan_format(snapshot: object) -> Literal["legacy", "dependency-plan-v1"]:
