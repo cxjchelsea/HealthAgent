@@ -189,6 +189,12 @@ def test_real_postgres_process_exit_retains_exact_atomic_state(
                     second_db.execute(select(PlanToolDispatch).where(
                         PlanToolDispatch.conversation_id == cid
                     ).with_for_update(nowait=True)).all()
+            if checkpointed:
+                with Session() as second_db:
+                    with pytest.raises(OperationalError):
+                        second_db.execute(select(AgentAttempt).where(
+                            AgentAttempt.conversation_id == cid
+                        ).with_for_update(nowait=True)).all()
         # A replacement worker uses a NEW SQLAlchemy engine and resolves
         # the orphan with explicit operator approval. No tool is invoked.
         inspected = inspect_dependency_orphan(
