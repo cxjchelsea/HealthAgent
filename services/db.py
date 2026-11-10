@@ -78,6 +78,23 @@ class PlanExecutionClaim(Base):
     snapshot: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
+class DependencyWorkerFence(Base):
+    """Monotonic generation fence for one conversation's dependency-plan runner.
+
+    A claim/Turn identifies the execution. This row additionally prevents an
+    old worker from committing after an operator fenced that execution.
+    No time-based lease is used as proof of worker termination.
+    """
+    __tablename__ = "dependency_worker_fences"
+    conversation_id: Mapped[str] = mapped_column(
+        ForeignKey("conversations.id"), primary_key=True)
+    turn_id: Mapped[str] = mapped_column(ForeignKey("turns.id"))
+    generation: Mapped[int] = mapped_column(Integer, nullable=False)
+    token_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    state: Mapped[str] = mapped_column(String(16), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
 class ConversationGoalState(Base):
     """Versioned, owner-scoped via parent conversation, verified by caller."""
     __tablename__ = "conversation_goal_states"
