@@ -42,3 +42,30 @@
   python -m evals.s25_03_step6_a_live --repeats 2 --output artifacts/s25-03-step6-a-live.json
   ```
 - **门禁**：CI 检查真实模型验收脚本的安全拒绝条件，但不会自动访问用户本地 Qwen，因此 CI PASS 不等于本地真实模型 PASS。需要收到 `artifacts/s25-03-step6-a-live.json` 的实际 2/2 结果，再决定最终验收；未经合并授权不合并 PR #34。
+
+
+## 真实 Qwen HTTP 第一次验收失败与契约修正（2026-11-10）
+
+用户本机提供 `s25-03-step6-a-live.json`：`ollama_proxy/qwen3:14b`，`unified`，2 次 `plan_create` 均 `primary_v1_proposal_refused`，因此 0/2 PASS；测试没有进入 FIRST、M4 Dispatch 或 Evidence 查询阶段。**该证据不能支持“历史结果投影失败”的结论。**
+
+追查发现原验收脚本错误要求 Primary 创建“首步 `utc_time`”的保存计划。但 `agent/primary_route_v1.py` 的 `ProposedStep.tool_name` 仅允许 `calculate` 与 `mcp_reference_lookup`，并要求每个工具参数在用户当前原文的唯一 quote 中找到。因此测试构造违反真实路由契约；原拒绝属于 fail-closed 的合理现象，**不得放宽生产 Schema 来凑测试通过**。
+
+**整改仅涉及验收：**
+- 改为“首步通过固定 MCP 参考目录查询 RAG，第二步计算 6*7”，分别使用已允许的 `mcp_reference_lookup` 与 `calculate`，实际执行的是可信本地 mock catalog，而不是任意 MCP 服务器。
+- 通过真实 Primary 创建计划并执行 FIRST，不注入计划快照或伪造模型 route；对照同一 M4 Dispatch、Attempt 的 `legacy-plan-v1` 和 HTTP Evidence 中的 `definition/source`，并且不把定义原文导出报告。
+- 报告增加安全诊断 `create_refusal_code` 和 `create_validation_issues`（仅枚举型 field/category，无原始提示词或私密 payload），以区分模型选错 route、quote 不匹配、Host 拒绝等情形。
+- 离线回归额外验证此提示词能以合法的 `RouteSignal` 和两段精确 quote 绑定；对 `utc_time` 作为新建步骤明确断言 Schema 拒绝。
+- **实际真实模型复测仍待用户运行，不得将 CI 通过等同于新脚本 2/2 PASS。**
+
+建议用户本机重新运行：
+```powershell
+cd D:\HealthAgent
+git fetch origin
+git switch fix/s25-03-step6-a-evidence-20261110
+git pull --ff-only origin fix/s25-03-step6-a-evidence-20261110
+.\.venv\Scripts\Activate.ps1
+$env:MODEL_PROVIDER="ollama_proxy"
+$env:MODEL_NAME="qwen3:14b"
+$env:RUN_S25_03_LIVE="1"
+python -m evals.s25_03_step6_a_live --repeats 2 --output artifacts/s25-03-step6-a-live-v2.json
+```
