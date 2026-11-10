@@ -237,3 +237,37 @@ def test_second_step_rejects_bad_source(case):
     with case() as db:
         assert db.get(PlanToolDispatch, "d2").status == "observed"
         assert db.get(AgentAttempt, "d2") is None
+
+
+def test_second_step_rejects_source_digest_tampering(case):
+    raw = _raw(case)
+    _finish(case, _binding(raw), raw, "d1")
+    with case.begin() as db:
+        row = db.get(ConversationPlan, "cid")
+        checkpoint = json.loads(row.snapshot)
+        checkpoint["executions"]["1"]["resolved_arguments_digest"] = "a" * 64
+        changed = json.dumps(checkpoint, ensure_ascii=False)
+        row.snapshot = changed
+        db.get(PlanExecutionClaim, "cid").snapshot = changed
+        db.add(PlanToolDispatch(
+            id="d2", conversation_id="cid", turn_id="turn", step_id=2,
+            tool_name="text_stats", tool_version="1.0.0", status="observed",
+            arguments_json=json.dumps({"text": "retrieval augmented generation"}),
+            receipt_json='{"ok":true,"characters":30,"words":3}'))
+    changed_raw = _raw(case)
+    _reject(case, _binding(changed_raw, step_id=2, source="d1"),
+            changed_raw, "d2", "dependency_untrusted_observation")
+
+
+def test_second_step_rejects_incorrect_tool_count(case):
+    raw = _raw(case)
+    _finish(case, _binding(raw), raw, "d1")
+    current = _raw(case)
+    with case.begin() as db:
+        db.add(PlanToolDispatch(
+            id="d2", conversation_id="cid", turn_id="turn", step_id=2,
+            tool_name="text_stats", tool_version="1.0.0", status="observed",
+            arguments_json=json.dumps({"text": "retrieval augmented generation"}),
+            receipt_json='{"ok":true,"characters":999,"words":3}'))
+    _reject(case, _binding(current, step_id=2, source="d1"),
+            current, "d2", "dependency_untrusted_observation")
