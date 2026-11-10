@@ -26,6 +26,7 @@ class PrimaryHostFacts:
     write_consent: bool = False
     pending_write_authority_verified: bool = False
     current_request: str = ""
+    dependency_plan_enabled: bool = False  # explicit S25-06 flag; never on by inference
 
 
 @dataclass(frozen=True)
@@ -110,6 +111,39 @@ def admit_primary_route_v1(
     if kind in {"plan_cancel", "plan_revise", "plan_execute_first", "plan_resume"}:
         if facts.checkpoint is None:
             return decide("deny", "primary_v1_missing_plan")
+        # One Primary semantic owner, with a version-specific deterministic
+        # Host admission. Never pass dependency plans to legacy PlanLedger.
+        if (isinstance(facts.checkpoint, dict)
+                and facts.checkpoint.get("plan_schema_version") == "dependency-plan-v1"):
+            if not facts.dependency_plan_enabled:
+                return decide("deny", "dependency_host_disabled")
+            if kind not in {"plan_execute_first", "plan_resume"}:
+                return decide("deny", "dependency_control_not_supported")
+            scope = "execute_first" if kind == "plan_execute_first" else "resume"
+            if (proposal.effect_intent != "read_only"
+                    or proposal.execution_scope != (
+                        "first_step" if scope == "execute_first" else "remaining_steps")
+                    or facts.pending_action is not None):
+                return decide("deny", "dependency_control_not_supported")
+            try:
+                # Lazy import prevents a circular module initialization;
+                # the dependency Host module imports PrimaryHostDecision.
+                from agent.dependency_plan_host import _step_for_read
+                steps = facts.checkpoint.get("steps")
+                if not isinstance(steps, list):
+                    return decide("deny", "dependency_invalid_schema")
+                pending = [item for item in steps if isinstance(item, dict)
+                           and item.get("status") == "pending"]
+                if not pending or type(pending[0].get("id")) is not int:
+                    return decide("deny", "dependency_step_not_ready")
+                if scope == "execute_first" and (
+                        pending[0]["id"] != steps[0].get("id")):
+                    return decide("deny", "dependency_first_already_executed")
+                _step_for_read(facts.checkpoint, pending[0]["id"])
+            except (ValueError, TypeError, KeyError):
+                return decide("deny", "dependency_invalid_schema")
+            return decide("allow", "primary_v1_plan_execution_candidate",
+                          "read_only", scope)
         try:
             ledger = PlanLedger.restore(facts.checkpoint)
             steps = ledger.snapshot()

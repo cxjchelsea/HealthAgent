@@ -36,6 +36,9 @@ from agent.s25_04_explicit_ordinary import admit_explicit_ordinary_calculation
 from agent.primary_route_v1 import PrimaryRouteRejected, propose_primary_route
 from agent.primary_route_v1_canary import admit_v1_canary
 from agent.primary_host_admission_v1 import PrimaryHostFacts, admit_primary_route_v1
+from agent.dependency_plan_runner import run_dependency_read_scope
+from services.dependency_fencing import revoke_dependency_fence_in_session
+from agent.tool_registry import ReadToolRuntime
 from agent.host_plan_execution_binding import host_plan_binding_matches
 from agent.plan_tool_versions import pin_new_plan_checkpoint
 from agent.tool_registry import approved_read_grants
@@ -359,6 +362,7 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
             raise
         plan_store = ConversationPlanStore(Session, cid)
         execution_claim_acquired = False
+        dependency_turn_mode = False  # new-format M4 step projection already committed
         goal_store = ConversationGoalStore(Session, cid)
 
         def saved_plan_execution_guard():
@@ -494,7 +498,8 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                 guarded_mode=settings.route_admission_mode == "guarded",
                                 turn_created=True,
                                 write_consent=body.memory_write_consent,
-                                current_request=body.content))
+                                current_request=body.content,
+                                dependency_plan_enabled=settings.s25_06_dependency_plan_enabled))
                         # AC1/AC3: durable, immutable proposal+Host evidence
                         # must commit before any tool, task, memory or plan effect.
                         counter = model_call_counter.get() or {}
@@ -561,6 +566,61 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                 prior_pending_action=pending_action,
                                 prior_origin_verified=bool(
                                     pending_action and clarification_id and pending_question))
+                        # S25-06: the SAME Primary proposal/decision owns the
+                        # dependency-plan branch. No second semantic classifier,
+                        # no legacy PlanLedger, and no early tool call.
+                        if (result is None
+                                and settings.s25_06_dependency_plan_enabled
+                                and isinstance(existing_checkpoint, dict)
+                                and existing_checkpoint.get("plan_schema_version")
+                                    == "dependency-plan-v1"
+                                and primary_proposal.route_kind in {
+                                    "plan_execute_first", "plan_resume"}):
+                            requested_control = (
+                                "execute_first" if primary_proposal.route_kind
+                                == "plan_execute_first" else "resume")
+                            if (v1_admission.disposition != "allow"
+                                    or not saved_plan_execution_guard()):
+                                result = {
+                                    "run_id": turn_id, "status": "partial",
+                                    "termination_reason": "dependency_host_claim_denied",
+                                    "answer": "依赖计划未通过 Host 执行准入，未调用工具。",
+                                    "trace": [{"step": 0, "type": "dependency_plan_fenced"}],
+                                    "steps": 0}
+                            else:
+                                # Each step rolls current_raw and the durable
+                                # Claim in one DB transaction. The initial
+                                # snapshot remains immutable for Primary audit.
+                                dependency_turn_mode = True
+                                v1_plan_control = requested_control
+                                outcomes = run_dependency_read_scope(
+                                    Session, settings=settings, decision=v1_admission,
+                                    owner_id=str(uid), conversation_id=cid,
+                                    turn_id=turn_id,
+                                    request_id=body.client_request_id,
+                                    initial_turn_raw=preturn_plan_raw,
+                                    control=requested_control,
+                                    runtime=ReadToolRuntime(
+                                        mcp_client=StdioMCPClient()))
+                                complete = bool(outcomes) and all(
+                                    item.status == "checkpointed" for item in outcomes)
+                                if not complete:
+                                    failure_code = "plan_execution_outcome_unknown"
+                                result = {
+                                    "run_id": turn_id,
+                                    "status": "completed" if complete else "partial",
+                                    "termination_reason": (
+                                        "dependency_steps_checkpointed" if complete
+                                        else "plan_execution_reconciliation_required"),
+                                    "answer": (
+                                        "依赖计划步骤已按已验证的工具结果提交。"
+                                        if complete else
+                                        "执行结果尚未完成核对，已停止后续工具调用。"),
+                                    "trace": [{"step": i + 1, "type": "tool",
+                                               "name": "dependency_read",
+                                               "ok": item.status == "checkpointed"}
+                                              for i, item in enumerate(outcomes)],
+                                    "steps": len(outcomes)}
                         if result is None and primary_proposal.route_kind in {
                                 "plan_execute_first", "plan_resume"}:
                             requested_control = (
@@ -1629,6 +1689,18 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
         # External tool effects remain outside this transaction.
         try:
             with Session.begin() as db:
+                if dependency_turn_mode:
+                    # Recovery and every dependency checkpoint lock Plan ->
+                    # Claim before Dispatch/Fence. Do not first lock a Turn
+                    # or Fence here and then wait on the Claim: that would
+                    # invert the recovery lock order under concurrent crash
+                    # reconciliation and HTTP terminalization.
+                    db.execute(select(ConversationPlan).where(
+                        ConversationPlan.conversation_id == cid
+                    ).with_for_update()).scalar_one_or_none()
+                    db.execute(select(PlanExecutionClaim).where(
+                        PlanExecutionClaim.conversation_id == cid
+                    ).with_for_update()).scalar_one_or_none()
                 response = db.get(Message, assistant_id)
                 turn = db.get(Turn, turn_id)
                 if response is None or turn is None or turn.state != "running":
@@ -1696,14 +1768,35 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                 stored_plan = db.get(ConversationPlan, cid)
                 persisted_checkpoint = (json.loads(stored_plan.snapshot)
                                         if stored_plan is not None else None)
-                project_finalized_turn(
-                    db, conversation_id=cid, turn_id=turn_id,
-                    result=result, status=status,
-                    checkpoint=persisted_checkpoint,
-                    unknown_execution=(failure_code ==
-                                       "plan_execution_outcome_unknown"))
+                # Legacy task projection only understands old-format concrete
+                # expected_arguments. Never feed it a new dependency plan,
+                # including on respond/deny turns that did not run Slice D.
+                is_dependency_snapshot = (
+                    isinstance(persisted_checkpoint, dict)
+                    and persisted_checkpoint.get("plan_schema_version")
+                    == "dependency-plan-v1")
+                if not is_dependency_snapshot and not dependency_turn_mode:
+                    project_finalized_turn(
+                        db, conversation_id=cid, turn_id=turn_id,
+                        result=result, status=status,
+                        checkpoint=persisted_checkpoint,
+                        unknown_execution=(failure_code ==
+                                           "plan_execution_outcome_unknown"))
+                # New-format Attempt/TaskState projection occurs only inside
+                # the step checkpoint transaction, never this terminal Turn.
                 # Release any saved-plan claim in the same transaction that
                 # persists the terminal Turn state, including partial/error paths.
+                if dependency_turn_mode:
+                    # Failed minting must not revoke another Turn's generation.
+                    # The current Turn can own its Fence only after a
+                    # successfully committed generation acquisition.
+                    from services.db import DependencyWorkerFence
+                    owned_fence = db.execute(select(DependencyWorkerFence).where(
+                        DependencyWorkerFence.conversation_id == cid
+                    ).with_for_update()).scalar_one_or_none()
+                    if owned_fence is not None and owned_fence.turn_id == turn_id:
+                        revoke_dependency_fence_in_session(
+                            db, conversation_id=cid, turn_id=turn_id)
                 plan_store.release_execution_claim_in_session(db, turn_id=turn_id)
                 if (status == "partial"
                         and failure_code == "needs_input:create_task"
