@@ -167,6 +167,8 @@ def _inspect_locked(db, *, owner_id, conversation_id, turn_id):
             "id": item.id, "step": item.step_id, "status": item.status,
             "turn_id": item.turn_id,
             "tool_name": item.tool_name, "tool_version": item.tool_version,
+            "worker_generation": item.worker_generation,
+            "worker_token_digest": item.worker_token_digest,
             "arguments_sha256": hashlib.sha256(
                 item.arguments_json.encode("utf-8")).hexdigest(),
             "receipt_sha256": hashlib.sha256(
