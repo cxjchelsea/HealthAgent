@@ -8,6 +8,7 @@ import secrets
 from dataclasses import dataclass
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from agent.dependency_plan_schema import DependencyPlanError
 from services.db import (
@@ -38,6 +39,18 @@ def acquire_dependency_fence(session_factory, *, conversation_id: str,
     The Plan row is locked before Claim and Fence to match the Host/M4 order.
     """
     secret = secrets.token_urlsafe(32)
+    try:
+        return _acquire_locked(
+            session_factory, conversation_id=conversation_id,
+            turn_id=turn_id, expected_raw=expected_raw, secret=secret)
+    except IntegrityError:
+        # Two workers may observe an absent row simultaneously; the unique
+        # conversation key elects one winner on PostgreSQL. Never retry.
+        _deny()
+
+
+def _acquire_locked(session_factory, *, conversation_id: str, turn_id: str,
+                    expected_raw: str, secret: str) -> DependencyFenceToken:
     with session_factory.begin() as db:
         plan = db.execute(select(ConversationPlan).where(
             ConversationPlan.conversation_id == conversation_id
