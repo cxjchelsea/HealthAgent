@@ -10,19 +10,17 @@ import hashlib
 import json
 
 from pydantic import ValidationError
-from sqlalchemy import select
 
 from agent.config import Settings
 from agent.dependency_plan_schema import (
     DependencyPlanError, PLAN_SCHEMA_VERSION, PLAN_EXECUTOR_VERSION,
-    PINNED_TOOL_VERSION,
+    PINNED_TOOL_VERSION, DependencyStep, LiteralBinding, ObservationBinding,
 )
 from agent.primary_host_admission_v1 import PrimaryHostDecision
-from agent.tool_registry import READ_REGISTRY, ReadToolRuntime
+from agent.tool_registry import READ_REGISTRY
 from agent.tools import ReferenceArgs
 from services.db import (
-    AgentAttempt, Conversation, ConversationPlan, PlanExecutionClaim,
-    PlanToolDispatch, Turn,
+    Conversation, ConversationPlan, PlanExecutionClaim, Turn,
 )
 from services.dependency_observation import resolve_checkpointed_definition
 from services.evidence_store import arguments_digest
@@ -87,41 +85,117 @@ def _parse_snapshot(raw: str) -> dict:
 
 
 def _step_for_read(checkpoint: dict, step_id: int) -> dict:
+    """Validate the WHOLE persisted plan, not just its selected step.
+
+    The creation parser accepts only all-pending proposals. This validator is
+    limited to the new read-only runtime format and cannot grant authority.
+    """
     steps = checkpoint.get("steps")
-    if type(steps) is not list or not 2 <= len(steps) <= 8:
+    executions = checkpoint.get("executions")
+    if (set(checkpoint) != {"plan_schema_version", "plan_executor_version",
+                           "revision", "next_step_id", "steps", "executions"}
+            or type(steps) is not list or not 2 <= len(steps) <= 8
+            or type(executions) is not dict
+            or type(checkpoint.get("revision")) is not int
+            or checkpoint["revision"] != 1):
         _deny("dependency_invalid_schema")
-    seen = set()
-    pending = []
-    for item in steps:
-        if type(item) is not dict:
+    completed_ids: set[int] = set()
+    seen: set[int] = set()
+    last_id = 0
+    seen_pending = False
+    normalized_steps = []
+    for raw in steps:
+        if type(raw) is not dict:
             _deny("dependency_invalid_schema")
-        sid = item.get("id")
-        if type(sid) is not int or sid <= 0 or sid in seen:
-            _deny("dependency_invalid_schema")
-        seen.add(sid)
-        status = item.get("status")
+        # Creation strict schema disallows completed states, so check the
+        # runtime state separately before validating all other exact fields.
+        status = raw.get("status")
         if status not in {"pending", "completed"}:
             _deny("dependency_invalid_schema")
-        if status == "pending":
-            pending.append(item)
+        try:
+            parsed = DependencyStep.model_validate({**raw, "status": "pending"})
+        except (ValidationError, TypeError, ValueError):
+            _deny("dependency_invalid_schema")
+        sid = parsed.id
+        if sid in seen or sid <= last_id:
+            _deny("dependency_invalid_schema")
+        if len(parsed.depends_on) != len(set(parsed.depends_on)):
+            _deny("dependency_invalid_schema")
+        if any(parent >= sid or parent not in seen for parent in parsed.depends_on):
+            _deny("dependency_invalid_schema")
+        # Read v1 supports ordered, serial, prefix completion only; no
+        # skipping a failed earlier step based on forged completed siblings.
+        if status == "completed":
+            if seen_pending:
+                _deny("dependency_invalid_schema")
+            completed_ids.add(sid)
+        else:
+            seen_pending = True
+        if (parsed.expected_tool not in _PLAN_READ_TOOLS
+                or parsed.tool_version != PINNED_TOOL_VERSION):
+            _deny("dependency_tool_version_mismatch")
+        if parsed.expected_tool == "mcp_reference_lookup":
+            if parsed.depends_on or set(parsed.argument_bindings) != {"term"}:
+                _deny("dependency_invalid_schema")
+            term = parsed.argument_bindings["term"]
+            if not isinstance(term, LiteralBinding):
+                _deny("dependency_invalid_schema")
+            try:
+                checked_args = ReferenceArgs.model_validate(
+                    {"term": term.value}).model_dump()
+            except ValidationError:
+                _deny("dependency_invalid_schema")
+            if (checked_args != {"term": term.value}
+                    or term.value.casefold() not in term.source_quote.casefold()):
+                _deny("dependency_invalid_schema")
+        else:
+            if set(parsed.argument_bindings) != {"text"}:
+                _deny("dependency_invalid_schema")
+            bound = parsed.argument_bindings["text"]
+            if isinstance(bound, ObservationBinding):
+                if (bound.source_step_id not in parsed.depends_on
+                        or bound.source_step_id not in seen):
+                    _deny("dependency_invalid_schema")
+                parent = next(
+                    (x for x in normalized_steps
+                     if x["id"] == bound.source_step_id), None)
+                if (parent is None
+                        or parent["expected_tool"] != "mcp_reference_lookup"
+                        or bound.field != "definition"):
+                    _deny("dependency_invalid_schema")
+            elif not isinstance(bound, LiteralBinding):
+                _deny("dependency_invalid_schema")
+        normalized_steps.append(raw)
+        seen.add(sid)
+        last_id = sid
+    if (type(checkpoint.get("next_step_id")) is not int
+            or checkpoint["next_step_id"] != last_id + 1):
+        _deny("dependency_invalid_schema")
+    if set(executions) != {str(i) for i in completed_ids}:
+        _deny("dependency_untrusted_observation")
+    for sid in completed_ids:
+        info = executions[str(sid)]
+        if (type(info) is not dict
+                or type(info.get("step_id")) is not int
+                or info["step_id"] != sid
+                or type(info.get("plan_revision")) is not int
+                or info["plan_revision"] != checkpoint["revision"]
+                or type(info.get("dispatch_id")) is not str
+                or not info["dispatch_id"]
+                or type(info.get("resolved_arguments_digest")) is not str
+                or len(info["resolved_arguments_digest"]) != 64):
+            _deny("dependency_untrusted_observation")
+        matching = next(x for x in steps if x["id"] == sid)
+        if (info.get("tool_name") != matching["expected_tool"]
+                or info.get("tool_version") != matching["tool_version"]):
+            _deny("dependency_untrusted_observation")
+    pending = [s for s in steps if s["status"] == "pending"]
     if not pending or pending[0]["id"] != step_id:
         _deny("dependency_step_not_ready")
-    step = pending[0]
-    if (step.get("expected_tool") not in _PLAN_READ_TOOLS
-            or step.get("tool_version") != PINNED_TOOL_VERSION):
-        _deny("dependency_tool_version_mismatch")
-    deps = step.get("depends_on")
-    if (type(deps) is not list or len(deps) != len(set(map(str, deps)))
-            or any(type(x) is not int for x in deps)):
-        _deny("dependency_invalid_schema")
-    completed_ids = {s["id"] for s in steps if s["status"] == "completed"}
-    if not all(x < step_id and x in completed_ids for x in deps):
+    selected = pending[0]
+    if not all(x in completed_ids for x in selected["depends_on"]):
         _deny("dependency_step_not_ready")
-    if (type(checkpoint.get("revision")) is not int
-            or checkpoint["revision"] < 1
-            or type(checkpoint.get("executions")) is not dict):
-        _deny("dependency_invalid_schema")
-    return step
+    return selected
 
 
 def bind_dependency_plan_read(
