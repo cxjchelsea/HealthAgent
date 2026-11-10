@@ -65,6 +65,7 @@ def test_old_format_is_classified_but_not_interpreted_as_new():
     ({"next_step_id": 99}, "dependency_invalid_schema"),
     ({"unexpected": True}, "dependency_invalid_schema"),
     ({"executions": {"1": {"dispatch_id": "forged"}}}, "dependency_execution_not_allowed"),
+    ({"executions": None}, "dependency_invalid_schema"),
 ])
 def test_top_level_rejections(changed, code):
     p = proposal()
@@ -74,11 +75,11 @@ def test_top_level_rejections(changed, code):
 
 @pytest.mark.parametrize("changed,code", [
     ({"id": True}, "dependency_invalid_schema"),
-    ({"id": 2}, "dependency_invalid_schema"),
+    ({"id": 1}, "dependency_invalid_schema"),
     ({"depends_on": [1, 1]}, "dependency_duplicate_edge"),
     ({"depends_on": [2]}, "dependency_cycle"),
     ({"depends_on": [77]}, "dependency_unknown_step"),
-    ({"depends_on": []}, None),
+    ({"depends_on": []}, "dependency_source_not_dependency"),
     ({"status": "completed"}, "dependency_invalid_schema"),
     ({"tool_version": None}, "dependency_invalid_schema"),
     ({"expected_tool": "create_task"}, "dependency_invalid_schema"),
@@ -99,6 +100,21 @@ def test_forward_dependency_rejected_even_if_acyclic():
     p = proposal()
     p["steps"][0]["depends_on"] = [2]
     check_rejected(p, "dependency_order_invalid")
+
+
+def test_independent_literal_step_is_valid():
+    p = proposal()
+    p["steps"][1]["depends_on"] = []
+    p["steps"][1]["argument_bindings"] = {
+        "text": {"kind": "literal", "value": "RAG", "source_quote": "RAG"}
+    }
+    assert creation_ready_step_ids(parse_new_plan(p, source_message=MESSAGE)) == (1, 2)
+
+
+def test_missing_required_execution_envelope():
+    p = proposal()
+    del p["executions"]
+    check_rejected(p, "dependency_invalid_schema")
 
 
 def test_wrong_next_id_and_missing_dependency_list():
