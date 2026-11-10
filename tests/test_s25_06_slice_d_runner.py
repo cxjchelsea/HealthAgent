@@ -126,7 +126,7 @@ def test_missing_runtime_blocked_receipt_is_not_retryable(seeded):
         assert entry.status == "observed_failure"
         assert db.query(AgentAttempt).count() == 0
         assert db.get(ConversationPlan, "cid").snapshot == raw
-    with pytest.raises(DependencyPlanError, match="dependency_execution_unreconciled"):
+    with pytest.raises(DependencyPlanError, match="dependency_worker_fenced"):
         _run(Session, raw, runtime=ReadToolRuntime(mcp_client=StdioMCPClient()))
     with Session() as db:
         assert db.query(PlanToolDispatch).count() == 1
@@ -175,7 +175,17 @@ def test_changed_initial_turn_digest_prevents_dispatch(seeded):
         assert db.query(PlanToolDispatch).count() == 0
 
 
-def _prepare_second_without_dispatch(Session, initial_raw):
+def _prepare_second_without_dispatch(Session, initial_raw, monkeypatch):
+    import agent.dependency_plan_runner as runner
+    original_acquire = runner.acquire_dependency_fence
+    captured = {}
+
+    def capture(*args, **kwargs):
+        token = original_acquire(*args, **kwargs)
+        captured["token"] = token
+        return token
+
+    monkeypatch.setattr(runner, "acquire_dependency_fence", capture)
     first = run_one_dependency_read(
         Session, settings=_settings(), decision=_decision(),
         owner_id="owner", conversation_id="cid", turn_id="tid",
@@ -189,15 +199,16 @@ def _prepare_second_without_dispatch(Session, initial_raw):
         Session, settings=_settings(), decision=_decision(),
         owner_id="owner", conversation_id="cid", turn_id="tid",
         request_id="req", expected_raw=current, control="resume", step_id=2)
-    return current, prepared
+    return current, prepared, captured["token"]
 
 
 @pytest.mark.parametrize("tamper", [
     "attempt_digest", "projection", "source_arguments", "source_tool_version",
 ])
-def test_dispatch_rechecks_source_after_admission_before_call(seeded, tamper):
+def test_dispatch_rechecks_source_after_admission_before_call(seeded, tamper, monkeypatch):
     Session, initial_raw = seeded
-    current_raw, prepared = _prepare_second_without_dispatch(Session, initial_raw)
+    current_raw, prepared, token = _prepare_second_without_dispatch(
+        Session, initial_raw, monkeypatch)
     with Session.begin() as db:
         source = db.get(PlanToolDispatch, prepared.source_dispatch_id)
         attempt = db.get(AgentAttempt, prepared.source_dispatch_id)
@@ -213,7 +224,7 @@ def test_dispatch_rechecks_source_after_admission_before_call(seeded, tamper):
         with Session.begin() as db:
             begin_dependency_dispatch_in_session(
                 db, binding=prepared, expected_raw=current_raw,
-                initial_turn_raw=initial_raw)
+                initial_turn_raw=initial_raw, fence=token)
     with Session() as db:
         assert db.query(PlanToolDispatch).count() == 1
         assert db.query(AgentAttempt).count() == 1
