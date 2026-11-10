@@ -13,7 +13,9 @@ from agent.dependency_plan_schema import DependencyPlanError
 from agent.primary_host_admission_v1 import PrimaryHostDecision
 from agent.tool_registry import READ_REGISTRY, ReadToolRuntime
 from services.dependency_dispatch import begin_dependency_dispatch_in_session
-from services.dependency_fencing import acquire_dependency_fence, DependencyFenceToken
+from services.dependency_fencing import (
+    acquire_dependency_fence, assert_dependency_fence_in_session, DependencyFenceToken,
+)
 from services.dependency_execution import checkpoint_dependency_step_in_session
 from services.plan_dispatch import PlanDispatchJournal
 
@@ -51,6 +53,12 @@ def run_one_dependency_read(
         dispatch_id = begin_dependency_dispatch_in_session(
             db, binding=prepared, expected_raw=current_raw,
             initial_turn_raw=initial_turn_raw, fence=fence)
+    # Do one final current-generation preflight before entering the adapter.
+    # This does NOT make a cross-process network call atomic with the fence:
+    # a revoke after this check still leaves an unknown external outcome.
+    with session_factory.begin() as db:
+        assert_dependency_fence_in_session(
+            db, conversation_id=conversation_id, turn_id=turn_id, fence=fence)
     # The committed dispatch_unknown row is the mandatory before-call fence.
     # It is intentionally NOT deleted or replayed if adapter/receipt fails.
     observed = READ_REGISTRY.invoke(
@@ -112,10 +120,6 @@ def run_dependency_read_scope(
             initial_turn_raw=initial_turn_raw, current_raw=current_raw,
             control=control, step_id=step_id, runtime=runtime,
             fence=fence)
-        if fence is None:
-            # Retrieve the exact minted token from this invocation via an
-            # explicit caller-scope token, not by reading a token from SQL.
-            raise DependencyPlanError("dependency_worker_fence_missing")
         results.append(outcome)
         if outcome.status != "checkpointed" or outcome.checkpoint is None:
             return tuple(results)
