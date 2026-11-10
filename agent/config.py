@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     run_s25_01_live: bool = False
     routing_profile: Literal["auto", "unified", "legacy"] = "auto"
     route_shadow_enabled: bool = False  # M2 opt-in, never affects admission
+    s25_06_dependency_plan_enabled: bool = False  # new saved-plan admission; no API/dispatch wiring in Slice C
     s25_05_text_stats_enabled: bool = False  # opt-in; Host read-only grant, not registry authorization
     s25_05_calculate_registry_enabled: bool = False  # opt-in legacy read migration; ordinary only
     s25_05_utc_time_registry_enabled: bool = False
