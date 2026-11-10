@@ -27,9 +27,11 @@
 
 ### 3.1 首选：同一个 Primary Route 的可选、互斥、版本化 Dependency 创建载荷
 
-在 `RouteSignal` / `BoundPrimaryProposal` 增加**可选** `dependency_plan`，仅 `route_kind=plan_create` 且对应 `plan_schema_version=dependency-plan-v1` 时允许，要求 `steps=[]`（原 legacy 步骤字段不得同时存在）。其他 route_kind 只允许 `dependency_plan=None`，避免混合创建/执行意图。保留 legacy `plan_create` 的原有 `steps` 契约，flag 默认 OFF 时行为与现有主链一致。
+在 `RouteSignal` / `BoundPrimaryProposal` 增加**可选** `dependency_plan`，仅 `route_kind=plan_create`、显式 `dependency_plan_enabled=True` 且对应 `plan_schema_version=dependency-plan-v1` 时允许，要求 `steps=[]`（原 legacy 步骤字段不得同时存在）。现有 `RouteSignal.match_operation` 的 **`plan_create` 需 `2 <= len(steps) <= 8`** 是实存冲突，必须改为两条互斥分支：legacy 保留 2–8 个 `steps` 且 `dependency_plan=None`；新版必须 `steps=[]` 且严格验证 `dependency_plan`；其他 route_kind 两字段都不得承载新版载荷。默认关闭时 `primary_route_generation_schema` 不得向模型暴露此字段，`bind_route_signal` 还必须拒绝用户直接注入的新版载荷。
 
-载荷使用已存在的 `DependencyPlanCreation` 严格模型，不再发明相近的 PlanSpec；建议让模型只输出实际步骤及引用，由确定性 Host 填充/验证固定元数据（version=dependency-plan-v1、executor=dependency-plan-read-v1、revision=1、next_step_id）并再执行 `parse_new_plan(..., source_message=exact_current_request)`。若要使用模型完整输出对象，则上述固定字段必须严格匹配且不自行修复工具、参数或引用。两者择一的实现原则：**唯一持久化目标始终为现有创建 Schema**。
+载荷直接使用已存在的 `DependencyPlanCreation` 完整严格模型：模型必须输出固定的版本、`revision=1`、`next_step_id`、全部步骤和空 `executions`；Host 复用 `parse_new_plan(..., source_message=exact_current_request)`，拒绝不匹配，不做字段补齐或模型结果后修正。后续如真实 Qwen 结构化输出证据证明必要，再单独审查更窄的生成 DTO；不得在 E1 同时支持两种互相冲突的载荷来源。**唯一持久化目标始终为现有创建 Schema**。
+
+**独立复审修正：** E1 只完成契约代码与确定性测试，必须另起实施分支/PR，不能在本设计 PR 中混入实现；真实 Qwen 输出验证在 E1 审查后作为独立物理门禁，不以 Mock 通过替代。
 
 **真实模型兼容门禁：** 先核查 `HTTPUnderstandingModel` 的结构化 JSON Schema、`model_json_schema`、Qwen3:14b 的输出与约束；不能以只通过 Fake 的新字段为由修改默认 Prompt。新增字段和 Prompt 必须随 S25-06 flag 明示启用，避免扩大默认主链模型输出的变化面。
 
