@@ -55,6 +55,7 @@ def project_finalized_turn(db, *, conversation_id: str, turn_id: str,
         db.add(AgentAttempt(
             id=dispatch.id, conversation_id=conversation_id, turn_id=turn_id,
             run_id=run_id, step_id=dispatch.step_id, tool_name=dispatch.tool_name,
+            tool_version=dispatch.tool_version,
             arguments_digest=arguments_digest(args), status="succeeded",
             # Never expose the M4 raw receipt in the S25-03 evidence API.
             # Project from the actual persisted receipt using the same
