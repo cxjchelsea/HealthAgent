@@ -232,3 +232,56 @@ def test_no_permissions_from_preview_object(case):
         binding.tool_name, binding.arguments, expected_version=binding.tool_version,
         granted_names=(), exposed_names=(binding.tool_name,))
     assert result["error"] == "permission_denied"
+
+
+def _replace_plan(case, mutate):
+    def change(db):
+        row = db.get(ConversationPlan, "cid")
+        plan = json.loads(row.snapshot)
+        mutate(plan)
+        raw = json.dumps(plan, ensure_ascii=False)
+        row.snapshot = raw
+        db.get(PlanExecutionClaim, "cid").snapshot = raw
+    _change(case, change)
+
+
+@pytest.mark.parametrize("mutation,code", [
+    (lambda p: p["steps"][1].update(id=1), "dependency_invalid_schema"),
+    (lambda p: p["steps"][1].update(depends_on=[1, 1]), "dependency_invalid_schema"),
+    (lambda p: p["steps"][0].update(depends_on=[2]), "dependency_invalid_schema"),
+    (lambda p: p["steps"][1].update(expected_tool="create_task"), "dependency_tool_version_mismatch"),
+    (lambda p: p["steps"][1]["argument_bindings"]["text"].update(source_step_id=77),
+     "dependency_invalid_schema"),
+    (lambda p: p["steps"][1].update(unexpected="host-skip"), "dependency_invalid_schema"),
+    (lambda p: p.update(next_step_id=99), "dependency_invalid_schema"),
+    (lambda p: p.update(executions={"1": {"dispatch_id": "forged"}}),
+     "dependency_untrusted_observation"),
+    (lambda p: p["steps"][1].update(status="completed"), "dependency_untrusted_observation"),
+    (lambda p: p["steps"][0]["argument_bindings"]["term"].update(value="injected"),
+     "dependency_invalid_schema"),
+])
+def test_full_plan_rejects_tampering_outside_selected_step(case, mutation, code):
+    _replace_plan(case, mutation)
+    _denied(case, code)
+
+
+def test_completed_step_requires_bound_execution_record(case):
+    _complete_source(case)
+    _replace_plan(case, lambda p: p.update(executions={}))
+    _denied(case, "dependency_untrusted_observation",
+            decision=RESUME, control="resume", step_id=2)
+
+
+def test_completed_step_cannot_follow_pending_step(case):
+    _complete_source(case)
+    def invert(p):
+        p["steps"][0]["status"] = "pending"
+        p["steps"][1]["status"] = "completed"
+    _replace_plan(case, invert)
+    _denied(case, "dependency_untrusted_observation",
+            decision=RESUME, control="resume", step_id=1)
+
+
+def test_unknown_plan_fields_and_null_ids_are_denied(case):
+    _replace_plan(case, lambda p: p.update(extra_field="unsafe"))
+    _denied(case, "dependency_invalid_schema")
