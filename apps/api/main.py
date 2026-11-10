@@ -37,6 +37,7 @@ from agent.primary_route_v1 import PrimaryRouteRejected, propose_primary_route
 from agent.primary_route_v1_canary import admit_v1_canary
 from agent.primary_host_admission_v1 import PrimaryHostFacts, admit_primary_route_v1
 from agent.dependency_plan_runner import run_dependency_read_scope
+from services.dependency_fencing import revoke_dependency_fence_in_session
 from agent.tool_registry import ReadToolRuntime
 from agent.host_plan_execution_binding import host_plan_binding_matches
 from agent.plan_tool_versions import pin_new_plan_checkpoint
@@ -1773,6 +1774,11 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                 # the step checkpoint transaction, never this terminal Turn.
                 # Release any saved-plan claim in the same transaction that
                 # persists the terminal Turn state, including partial/error paths.
+                if dependency_turn_mode:
+                    # In the same terminal transaction retire the generation:
+                    # a late Worker cannot mutate a Receipt after this Turn.
+                    revoke_dependency_fence_in_session(
+                        db, conversation_id=cid, turn_id=turn_id)
                 plan_store.release_execution_claim_in_session(db, turn_id=turn_id)
                 if (status == "partial"
                         and failure_code == "needs_input:create_task"
