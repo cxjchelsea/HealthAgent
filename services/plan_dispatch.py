@@ -6,6 +6,7 @@ before any further automatic execution. No claims of external exactly-once.
 import json
 from sqlalchemy import select
 from services.db import PlanToolDispatch, Turn
+from services.dependency_fencing import assert_dependency_fence_in_session
 
 
 UNRESOLVED_DISPATCH_STATUSES = ("dispatch_unknown", "observed", "observed_failure")
@@ -39,7 +40,7 @@ class PlanDispatchJournal:
             db.flush()
             return entry.id
 
-    def record_receipt(self, dispatch_id, observation):
+    def record_receipt(self, dispatch_id, observation, *, fence=None):
         # Store a bounded, non-credential result. Never imply a receipt
         # proves external commit unless the tool protocol guarantees it.
         # Project tool-observed fields BEFORE losing the source observation.
@@ -47,6 +48,11 @@ class PlanDispatchJournal:
         # legacy receipts with only ok/error/value remain readable.
         from services.evidence_store import bounded_projection
         with self.sessions.begin() as db:
+            # Before altering the recorded outcome, reject any generation
+            # revoked by operator recovery or superseded by another Turn.
+            assert_dependency_fence_in_session(
+                db, conversation_id=self.conversation_id,
+                turn_id=self.turn_id, fence=fence)
             entry = db.get(PlanToolDispatch, dispatch_id)
             if not entry or entry.turn_id != self.turn_id or entry.status != "dispatch_unknown":
                 raise DispatchConflict("dispatch_not_current")
