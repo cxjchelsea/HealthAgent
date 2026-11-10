@@ -11,7 +11,9 @@ import uuid
 
 from sqlalchemy import select, update
 
-from agent.dependency_plan_host import PreparedDependencyRead
+from agent.dependency_plan_host import (
+    PreparedDependencyRead, _step_for_read, _verify_completed_records,
+)
 from agent.dependency_plan_schema import DependencyPlanError
 from services.db import (
     AgentAttempt, AgentStateTransition, AgentTaskState, ConversationPlan,
@@ -80,11 +82,21 @@ def _project_step_in_session(db, *, binding, checkpoint, dispatch, receipt):
             _deny("dependency_task_projection_conflict")
         if type(previous) is not list:
             _deny("dependency_task_projection_conflict")
-        matching = [x for x in previous if type(x) is dict and x.get("id") == binding.step_id]
-        old_step_state = matching[0].get("status") if len(matching) == 1 else None
-        # A pre-existing projection may not contradict the durable plan.
-        if old_step_state not in (None, "pending"):
+        expected_previous = [
+            {"id": step["id"],
+             "status": ("pending" if step["id"] == binding.step_id
+                        else step["status"]),
+             "evidence_tool": (
+                 step["expected_tool"] if step["status"] == "completed"
+                 and step["id"] != binding.step_id else None)}
+            for step in checkpoint["steps"]
+        ]
+        # Do not overwrite a projection belonging to a different saved plan
+        # or a conflicting attempt. Only the exact preceding state may roll.
+        if old.plan_revision != checkpoint["revision"] or previous != expected_previous:
             _deny("dependency_task_projection_conflict")
+        matching = [x for x in previous if x["id"] == binding.step_id]
+        old_step_state = matching[0]["status"]
         result = db.execute(update(AgentTaskState).where(
             AgentTaskState.conversation_id == binding.conversation_id,
             AgentTaskState.revision == old.revision
@@ -147,6 +159,11 @@ def checkpoint_dependency_step_in_session(
             or type(checkpoint.get("steps")) is not list
             or type(checkpoint.get("executions")) is not dict):
         _deny("dependency_version_mismatch")
+    # Finalization can be called separately from the runner, so enforce
+    # the complete saved-plan and checkpointed-prefix invariants here too.
+    _step_for_read(checkpoint, binding.step_id)
+    _verify_completed_records(
+        db, checkpoint=checkpoint, conversation_id=binding.conversation_id)
     steps = checkpoint["steps"]
     matches = [s for s in steps if type(s) is dict and s.get("id") == binding.step_id]
     pending = [s for s in steps if type(s) is dict and s.get("status") == "pending"]
