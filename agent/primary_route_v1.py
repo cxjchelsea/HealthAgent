@@ -734,6 +734,15 @@ def primary_route_generation_schema(message: str, *,
         # Even if the caller misconfigures the experimental flag, never
         # advertise it on saved-plan and pending-origin conversations.
         schema["properties"].pop("dependency_plan", None)
+        # Pydantic emits shared $defs even after a root property is removed.
+        # Strip only the definitions introduced by this opt-in field, so
+        # default-OFF Primary has no hidden dependency plan schema surface.
+        defs = schema.get("$defs", {})
+        for name in ("DependencyPlanCreation", "DependencyStep",
+                     "LiteralBinding", "ObservationBinding"):
+            defs.pop(name, None)
+        if not defs:
+            schema.pop("$defs", None)
     if 1 <= len(message) <= 400:
         schema["properties"]["quote"] = {
             "type": "string", "const": message,
