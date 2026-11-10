@@ -1755,15 +1755,22 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                 stored_plan = db.get(ConversationPlan, cid)
                 persisted_checkpoint = (json.loads(stored_plan.snapshot)
                                         if stored_plan is not None else None)
-                if not dependency_turn_mode:
+                # Legacy task projection only understands old-format concrete
+                # expected_arguments. Never feed it a new dependency plan,
+                # including on respond/deny turns that did not run Slice D.
+                is_dependency_snapshot = (
+                    isinstance(persisted_checkpoint, dict)
+                    and persisted_checkpoint.get("plan_schema_version")
+                    == "dependency-plan-v1")
+                if not is_dependency_snapshot and not dependency_turn_mode:
                     project_finalized_turn(
                         db, conversation_id=cid, turn_id=turn_id,
                         result=result, status=status,
                         checkpoint=persisted_checkpoint,
                         unknown_execution=(failure_code ==
                                            "plan_execution_outcome_unknown"))
-                # The new-format runner already atomically projected each
-                # checkpointed Dispatch. Never double-project via legacy S25-03.
+                # New-format Attempt/TaskState projection occurs only inside
+                # the step checkpoint transaction, never this terminal Turn.
                 # Release any saved-plan claim in the same transaction that
                 # persists the terminal Turn state, including partial/error paths.
                 plan_store.release_execution_claim_in_session(db, turn_id=turn_id)
