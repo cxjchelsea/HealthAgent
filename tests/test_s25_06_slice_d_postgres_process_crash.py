@@ -18,7 +18,7 @@ from services.db import (
     ConversationPlan, PlanExecutionClaim, PlanToolDispatch,
     PrimaryRouteEvidence, Turn, database,
 )
-from services.evidence_store import arguments_digest, bounded_projection
+from services.evidence_store import arguments_digest
 from services.primary_route_evidence import snapshot_digest
 
 
