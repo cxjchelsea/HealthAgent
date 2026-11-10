@@ -9,6 +9,7 @@ import hashlib
 import json
 import uuid
 from dataclasses import dataclass
+from typing import Callable
 
 from sqlalchemy import select
 
@@ -203,20 +204,38 @@ def reconcile_dependency_orphan(
     operator_id: str, expected_plan_sha256: str,
     expected_evidence_sha256: str, worker_terminated_confirmed: bool,
     operator_authorized: bool = False,
+    operator_access_verifier: Callable[[str, str, str, str], bool] | None = None,
+    worker_termination_verifier: Callable[[str, str], bool] | None = None,
 ):
-    """Explicit operator attestation. Operator authentication is EXTERNAL.
+    """Fail-closed internal recovery requiring TWO external trust verifiers.
 
-    Only after independently confirming worker termination may callers provide
-    operator_authorized=True. This does NOT authenticate them; do not expose
-    this function on any public route or model-callable tool.
+    operator_access_verifier(operator_id, owner_id, conversation_id, turn_id)
+    and worker_termination_verifier(conversation_id, turn_id) must be trusted,
+    independent implementations. Boolean flags and evidence hashes alone do
+    NOT grant recovery. Neither verifier may derive authorization or proof
+    solely from the caller's assertions. No public/model-callable endpoint.
     """
     if (operator_authorized is not True
             or worker_terminated_confirmed is not True
             or type(operator_id) is not str or not operator_id.strip()
+            or not callable(operator_access_verifier)
+            or not callable(worker_termination_verifier)
             or not all(type(x) is str and len(x) == 64
                        and all(c in "0123456789abcdef" for c in x)
                        for x in (expected_plan_sha256, expected_evidence_sha256))):
         _deny("dependency_recovery_operator_required")
+    # These are trusted dependency injections, NOT claimable booleans. Fail
+    # closed on missing/failed verification or errors from either verifier.
+    try:
+        access_ok = operator_access_verifier(
+            operator_id, owner_id, conversation_id, turn_id)
+        termination_ok = worker_termination_verifier(conversation_id, turn_id)
+    except Exception:
+        _deny("dependency_recovery_external_verification_failed")
+    if access_ok is not True:
+        _deny("dependency_recovery_access_denied")
+    if termination_ok is not True:
+        _deny("dependency_recovery_worker_not_confirmed")
     with session_factory.begin() as db:
         inspection, claim, turn = _inspect_locked(
             db, owner_id=owner_id, conversation_id=conversation_id, turn_id=turn_id)
