@@ -1689,6 +1689,18 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
         # External tool effects remain outside this transaction.
         try:
             with Session.begin() as db:
+                if dependency_turn_mode:
+                    # Recovery and every dependency checkpoint lock Plan ->
+                    # Claim before Dispatch/Fence. Do not first lock a Turn
+                    # or Fence here and then wait on the Claim: that would
+                    # invert the recovery lock order under concurrent crash
+                    # reconciliation and HTTP terminalization.
+                    db.execute(select(ConversationPlan).where(
+                        ConversationPlan.conversation_id == cid
+                    ).with_for_update()).scalar_one_or_none()
+                    db.execute(select(PlanExecutionClaim).where(
+                        PlanExecutionClaim.conversation_id == cid
+                    ).with_for_update()).scalar_one_or_none()
                 response = db.get(Message, assistant_id)
                 turn = db.get(Turn, turn_id)
                 if response is None or turn is None or turn.state != "running":
