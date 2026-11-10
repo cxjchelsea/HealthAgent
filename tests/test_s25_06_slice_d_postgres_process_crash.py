@@ -159,8 +159,9 @@ def test_real_postgres_process_exit_retains_exact_atomic_state(
                 AgentAttempt.conversation_id == cid)))
             transitions = list(db.scalars(select(AgentStateTransition).where(
                 AgentStateTransition.conversation_id == cid)))
+            snapshot_after_crash = plan_row.snapshot
             assert turn.state == "running"  # real crash: no HTTP finally
-            assert claim is not None and claim.snapshot == plan_row.snapshot
+            assert claim is not None and claim.snapshot == snapshot_after_crash
             assert len(rows) == 1 and rows[0].status == expected_dispatch
             assert len(attempts) == (1 if checkpointed else 0)
             assert len(transitions) == (2 if checkpointed else 0)
@@ -202,7 +203,7 @@ def test_real_postgres_process_exit_retains_exact_atomic_state(
         with Session() as db:
             assert db.get(PlanExecutionClaim, cid) is None
             assert db.get(Turn, tid).state == "partial"
-            assert db.get(ConversationPlan, cid).snapshot == plan_row.snapshot
+            assert db.get(ConversationPlan, cid).snapshot == snapshot_after_crash
             assert db.scalar(select(PlanToolDispatch.id).where(
                 PlanToolDispatch.conversation_id == cid)) is not None
             from services.db import PlanRecoveryAudit
