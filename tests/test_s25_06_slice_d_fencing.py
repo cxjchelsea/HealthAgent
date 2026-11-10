@@ -136,3 +136,13 @@ def test_cannot_revoke_other_turn_or_inactive_generation(prepared):
         with Session.begin() as db:
             revoke_dependency_fence_in_session(
                 db, conversation_id="cid", turn_id="t1")
+
+
+def test_legacy_journal_cannot_begin_dependency_plan_dispatch(prepared):
+    Session, raw = prepared
+    journal = PlanDispatchJournal(Session, "cid", "t1")
+    with pytest.raises(DispatchConflict, match="dependency_plan_requires_versioned_host"):
+        journal.begin(1, "mcp_reference_lookup", {"term": "RAG"},
+                      tool_version="1.0.0")
+    with Session() as db:
+        assert db.query(PlanToolDispatch).count() == 0
