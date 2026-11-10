@@ -165,8 +165,12 @@ def begin_dependency_dispatch_in_session(
             PlanToolDispatch.conversation_id == binding.conversation_id,
             PlanToolDispatch.step_id == binding.step_id)):
         _deny("dependency_execution_duplicate_dispatch")
+    if fence is None:
+        _deny("dependency_worker_fenced")
     entry = PlanToolDispatch(
         conversation_id=binding.conversation_id, turn_id=binding.turn_id,
+        worker_generation=fence.generation,
+        worker_token_digest=hashlib.sha256(fence.secret.encode("utf-8")).hexdigest(),
         step_id=binding.step_id, tool_name=binding.tool_name,
         tool_version=binding.tool_version,
         arguments_json=json.dumps(checked, ensure_ascii=False, sort_keys=True),
