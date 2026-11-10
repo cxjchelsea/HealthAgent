@@ -86,12 +86,14 @@ def classify_plan_format(snapshot: object) -> Literal["legacy", "dependency-plan
     if not isinstance(snapshot, dict):
         raise DependencyPlanError("dependency_invalid_schema")
     if "plan_schema_version" not in snapshot:
-        new_only = {"plan_executor_version", "executions"}
-        if new_only.intersection(snapshot) or any(
-            isinstance(step, dict) and
-            ({"depends_on", "argument_bindings"} & set(step))
-            for step in snapshot.get("steps", [])
-        ) if isinstance(snapshot.get("steps", []), list) else False:
+        if {"plan_executor_version", "executions"}.intersection(snapshot):
+            raise DependencyPlanError("dependency_invalid_schema")
+        steps = snapshot.get("steps", [])
+        if isinstance(steps, list) and any(
+            isinstance(step, dict)
+            and ({"depends_on", "argument_bindings"} & set(step))
+            for step in steps
+        ):
             raise DependencyPlanError("dependency_invalid_schema")
         return "legacy"
     if snapshot["plan_schema_version"] != PLAN_SCHEMA_VERSION:
