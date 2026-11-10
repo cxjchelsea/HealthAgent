@@ -151,6 +151,9 @@ class PlanToolDispatch(Base):
     tool_name: Mapped[str] = mapped_column(String(80))
     arguments_json: Mapped[str] = mapped_column(Text)
     tool_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # Null for legacy M4, immutable generation binding for S25-06.
+    worker_generation: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    worker_token_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
     status: Mapped[str] = mapped_column(String(24), default="dispatch_unknown")
     receipt_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
