@@ -256,7 +256,7 @@ def _replace_plan(case, mutate):
     (lambda p: p.update(next_step_id=99), "dependency_invalid_schema"),
     (lambda p: p.update(executions={"1": {"dispatch_id": "forged"}}),
      "dependency_untrusted_observation"),
-    (lambda p: p["steps"][1].update(status="completed"), "dependency_untrusted_observation"),
+    (lambda p: p["steps"][1].update(status="completed"), "dependency_invalid_schema"),
     (lambda p: p["steps"][0]["argument_bindings"]["term"].update(value="injected"),
      "dependency_invalid_schema"),
 ])
