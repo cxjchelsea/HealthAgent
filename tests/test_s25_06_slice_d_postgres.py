@@ -57,8 +57,10 @@ def physical():
         "source": "trusted-reference"})
     with Session.begin() as db:
         db.add(Conversation(id=cid, owner_id="owner-physical"))
+        db.flush()  # Real PostgreSQL FK: conversation before turn.
         db.add(Turn(id=tid, conversation_id=cid, request_id="req", state="running"))
         db.add(ConversationPlan(conversation_id=cid, snapshot=raw))
+        db.flush()  # Claim and Dispatch both reference the existing Turn.
         db.add(PlanExecutionClaim(conversation_id=cid, turn_id=tid, snapshot=raw))
         db.add(PlanToolDispatch(
             id=did, conversation_id=cid, turn_id=tid, step_id=1,
