@@ -15,6 +15,7 @@ from sqlalchemy import select
 
 from agent.dependency_plan_schema import DependencyPlanError
 from services.evidence_store import arguments_digest, bounded_projection
+from services.dependency_fencing import revoke_dependency_fence_in_session
 from services.db import (
     AgentAttempt, Conversation, ConversationPlan, Message, PlanExecutionClaim,
     PlanRecoveryAudit, PlanToolDispatch, PrimaryRouteEvidence, Turn,
@@ -258,6 +259,11 @@ def reconcile_dependency_orphan(
             message.content = ("执行状态待人工核对，系统不会自动重试。"
                                if inspection.classification == "uncertain_no_replay"
                                else "已保留已验证步骤；原执行进程中断。")
+        # Invalidate the previous generation in this SAME transaction before
+        # releasing the Claim. An old runner carrying its token cannot commit
+        # a late Receipt or Checkpoint after recovery.
+        revoke_dependency_fence_in_session(
+            db, conversation_id=conversation_id, turn_id=turn_id)
         db.add(PlanRecoveryAudit(
             id=str(uuid.uuid4()), conversation_id=conversation_id,
             turn_id=turn_id, operator_id=operator_id.strip(),
