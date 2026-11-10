@@ -17,7 +17,6 @@ from services.db import (
     AgentAttempt, Conversation, ConversationPlan, Message, PlanExecutionClaim,
     PlanRecoveryAudit, PlanToolDispatch, PrimaryRouteEvidence, Turn,
 )
-from services.primary_route_evidence import snapshot_digest
 
 
 @dataclass(frozen=True)
