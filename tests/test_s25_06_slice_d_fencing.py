@@ -146,3 +146,18 @@ def test_legacy_journal_cannot_begin_dependency_plan_dispatch(prepared):
                       tool_version="1.0.0")
     with Session() as db:
         assert db.query(PlanToolDispatch).count() == 0
+
+
+def test_journal_receipt_rejects_cross_conversation_identity(prepared):
+    Session, raw = prepared
+    with Session.begin() as db:
+        db.add(Conversation(id="different", owner_id="owner"))
+        db.add(PlanToolDispatch(
+            id="cross", conversation_id="cid", turn_id="t1", step_id=7,
+            tool_name="mcp_reference_lookup", tool_version="1.0.0",
+            arguments_json='{"term":"RAG"}', status="dispatch_unknown"))
+    with pytest.raises(DispatchConflict, match="dispatch_not_current"):
+        PlanDispatchJournal(Session, "different", "t1").record_receipt(
+            "cross", {"ok": True, "definition": "RAG"})
+    with Session() as db:
+        assert db.get(PlanToolDispatch, "cross").status == "dispatch_unknown"
