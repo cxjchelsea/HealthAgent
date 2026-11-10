@@ -21,6 +21,7 @@ from services.db import (
     PlanToolDispatch, PrimaryRouteEvidence, Turn,
 )
 from services.evidence_store import arguments_digest, bounded_projection
+from services.dependency_fencing import assert_dependency_fence_in_session, DependencyFenceToken
 from services.plan_dispatch import UNRESOLVED_DISPATCH_STATUSES
 from services.primary_route_evidence import snapshot_digest
 
@@ -31,7 +32,7 @@ def _deny(code):
 
 def begin_dependency_dispatch_in_session(
     db, *, binding: PreparedDependencyRead, expected_raw: str,
-    initial_turn_raw: str,
+    initial_turn_raw: str, fence: DependencyFenceToken | None = None,
 ) -> str:
     """Check authorized, current facts then persist dispatch_unknown atomically.
 
@@ -52,6 +53,9 @@ def begin_dependency_dispatch_in_session(
     claim = db.execute(select(PlanExecutionClaim).where(
         PlanExecutionClaim.conversation_id == binding.conversation_id
     ).with_for_update()).scalar_one_or_none()
+    assert_dependency_fence_in_session(
+        db, conversation_id=binding.conversation_id,
+        turn_id=binding.turn_id, fence=fence)
     owner = db.get(Conversation, binding.conversation_id)
     turn = db.get(Turn, binding.turn_id)
     primary = db.get(PrimaryRouteEvidence, binding.turn_id)
