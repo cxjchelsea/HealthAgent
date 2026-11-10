@@ -224,24 +224,26 @@ def reconcile_dependency_orphan(
                        and all(c in "0123456789abcdef" for c in x)
                        for x in (expected_plan_sha256, expected_evidence_sha256))):
         _deny("dependency_recovery_operator_required")
-    # These are trusted dependency injections, NOT claimable booleans. Fail
-    # closed on missing/failed verification or errors from either verifier.
-    try:
-        access_ok = operator_access_verifier(
-            operator_id, owner_id, conversation_id, turn_id)
-        termination_ok = worker_termination_verifier(conversation_id, turn_id)
-    except Exception:
-        _deny("dependency_recovery_external_verification_failed")
-    if access_ok is not True:
-        _deny("dependency_recovery_access_denied")
-    if termination_ok is not True:
-        _deny("dependency_recovery_worker_not_confirmed")
     with session_factory.begin() as db:
         inspection, claim, turn = _inspect_locked(
             db, owner_id=owner_id, conversation_id=conversation_id, turn_id=turn_id)
         if (inspection.plan_sha256 != expected_plan_sha256
                 or inspection.evidence_sha256 != expected_evidence_sha256):
             _deny("dependency_recovery_evidence_changed")
+        # Check independently scoped operator authority AND irreversible
+        # worker fencing only AFTER locking the Plan/Claim/Dispatch/Attempt
+        # evidence being released. A liveness heartbeat check alone does not
+        # prove that the original executor cannot resume.
+        try:
+            access_ok = operator_access_verifier(
+                operator_id, owner_id, conversation_id, turn_id)
+            termination_ok = worker_termination_verifier(conversation_id, turn_id)
+        except Exception:
+            _deny("dependency_recovery_external_verification_failed")
+        if access_ok is not True:
+            _deny("dependency_recovery_access_denied")
+        if termination_ok is not True:
+            _deny("dependency_recovery_worker_not_confirmed")
         # Never claim unknown effects succeeded, and never erase the fence.
         # Recovery only terminates the abandoned Turn + releases its Claim.
         turn.state = "partial"
