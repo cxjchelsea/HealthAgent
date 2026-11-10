@@ -63,10 +63,13 @@ def _inspect_locked(db, *, owner_id, conversation_id, turn_id):
     if (type(data) is not dict or data.get("plan_schema_version") != "dependency-plan-v1"
             or data.get("plan_executor_version") != "dependency-plan-read-v1"):
         _deny("dependency_recovery_invalid_plan")
+    # Receipt writers lock dispatch rows. Lock the same rows for the entire
+    # inspection/reconciliation transaction, or an in-flight receipt could
+    # change after the operator's evidence digest is checked.
     dispatches = db.scalars(select(PlanToolDispatch).where(
         PlanToolDispatch.conversation_id == conversation_id,
         PlanToolDispatch.turn_id == turn_id
-    ).order_by(PlanToolDispatch.step_id, PlanToolDispatch.id)).all()
+    ).order_by(PlanToolDispatch.step_id, PlanToolDispatch.id).with_for_update()).all()
     allowed = {"dispatch_unknown", "observed", "observed_failure", "checkpointed"}
     if any(item.status not in allowed for item in dispatches):
         _deny("dependency_recovery_unrecognized_dispatch")
@@ -86,6 +89,20 @@ def _inspect_locked(db, *, owner_id, conversation_id, turn_id):
     except (KeyError, TypeError, ValueError):
         _deny("dependency_recovery_invalid_plan")
     for item in dispatches:
+        # An observed receipt is bounded evidence, not a checkpoint; malformed
+        # or inconsistent receipt states still require manual investigation.
+        if item.status == "dispatch_unknown":
+            if item.receipt_json is not None:
+                _deny("dependency_recovery_untrusted_dispatch")
+        elif item.status in {"observed", "observed_failure"}:
+            try:
+                partial_receipt = json.loads(item.receipt_json)
+            except (TypeError, ValueError):
+                _deny("dependency_recovery_untrusted_dispatch")
+            if (type(partial_receipt) is not dict
+                    or (partial_receipt.get("ok") is True)
+                    != (item.status == "observed")):
+                _deny("dependency_recovery_untrusted_dispatch")
         step = by_id.get(item.step_id)
         if (step is None or item.tool_name != step.get("expected_tool")
                 or item.tool_version != step.get("tool_version")):
@@ -120,21 +137,36 @@ def _inspect_locked(db, *, owner_id, conversation_id, turn_id):
         elif (step.get("status") != "pending" or record is not None
               or attempt is not None):
             _deny("dependency_recovery_untrusted_dispatch")
-    # Bind operator approval to exact persisted metadata AND evidence bytes,
-    # but expose only a digest. A receipt altered after inspection must fail.
-    evidence = [
-        {"id": item.id, "step": item.step_id, "status": item.status,
-         "tool_name": item.tool_name, "tool_version": item.tool_version,
-         "arguments_sha256": hashlib.sha256(
-             item.arguments_json.encode("utf-8")).hexdigest(),
-         "receipt_sha256": hashlib.sha256(
-             (item.receipt_json or "").encode("utf-8")).hexdigest(),
-         "attempt_sha256": hashlib.sha256(
-             ((db.get(AgentAttempt, item.id).result_projection or "")
-              if db.get(AgentAttempt, item.id) is not None else "").encode()
-         ).hexdigest()}
-        for item in dispatches
-    ]
+    # Bind the approval to every persisted field that can affect evidence,
+    # including Attempt metadata (not only its bounded result projection).
+    # This is an evidence checksum, never a tool authorization token.
+    evidence = []
+    for item in dispatches:
+        attempt = db.get(AgentAttempt, item.id)
+        attempt_meta = None if attempt is None else {
+            "id": attempt.id,
+            "conversation_id": attempt.conversation_id,
+            "turn_id": attempt.turn_id,
+            "step_id": attempt.step_id,
+            "status": attempt.status,
+            "tool_name": attempt.tool_name,
+            "tool_version": attempt.tool_version,
+            "arguments_digest": attempt.arguments_digest,
+            "result_projection": attempt.result_projection,
+            "error_code": attempt.error_code,
+        }
+        evidence.append({
+            "id": item.id, "step": item.step_id, "status": item.status,
+            "turn_id": item.turn_id,
+            "tool_name": item.tool_name, "tool_version": item.tool_version,
+            "arguments_sha256": hashlib.sha256(
+                item.arguments_json.encode("utf-8")).hexdigest(),
+            "receipt_sha256": hashlib.sha256(
+                (item.receipt_json or "").encode("utf-8")).hexdigest(),
+            "attempt_sha256": hashlib.sha256(
+                json.dumps(attempt_meta, sort_keys=True, separators=(",", ":"))
+                .encode("utf-8")).hexdigest(),
+        })
     evidence_sha = hashlib.sha256(
         json.dumps(evidence, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
