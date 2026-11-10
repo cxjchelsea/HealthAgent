@@ -80,3 +80,17 @@ python -m evals.s25_03_step6_a_live --repeats 2 --output artifacts/s25-03-step6-
 本次仅修改 `evals/s25_03_step6_a_live.py`：把创建请求明确写出工具名和参数名，并通过一个**仅验收时安装**的 wrapper 调用原始 `propose_primary_route`，只输出从真实模型 JSON 计算的安全参数结构标签（`exact`、`missing_only`、`extra_only`、`missing_and_extra`、`not_object` 等）。原始模型输出直接返回原来的 Primary，未改动授权规则、未伪造或自动修补模型字段，日志不记录模型参数名称/值、提示词、个人数据。配套 `tests/test_s25_03_step6_a_live_harness.py` 检查诊断字段不会泄露参数内容。
 
 **下次门禁**：先看 `primary_step_argument_shapes` 与 `create_refusal_code`，而不是再次盲目调宽 Schema；只有真实创建、M4 Dispatch 与 HTTP Evidence 都完成才能打 PASS。本项是模型语义提案可靠性问题，与本次 Step 6-A 持久回执修复需要分别验收。
+
+
+## 真实 Qwen v3 最终 HTTP 验收（2026-11-10）
+
+用户上传实际运行报告 `s25-03-step6-a-live-v3.json`（报告在本地，不在 PR 提交）：`real_provider=true`，`ollama_proxy/qwen3:14b`，`routing_profile=unified`，**2/2 PASS**。
+
+- 两轮 `creation_pass`、`dispatch_pass`、`http_evidence_pass` 全为 `true`。
+- 创建结果 `plan_created_pending_execution`，无拒绝码、无验证问题；两步 `mcp_reference_lookup` 和 `calculate` 的参数结构都为 `exact`。
+- 首步实际执行结果 `pending_plan_steps`，M4 Dispatch 与 Attempt 的 `legacy-plan-v1` 可信版本、持久回执与 HTTP Evidence 中的 `definition/source` 均由验收脚本核对一致；第二步没有执行。
+- 真实模型额外提案 `other_route` 是本次 FIRST 请求的路由诊断，不是失败或替换计划；报告不储存真实检索定义、MCP 结果正文、模型提示词或私有数据。
+- 两轮耗时分别 21903ms、14238ms；仅覆盖隔离 SQLite 与可信本地 MCP mock catalog，**不能等价于生产 MCP 或 PostgreSQL 真实模型 E2E**。PostgreSQL 物理回归另由 CI 验证。
+- 同一功能/代码基线 `a8f27fa` CI `1290 passed / 5 skipped`，PostgreSQL `6 passed / 2 skipped`，[Actions 42738281473](https://github.com/cxjchelsea/HealthAgent/actions/runs/42738281473) SUCCESS。
+
+**验收裁决：S25-03 Step 6-A 中 P1 持久回执和 P2 历史窗口/版本溯源整改，在本轮约定范围内已通过自动化 + 真实 Qwen HTTP 定向验收。** 现有 `list_tasks` 内容留存策略、历史超过 100 条仅 `has_more` 而无 cursor 属于已记录的非阻断限制。此结果不是外部独立代码 Approve，也不构成用户的合并授权；PR #34 保持未合并。
