@@ -5,12 +5,13 @@ import pytest
 
 from agent.dependency_plan_schema import DependencyPlanError
 from services.db import (
-    Conversation, ConversationPlan, Message, PlanExecutionClaim,
+    AgentAttempt, Conversation, ConversationPlan, Message, PlanExecutionClaim,
     PlanRecoveryAudit, PlanToolDispatch, PrimaryRouteEvidence, Turn, database,
 )
 from services.dependency_recovery import (
     inspect_dependency_orphan, reconcile_dependency_orphan,
 )
+from services.evidence_store import arguments_digest, bounded_projection
 from services.migrate import migrate
 from services.primary_route_evidence import snapshot_digest
 
@@ -150,3 +151,58 @@ def test_wrong_turn_plan_version_or_primary_admission_cannot_be_recovered(orphan
     with pytest.raises(DependencyPlanError, match="dependency_recovery_claim_unverified"):
         inspect_dependency_orphan(
             orphan, owner_id="actual-owner", conversation_id="cid", turn_id="tid")
+
+
+@pytest.mark.parametrize("status,receipt", [
+    ("dispatch_unknown", '{"ok":true}'),
+    ("observed", None),
+    ("observed_failure", '{"ok":true}'),
+])
+def test_recovery_rejects_inconsistent_receipt_state(orphan, status, receipt):
+    with orphan.begin() as db:
+        dispatch = db.get(PlanToolDispatch, "d1")
+        dispatch.status = status
+        dispatch.receipt_json = receipt
+    with pytest.raises(DependencyPlanError, match="dependency_recovery_untrusted_dispatch"):
+        inspect_dependency_orphan(
+            orphan, owner_id="actual-owner", conversation_id="cid", turn_id="tid")
+    with orphan() as db:
+        assert db.get(PlanExecutionClaim, "cid") is not None
+
+
+def test_recovery_revalidates_completed_attempt_metadata_after_inspection(orphan):
+    receipt = bounded_projection("mcp_reference_lookup", {
+        "ok": True, "definition": "retrieval augmented generation",
+        "source": "trusted-reference"})
+    with orphan.begin() as db:
+        row = db.get(ConversationPlan, "cid")
+        plan = json.loads(row.snapshot)
+        plan["steps"][0]["status"] = "completed"
+        plan["executions"]["1"] = {
+            "dispatch_id": "d1", "step_id": 1, "plan_revision": 1,
+            "tool_name": "mcp_reference_lookup", "tool_version": "1.0.0",
+            "resolved_arguments_digest": arguments_digest({"term": "RAG"}),
+            "source_evidence_refs": [],
+        }
+        raw = json.dumps(plan, ensure_ascii=False)
+        row.snapshot = raw
+        db.get(PlanExecutionClaim, "cid").snapshot = raw
+        dispatch = db.get(PlanToolDispatch, "d1")
+        dispatch.status = "checkpointed"
+        dispatch.receipt_json = json.dumps(receipt)
+        db.add(AgentAttempt(
+            id="d1", conversation_id="cid", turn_id="tid",
+            run_id="tid", step_id=1,
+            tool_name="mcp_reference_lookup", tool_version="1.0.0",
+            arguments_digest=arguments_digest({"term": "RAG"}),
+            status="succeeded", result_projection=json.dumps(receipt)))
+    checked = inspect_dependency_orphan(
+        orphan, owner_id="actual-owner", conversation_id="cid", turn_id="tid")
+    assert checked.classification == "checkpointed_unfinalized"
+    with orphan.begin() as db:
+        db.get(AgentAttempt, "d1").error_code = "mutated_after_review"
+    _refused(orphan, checked, "dependency_recovery_evidence_changed")
+    with orphan() as db:
+        assert db.get(PlanExecutionClaim, "cid") is not None
+        assert db.get(Turn, "tid").state == "running"
+        assert db.query(PlanRecoveryAudit).count() == 0
