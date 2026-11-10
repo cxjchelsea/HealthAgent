@@ -1,4 +1,4 @@
-"""S25-03 Step 6-A: real Qwen HTTP saved-plan UTC receipt acceptance.
+"""S25-03 Step 6-A: real Qwen HTTP saved-plan MCP receipt acceptance.
 
 No fake provider, no model route stubs, no external database. Stores only
 bounded verdicts and metadata; never writes model messages or source payloads.
@@ -68,7 +68,7 @@ def evaluate(repeats=2):
                     create = client.post(
                         f"/conversations/{cid}/agent/messages",
                         json={
-                            "content": "请创建一个只保存、不执行的两步计划：第一步调用 UTC 时间工具读取当前 UTC 时间；第二步计算 6*7。",
+                            "content": "请创建一个只保存、不执行的两步计划：第一步通过 MCP 参考目录查询 RAG 的定义；第二步计算 6*7。",
                             "client_request_id": "s25-03-create-" + uuid.uuid4().hex},
                         timeout=120)
                     created = create.json()
@@ -77,8 +77,8 @@ def evaluate(repeats=2):
                         create.status_code == 200
                         and created.get("termination_reason") == "plan_created_pending_execution"
                         and len(created.get("plan", [])) == 2
-                        and created["plan"][0].get("expected_tool") == "utc_time"
-                        and created["plan"][0].get("expected_arguments") == {}
+                        and created["plan"][0].get("expected_tool") == "mcp_reference_lookup"
+                        and created["plan"][0].get("expected_arguments") == {"term": "RAG"}
                     )
                     executed = None
                     evidence_http = None
@@ -97,13 +97,13 @@ def evaluate(repeats=2):
                                 PlanToolDispatch.conversation_id == cid)).all()
                             attempts = db.scalars(select(AgentAttempt).where(
                                 AgentAttempt.conversation_id == cid,
-                                AgentAttempt.tool_name == "utc_time")).all()
+                                AgentAttempt.tool_name == "mcp_reference_lookup")).all()
                         actual_dispatch = (
                             first.status_code == 200
                             and executed.get("termination_reason") == "pending_plan_steps"
                             and len(dispatches) == 1
                             and dispatches[0].status == "checkpointed"
-                            and dispatches[0].tool_name == "utc_time"
+                            and dispatches[0].tool_name == "mcp_reference_lookup"
                             and dispatches[0].tool_version == "legacy-plan-v1"
                             and len(attempts) == 1
                             and attempts[0].id == dispatches[0].id
@@ -123,8 +123,10 @@ def evaluate(repeats=2):
                                 and len(match) == 1
                                 and match[0].get("tool_version") == "legacy-plan-v1"
                                 and match[0].get("status") == "succeeded"
-                                and isinstance(observation.get("utc"), str)
-                                and observation["utc"] == receipt.get("utc")
+                                and isinstance(observation.get("definition"), str)
+                                and bool(observation["definition"])
+                                and observation["definition"] == receipt.get("definition")
+                                and observation.get("source") == receipt.get("source")
                                 and observation.get("ok") is True
                                 and [s.get("status") for s in executed.get("plan", [])]
                                     == ["completed", "pending"]
@@ -135,6 +137,11 @@ def evaluate(repeats=2):
                         "dispatch_pass": bool(actual_dispatch),
                         "http_evidence_pass": bool(verified),
                         "create_termination": created.get("termination_reason"),
+                        "create_refusal_code": created.get("primary_v1_refusal_code"),
+                        "create_validation_issues": [
+                            {"field": x.get("field"), "category": x.get("category")}
+                            for x in (created.get("primary_v1_validation_issues") or [])[:8]
+                            if isinstance(x, dict)],
                         "first_termination": executed.get("termination_reason") if executed else None,
                         "duration_ms": int((time.monotonic() - start) * 1000),
                     })
@@ -154,8 +161,8 @@ def evaluate(repeats=2):
         "limitations": [
             "Actual primary routing may reject the chosen two-step plan; failures remain FAIL.",
             "Isolated SQLite; PostgreSQL concurrency and crash tests are separate in CI.",
-            "Tests only saved-plan utc_time and HTTP evidence, not every tool or production.",
-            "Report never records the UTC result, memory, tool arguments or model text.",
+            "Tests only saved-plan MCP reference and HTTP evidence, not every tool or production.",
+            "Report never records definition/source values, memory, tool arguments or model text.",
         ],
     }
 
