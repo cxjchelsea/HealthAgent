@@ -69,3 +69,14 @@ $env:MODEL_NAME="qwen3:14b"
 $env:RUN_S25_03_LIVE="1"
 python -m evals.s25_03_step6_a_live --repeats 2 --output artifacts/s25-03-step6-a-live-v2.json
 ```
+
+
+## 真实 Qwen v2：再次拒绝的精确诊断（2026-11-10）
+
+用户本机 `s25-03-step6-a-live-v2.json` 仍为 `0/2`，但新 `create_refusal_code` 明确显示**两轮都是 `primary_route_invalid_step_args`**；`create_validation_issues=[]`，因而这不是 `RouteSignal` 的 Pydantic 格式错误，而是模型提出的 `plan_create` 步骤在 Host 的 `bind_route_signal()` 参数白名单检查中失败。FIRST、M4 Dispatch 和 HTTP Evidence 均未开始。**不能以此认定 S25-03 回执修复失败，也不能宣称真实模型验收通过**。
+
+代码契约：`mcp_reference_lookup` 步骤要求参数键集合恰好为 `{"term"}`；`calculate` 必须恰好为 `{"expression"}`。检测不匹配时，Host 按既定策略 fail-closed，绝不由验收程序自动删键、补键或代替模型重提案。
+
+本次仅修改 `evals/s25_03_step6_a_live.py`：把创建请求明确写出工具名和参数名，并通过一个**仅验收时安装**的 wrapper 调用原始 `propose_primary_route`，只输出从真实模型 JSON 计算的安全参数结构标签（`exact`、`missing_only`、`extra_only`、`missing_and_extra`、`not_object` 等）。原始模型输出直接返回原来的 Primary，未改动授权规则、未伪造或自动修补模型字段，日志不记录模型参数名称/值、提示词、个人数据。配套 `tests/test_s25_03_step6_a_live_harness.py` 检查诊断字段不会泄露参数内容。
+
+**下次门禁**：先看 `primary_step_argument_shapes` 与 `create_refusal_code`，而不是再次盲目调宽 Schema；只有真实创建、M4 Dispatch 与 HTTP Evidence 都完成才能打 PASS。本项是模型语义提案可靠性问题，与本次 Step 6-A 持久回执修复需要分别验收。
