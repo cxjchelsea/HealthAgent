@@ -9,7 +9,26 @@ from agent.primary_route_v1 import (
     PrimaryRouteRejected, RouteSignal, bind_route_signal,
     primary_route_generation_schema, propose_primary_route,
 )
-from tests.test_s25_06_slice_a_schema import proposal as dependency_proposal
+def dependency_proposal():
+    return {
+        "plan_schema_version": "dependency-plan-v1",
+        "plan_executor_version": "dependency-plan-read-v1",
+        "revision": 1, "next_step_id": 3,
+        "steps": [
+            {"id": 1, "goal": "查询 RAG 定义", "depends_on": [],
+             "status": "pending", "expected_tool": "mcp_reference_lookup",
+             "tool_version": "1.0.0",
+             "argument_bindings": {
+                 "term": {"kind": "literal", "value": "RAG",
+                          "source_quote": "RAG"}}},
+            {"id": 2, "goal": "统计查到的定义", "depends_on": [1],
+             "status": "pending", "expected_tool": "text_stats",
+             "tool_version": "1.0.0",
+             "argument_bindings": {
+                 "text": {"kind": "observation_ref",
+                          "source_step_id": 1, "field": "definition"}}},
+        ], "executions": {},
+    }
 
 
 MESSAGE = "请先查询 RAG 的定义，再统计查到的文本字符数。"
