@@ -271,3 +271,25 @@ def test_second_step_rejects_incorrect_tool_count(case):
             receipt_json='{"ok":true,"characters":999,"words":3}'))
     _reject(case, _binding(current, step_id=2, source="d1"),
             current, "d2", "dependency_untrusted_observation")
+
+
+def test_second_step_rejects_unrelated_task_projection(case):
+    raw = _raw(case)
+    _finish(case, _binding(raw), raw, "d1")
+    current = _raw(case)
+    with case.begin() as db:
+        task = db.get(AgentTaskState, "cid")
+        task.step_states = json.dumps([{"id": 99, "status": "completed",
+                                        "evidence_tool": "create_task"}])
+        db.add(PlanToolDispatch(
+            id="d2", conversation_id="cid", turn_id="turn", step_id=2,
+            tool_name="text_stats", tool_version="1.0.0", status="observed",
+            arguments_json=json.dumps({"text": "retrieval augmented generation"}),
+            receipt_json='{"ok":true,"characters":30,"words":3}'))
+    with pytest.raises(DependencyPlanError, match="dependency_task_projection_conflict"):
+        _finish(case, _binding(current, step_id=2, source="d1"), current, "d2")
+    with case() as db:
+        assert db.get(ConversationPlan, "cid").snapshot == current
+        assert db.get(PlanExecutionClaim, "cid").snapshot == current
+        assert db.get(PlanToolDispatch, "d2").status == "observed"
+        assert db.get(AgentAttempt, "d2") is None
