@@ -125,6 +125,9 @@ def test_legacy_create_remains_valid_with_opt_in_and_default_off():
 def test_default_generation_schema_does_not_offer_dependency_payload():
     old = primary_route_generation_schema(MESSAGE)
     assert "dependency_plan" not in old["properties"]
+    assert set(old.get("$defs", {})).isdisjoint({
+        "DependencyPlanCreation", "DependencyStep",
+        "LiteralBinding", "ObservationBinding"})
     enabled = primary_route_generation_schema(
         MESSAGE, dependency_plan_enabled=True)
     assert "dependency_plan" in enabled["properties"]
