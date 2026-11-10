@@ -123,7 +123,7 @@ def test_wrong_next_id_and_missing_dependency_list():
     check_rejected(p, "dependency_invalid_schema")
     p = proposal()
     del p["steps"][1]["depends_on"]
-    check_rejected(p, "dependency_source_not_dependency")
+    check_rejected(p, "dependency_invalid_schema")
 
 
 @pytest.mark.parametrize("bindings,code", [
