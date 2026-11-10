@@ -6,7 +6,7 @@ before any further automatic execution. No claims of external exactly-once.
 import json
 import hashlib
 from sqlalchemy import select
-from services.db import PlanToolDispatch, Turn
+from services.db import ConversationPlan, PlanToolDispatch, Turn
 from services.dependency_fencing import assert_dependency_fence_in_session
 
 
@@ -26,6 +26,17 @@ class PlanDispatchJournal:
             turn = db.get(Turn, self.turn_id)
             if not turn or turn.conversation_id != self.conversation_id or turn.state != "running":
                 raise DispatchConflict("turn_not_running")
+            # Legacy M4 must never issue a versionless Dispatch against a
+            # new-format saved plan. The S25-06 Host runner owns that path.
+            saved = db.get(ConversationPlan, self.conversation_id)
+            if saved is not None:
+                try:
+                    plan = json.loads(saved.snapshot)
+                except (TypeError, ValueError):
+                    plan = None
+                if (type(plan) is dict
+                        and plan.get("plan_schema_version") == "dependency-plan-v1"):
+                    raise DispatchConflict("dependency_plan_requires_versioned_host")
             if db.scalar(select(PlanToolDispatch.id).where(
                     PlanToolDispatch.conversation_id == self.conversation_id,
                     PlanToolDispatch.step_id == step_id,
