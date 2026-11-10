@@ -13,6 +13,7 @@ from agent.dependency_plan_schema import DependencyPlanError
 from agent.primary_host_admission_v1 import PrimaryHostDecision
 from agent.tool_registry import READ_REGISTRY, ReadToolRuntime
 from services.dependency_dispatch import begin_dependency_dispatch_in_session
+from services.dependency_fencing import acquire_dependency_fence, DependencyFenceToken
 from services.dependency_execution import checkpoint_dependency_step_in_session
 from services.plan_dispatch import PlanDispatchJournal
 
@@ -30,6 +31,7 @@ def run_one_dependency_read(
     owner_id: str, conversation_id: str, turn_id: str, request_id: str,
     initial_turn_raw: str, current_raw: str, control: str, step_id: int,
     runtime: ReadToolRuntime | None = None,
+    fence: DependencyFenceToken | None = None,
 ) -> DependencyReadOutcome:
     """One bounded, version-pinned saved-plan read; never a standalone permit.
 
@@ -41,10 +43,14 @@ def run_one_dependency_read(
         owner_id=owner_id, conversation_id=conversation_id,
         turn_id=turn_id, request_id=request_id,
         expected_raw=current_raw, control=control, step_id=step_id)
+    if fence is None:
+        fence = acquire_dependency_fence(
+            session_factory, conversation_id=conversation_id,
+            turn_id=turn_id, expected_raw=current_raw)
     with session_factory.begin() as db:
         dispatch_id = begin_dependency_dispatch_in_session(
             db, binding=prepared, expected_raw=current_raw,
-            initial_turn_raw=initial_turn_raw)
+            initial_turn_raw=initial_turn_raw, fence=fence)
     # The committed dispatch_unknown row is the mandatory before-call fence.
     # It is intentionally NOT deleted or replayed if adapter/receipt fails.
     observed = READ_REGISTRY.invoke(
@@ -54,7 +60,7 @@ def run_one_dependency_read(
         expected_version=prepared.tool_version,
         runtime=runtime)
     journal = PlanDispatchJournal(session_factory, conversation_id, turn_id)
-    journal.record_receipt(dispatch_id, observed)
+    journal.record_receipt(dispatch_id, observed, fence=fence)
     if observed.get("ok") is not True:
         return DependencyReadOutcome(
             status="blocked", dispatch_id=dispatch_id, checkpoint=None,
@@ -62,7 +68,7 @@ def run_one_dependency_read(
     with session_factory.begin() as db:
         checkpoint = checkpoint_dependency_step_in_session(
             db, binding=prepared, expected_raw=current_raw,
-            dispatch_id=dispatch_id)
+            dispatch_id=dispatch_id, fence=fence)
     return DependencyReadOutcome(
         status="checkpointed", dispatch_id=dispatch_id, checkpoint=checkpoint)
 
@@ -81,6 +87,9 @@ def run_dependency_read_scope(
     if control not in ("execute_first", "resume"):
         raise DependencyPlanError("dependency_host_control_denied")
     current_raw = initial_turn_raw
+    fence = acquire_dependency_fence(
+        session_factory, conversation_id=conversation_id,
+        turn_id=turn_id, expected_raw=initial_turn_raw)
     results = []
     for _ in range(8):
         try:
@@ -101,7 +110,12 @@ def run_dependency_read_scope(
             owner_id=owner_id, conversation_id=conversation_id,
             turn_id=turn_id, request_id=request_id,
             initial_turn_raw=initial_turn_raw, current_raw=current_raw,
-            control=control, step_id=step_id, runtime=runtime)
+            control=control, step_id=step_id, runtime=runtime,
+            fence=fence)
+        if fence is None:
+            # Retrieve the exact minted token from this invocation via an
+            # explicit caller-scope token, not by reading a token from SQL.
+            raise DependencyPlanError("dependency_worker_fence_missing")
         results.append(outcome)
         if outcome.status != "checkpointed" or outcome.checkpoint is None:
             return tuple(results)
