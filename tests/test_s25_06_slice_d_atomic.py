@@ -5,7 +5,6 @@ these tests exercise the atomic finalizer and rollback, NOT live tool routing.
 """
 import hashlib
 import json
-from dataclasses import replace
 
 import pytest
 
@@ -157,11 +156,16 @@ def test_failure_rolls_back_all_evidence(case, mutation, error):
     raw = _raw(case)
     with case.begin() as db:
         d = db.get(PlanToolDispatch, "d1")
-        if mutation == "receipt_unknown": d.status = "dispatch_unknown"
-        if mutation == "receipt_failure": d.receipt_json = '{"ok":false}'
-        if mutation == "wrong_args": d.arguments_json = '{"term":"wrong"}'
-        if mutation == "wrong_version": d.tool_version = "2.0.0"
-        if mutation == "wrong_turn": d.turn_id = "other"
+        if mutation == "receipt_unknown":
+            d.status = "dispatch_unknown"
+        if mutation == "receipt_failure":
+            d.receipt_json = '{"ok":false}'
+        if mutation == "wrong_args":
+            d.arguments_json = '{"term":"wrong"}'
+        if mutation == "wrong_version":
+            d.tool_version = "2.0.0"
+        if mutation == "wrong_turn":
+            d.turn_id = "other"
         if mutation == "stale_claim":
             db.get(PlanExecutionClaim, "cid").snapshot = "stale"
         if mutation == "terminal_turn":
