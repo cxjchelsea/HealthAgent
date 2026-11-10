@@ -9,6 +9,8 @@ import json
 import pytest
 
 from agent.config import Settings
+from agent.dependency_plan_host import bind_dependency_plan_read
+from services.dependency_dispatch import begin_dependency_dispatch_in_session
 from agent.dependency_plan_runner import (
     run_dependency_read_scope, run_one_dependency_read,
 )
@@ -171,3 +173,47 @@ def test_changed_initial_turn_digest_prevents_dispatch(seeded):
             runtime=ReadToolRuntime(mcp_client=StdioMCPClient()))
     with Session() as db:
         assert db.query(PlanToolDispatch).count() == 0
+
+
+def _prepare_second_without_dispatch(Session, initial_raw):
+    first = run_one_dependency_read(
+        Session, settings=_settings(), decision=_decision(),
+        owner_id="owner", conversation_id="cid", turn_id="tid",
+        request_id="req", initial_turn_raw=initial_raw,
+        current_raw=initial_raw, control="resume", step_id=1,
+        runtime=ReadToolRuntime(mcp_client=StdioMCPClient()))
+    assert first.status == "checkpointed"
+    with Session() as db:
+        current = db.get(ConversationPlan, "cid").snapshot
+    prepared = bind_dependency_plan_read(
+        Session, settings=_settings(), decision=_decision(),
+        owner_id="owner", conversation_id="cid", turn_id="tid",
+        request_id="req", expected_raw=current, control="resume", step_id=2)
+    return current, prepared
+
+
+@pytest.mark.parametrize("tamper", [
+    "attempt_digest", "projection", "source_arguments", "source_tool_version",
+])
+def test_dispatch_rechecks_source_after_admission_before_call(seeded, tamper):
+    Session, initial_raw = seeded
+    current_raw, prepared = _prepare_second_without_dispatch(Session, initial_raw)
+    with Session.begin() as db:
+        source = db.get(PlanToolDispatch, prepared.source_dispatch_id)
+        attempt = db.get(AgentAttempt, prepared.source_dispatch_id)
+        if tamper == "attempt_digest":
+            attempt.arguments_digest = "a" * 64
+        elif tamper == "projection":
+            attempt.result_projection = '{"ok":true,"definition":"forged"}'
+        elif tamper == "source_arguments":
+            source.arguments_json = '{"term":"MCP"}'
+        else:
+            source.tool_version = "2.0.0"
+    with pytest.raises(DependencyPlanError, match="dependency_untrusted_observation"):
+        with Session.begin() as db:
+            begin_dependency_dispatch_in_session(
+                db, binding=prepared, expected_raw=current_raw,
+                initial_turn_raw=initial_raw)
+    with Session() as db:
+        assert db.query(PlanToolDispatch).count() == 1
+        assert db.query(AgentAttempt).count() == 1
