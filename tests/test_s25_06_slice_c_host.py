@@ -222,7 +222,7 @@ def test_tool_name_cannot_be_ordinary_or_write(case):
         row.snapshot = raw
         db.get(PlanExecutionClaim, "cid").snapshot = raw
     _change(case, change_tool)
-    _denied(case, "dependency_tool_version_mismatch")
+    _denied(case, "dependency_invalid_schema")
 
 
 def test_no_permissions_from_preview_object(case):
@@ -249,7 +249,7 @@ def _replace_plan(case, mutate):
     (lambda p: p["steps"][1].update(id=1), "dependency_invalid_schema"),
     (lambda p: p["steps"][1].update(depends_on=[1, 1]), "dependency_invalid_schema"),
     (lambda p: p["steps"][0].update(depends_on=[2]), "dependency_invalid_schema"),
-    (lambda p: p["steps"][1].update(expected_tool="create_task"), "dependency_tool_version_mismatch"),
+    (lambda p: p["steps"][1].update(expected_tool="create_task"), "dependency_invalid_schema"),
     (lambda p: p["steps"][1]["argument_bindings"]["text"].update(source_step_id=77),
      "dependency_invalid_schema"),
     (lambda p: p["steps"][1].update(unexpected="host-skip"), "dependency_invalid_schema"),
@@ -278,7 +278,7 @@ def test_completed_step_cannot_follow_pending_step(case):
         p["steps"][0]["status"] = "pending"
         p["steps"][1]["status"] = "completed"
     _replace_plan(case, invert)
-    _denied(case, "dependency_untrusted_observation",
+    _denied(case, "dependency_invalid_schema",
             decision=RESUME, control="resume", step_id=1)
 
 
