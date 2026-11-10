@@ -14,7 +14,7 @@ from services.dependency_fencing import (
     revoke_dependency_fence_in_session,
 )
 from services.migrate import migrate
-from services.plan_dispatch import PlanDispatchJournal
+from services.plan_dispatch import PlanDispatchJournal, DispatchConflict
 
 
 @pytest.fixture
@@ -92,7 +92,7 @@ def test_receipt_requires_original_generation_after_revoke(prepared):
                 token.secret.encode("utf-8")).hexdigest(),
             arguments_json='{"term":"RAG"}', status="dispatch_unknown"))
     journal = PlanDispatchJournal(Session, "cid", "t1")
-    with pytest.raises(DependencyPlanError, match="dependency_worker_fenced"):
+    with pytest.raises(DispatchConflict, match="dependency_worker_fenced"):
         journal.record_receipt(
             "d1", {"ok": True, "definition": "RAG"})
     with Session.begin() as db:
