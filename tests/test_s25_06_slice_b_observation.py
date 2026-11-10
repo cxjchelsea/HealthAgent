@@ -1,5 +1,4 @@
 """S25-06 Slice B: SQLite physical evidence tests, without execution/Host wiring."""
-from copy import deepcopy
 import json
 
 import pytest
@@ -106,6 +105,7 @@ def test_genuine_checkpointed_source_resolves_exact_text(case):
     assert result.source_evidence.dispatch_id == "dispatch-1"
     assert result.source_evidence.arguments_digest == arguments_digest({"term": "RAG"})
     assert result.plan_revision == 1
+    assert len(result.checkpoint_digest) == 64
 
 
 def test_owner_and_conversation_are_verified(case):
@@ -205,3 +205,52 @@ def test_runtime_does_not_execute_or_mutate_plan(case):
         dispatch = db.get(PlanToolDispatch, "dispatch-1")
         assert dispatch.status == "checkpointed"
         assert db.get(ConversationPlan, "conversation-a").snapshot is not None
+
+
+def test_dispatch_args_must_match_immutable_source_template(case):
+    def alter(p, d, a):
+        # All Dispatch/Attempt digests remain consistent with each other,
+        # but the plan's original source quote/value no longer matches.
+        p["steps"][0]["argument_bindings"]["term"]["value"] = "KG"
+    _mutate(case, alter)
+    _refused(case, "dependency_untrusted_observation")
+
+
+def test_dispatch_extra_argument_is_never_accepted(case):
+    def alter(p, d, a):
+        args = {"term": "RAG", "injected": "x"}
+        d.arguments_json = json.dumps(args)
+        new_digest = arguments_digest(args)
+        a.arguments_digest = new_digest
+        p["executions"]["1"]["resolved_arguments_digest"] = new_digest
+    _mutate(case, alter)
+    _refused(case, "dependency_untrusted_observation")
+
+
+def test_source_step_wrong_version_even_with_valid_receipt(case):
+    _mutate(case, lambda p, d, a: p["steps"][0].update(tool_version="2.0.0"))
+    _refused(case, "dependency_untrusted_observation")
+
+
+def test_source_receipt_projection_must_match_full_allowed_view(case):
+    # Same definition but different source metadata must not pass as
+    # identical evidence.
+    def alter(p, d, a):
+        a.result_projection = json.dumps({
+            "ok": True, "definition": "Retrieval augmented generation",
+            "source": "untrusted-catalog"})
+    _mutate(case, alter)
+    _refused(case, "dependency_untrusted_observation")
+
+
+def test_duplicate_and_bool_dependency_ids_are_rejected(case):
+    _mutate(case, lambda p, d, a: p["steps"][1].update(depends_on=[1, 1]))
+    _refused(case, "dependency_invalid_schema")
+
+
+def test_plan_snapshot_digest_changes_with_persisted_plan(case):
+    initial = _resolve(case)
+    _mutate(case, lambda p, d, a: p["steps"][1].update(goal="revised description"))
+    updated = _resolve(case)
+    assert updated.arguments == initial.arguments
+    assert updated.checkpoint_digest != initial.checkpoint_digest
