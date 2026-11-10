@@ -53,11 +53,17 @@ class PlanDispatchJournal:
             ).with_for_update()).scalar_one_or_none()
             if not entry or entry.turn_id != self.turn_id or entry.status != "dispatch_unknown":
                 raise DispatchConflict("dispatch_not_current")
-            # Lock order: Dispatch → Fence, consistent with operator
-            # reconciliation. A revoked worker can never save its receipt.
-            assert_dependency_fence_in_session(
-                db, conversation_id=self.conversation_id,
-                turn_id=self.turn_id, fence=fence)
+            # Legacy M4 dispatches have no generation and must not inherit
+            # an unrelated S25-06 fence. A generation-bound dispatch always
+            # requires the exact token even if the old worker was replaced.
+            if entry.worker_generation is not None:
+                if (fence is None or fence.generation != entry.worker_generation):
+                    raise DispatchConflict("dependency_worker_fenced")
+                assert_dependency_fence_in_session(
+                    db, conversation_id=self.conversation_id,
+                    turn_id=self.turn_id, fence=fence)
+            elif fence is not None:
+                raise DispatchConflict("dependency_worker_fenced")
             bounded = bounded_projection(entry.tool_name, observation)
             # Retain the historical receipt's bounded error field and the
             # string value convention expected by legacy offline recovery.
