@@ -252,3 +252,33 @@ def test_e2_failed_terminal_commit_rolls_back_plan_and_closes_turn(
             # The first, immutable Primary admission can remain as forensic
             # evidence, but is not itself a saved plan or a tool authority.
             assert db.get(PrimaryRouteEvidence, turn.id) is not None
+
+
+
+def test_e2_formal_http_uses_real_single_primary_schema_binding(
+        tmp_path, monkeypatch):
+    """Do not bypass Primary's schema parsing and source binding in this case."""
+    from agent.understanding import HTTPUnderstandingModel
+    model_calls = []
+
+    async def primary_complete(self, *, messages, model, response_schema=None):
+        model_calls.append((model, response_schema))
+        assert "dependency_plan" in response_schema["properties"]
+        assert response_schema["properties"]["quote"]["const"] == CREATE
+        return json.dumps(_create_signal(), ensure_ascii=False)
+
+    monkeypatch.setattr(HTTPUnderstandingModel, "complete", primary_complete)
+    cfg = _config(tmp_path)
+    with TestClient(create_app(cfg)) as client:
+        cid = client.post("/conversations").json()["id"]
+        resp = client.post(f"/conversations/{cid}/agent/messages", json={
+            "content": CREATE, "client_request_id": "e2-real-primary-contract-001"})
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["termination_reason"] == (
+            "dependency_plan_created_pending_execution")
+        assert len(model_calls) == 1
+        _, Session = database(cfg.database_url)
+        with Session() as db:
+            assert json.loads(db.get(ConversationPlan, cid).snapshot) == _plan()
+            assert db.query(PlanToolDispatch).count() == 0
+            assert db.query(AgentAttempt).count() == 0
