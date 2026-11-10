@@ -42,6 +42,12 @@ class Settings(BaseSettings):
     allow_demo_identity: bool = True
     @model_validator(mode="after")
     def resolve_routing_profile(self):
+        # A real-provider S25-06 HTTP runner must not inherit the anonymous
+        # demo identity. The existing user_tokens mechanism is development
+        # auth ONLY, not an operator IAM or production authentication service.
+        if (self.s25_06_dependency_plan_enabled and self.model_provider != "fake"
+                and (self.allow_demo_identity or not self.user_tokens.strip())):
+            raise ValueError("s25_06_requires_explicit_non_demo_identity")
         # Auto selects the new default only for a real provider without an
         # explicit legacy/experimental routing override. Fake model fixtures
         # and existing explicit settings remain backward-compatible.
