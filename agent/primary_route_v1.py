@@ -170,10 +170,14 @@ class RouteSignal(StrictRouteModel):
             elif not 2 <= len(self.steps) <= 8:
                 raise PydanticCustomError(
                     "primary_route_steps_mismatch", "primary_route_steps_mismatch")
-        elif self.steps or self.dependency_plan is not None:
+        elif self.dependency_plan is not None:
             raise PydanticCustomError(
                 "primary_route_dependency_payload_mismatch",
                 "primary_route_dependency_payload_mismatch")
+        elif self.steps:
+            # Keep the exact legacy diagnostic for non-create routes.
+            raise PydanticCustomError(
+                "primary_route_steps_mismatch", "primary_route_steps_mismatch")
         if self.route_kind == "plan_revise" and self.step_number is None:
             raise PydanticCustomError("primary_route_revision_needs_step", "primary_route_revision_needs_step")
         if self.route_kind != "plan_revise" and self.step_number is not None:
