@@ -19,6 +19,65 @@ from agent.config import Settings
 from apps.api.main import create_app
 from services.db import AgentAttempt, PlanToolDispatch, database
 
+from agent.primary_route_v1 import propose_primary_route as original_primary_route
+import apps.api.main as api_main
+
+
+def safe_step_argument_shape(raw):
+    """Only bounded enum labels and counts. Never return model content."""
+    try:
+        proposal = json.loads(raw)
+    except (TypeError, ValueError):
+        return {"shape": "invalid_json"}
+    if not isinstance(proposal, dict):
+        return {"shape": "non_object"}
+    route = proposal.get("route_kind")
+    if route != "plan_create":
+        return {"shape": "other_route"}
+    steps = proposal.get("steps")
+    if not isinstance(steps, list):
+        return {"shape": "invalid_steps"}
+    shapes = []
+    for step in steps[:8]:
+        if not isinstance(step, dict):
+            shapes.append({"tool": "invalid", "args_shape": "invalid_step"})
+            continue
+        name = step.get("tool_name")
+        tool = name if name in {"calculate", "mcp_reference_lookup"} else "other"
+        arguments = step.get("arguments")
+        if not isinstance(arguments, dict):
+            status = "not_object"
+        else:
+            required = {"term"} if tool == "mcp_reference_lookup" else (
+                {"expression"} if tool == "calculate" else set())
+            keys = set(arguments)
+            status = ("exact" if keys == required else
+                      "missing_only" if keys < required else
+                      "extra_only" if required <= keys else
+                      "missing_and_extra")
+        shapes.append({"tool": tool, "args_shape": status})
+    return {"shape": "plan_create", "steps": shapes}
+
+
+@contextmanager
+def observed_primary_shapes():
+    """Observe the *real* Primary model result, never mutate proposals/routes."""
+    captured = []
+    async def route(provider, model, message, **kwargs):
+        class InspectingProvider:
+            async def complete(self, **params):
+                raw = await provider.complete(**params)
+                captured.append(safe_step_argument_shape(raw))
+                return raw
+        return await original_primary_route(
+            InspectingProvider(), model, message, **kwargs)
+    previous = api_main.propose_primary_route
+    api_main.propose_primary_route = route
+    try:
+        yield captured
+    finally:
+        api_main.propose_primary_route = previous
+
 
 @contextmanager
 def isolated_reader(url):
@@ -62,13 +121,14 @@ def evaluate(repeats=2):
             })
             start = time.monotonic()
             try:
-                with (TestClient(create_app(settings)) as client,
+                with (observed_primary_shapes() as shapes,
+                      TestClient(create_app(settings)) as client,
                       isolated_reader(settings.database_url) as Session):
                     cid = client.post("/conversations").json()["id"]
                     create = client.post(
                         f"/conversations/{cid}/agent/messages",
                         json={
-                            "content": "请创建一个只保存、不执行的两步计划：第一步通过 MCP 参考目录查询 RAG 的定义；第二步计算 6*7。",
+                            "content": "请创建一个只保存、不执行的两步计划：第一步用 mcp_reference_lookup 查询 term=rag；第二步用 calculate 计算 expression=6*7。",
                             "client_request_id": "s25-03-create-" + uuid.uuid4().hex},
                         timeout=120)
                     created = create.json()
@@ -138,6 +198,7 @@ def evaluate(repeats=2):
                         "http_evidence_pass": bool(verified),
                         "create_termination": created.get("termination_reason"),
                         "create_refusal_code": created.get("primary_v1_refusal_code"),
+                        "primary_step_argument_shapes": shapes[:3],
                         "create_validation_issues": [
                             {"field": x.get("field"), "category": x.get("category")}
                             for x in (created.get("primary_v1_validation_issues") or [])[:8]
