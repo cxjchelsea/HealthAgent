@@ -19,6 +19,7 @@ from services.db import (
     AgentAttempt, AgentStateTransition, AgentTaskState, ConversationPlan,
     PlanExecutionClaim, PlanToolDispatch, Turn, now,
 )
+from services.dependency_fencing import assert_dependency_fence_in_session, DependencyFenceToken
 from services.evidence_store import arguments_digest, bounded_projection
 
 
@@ -121,6 +122,7 @@ def _project_step_in_session(db, *, binding, checkpoint, dispatch, receipt):
 
 def checkpoint_dependency_step_in_session(
     db, *, binding: PreparedDependencyRead, expected_raw: str, dispatch_id: str,
+    fence: DependencyFenceToken | None = None,
 ) -> dict:
     """Atomic commit after M4 has already recorded a successful observation.
 
@@ -140,6 +142,9 @@ def checkpoint_dependency_step_in_session(
     claim = db.execute(select(PlanExecutionClaim).where(
         PlanExecutionClaim.conversation_id == binding.conversation_id
     ).with_for_update()).scalar_one_or_none()
+    assert_dependency_fence_in_session(
+        db, conversation_id=binding.conversation_id,
+        turn_id=binding.turn_id, fence=fence)
     turn = db.get(Turn, binding.turn_id)
     if (plan_row is None or plan_row.snapshot != expected_raw
             or claim is None or claim.turn_id != binding.turn_id
