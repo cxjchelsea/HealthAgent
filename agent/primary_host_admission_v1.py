@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from agent.primary_route_v1 import BoundPrimaryProposal
+from agent.dependency_plan_schema import DependencyPlanError, parse_new_plan
 from agent.pending_write_withdrawal_guard import (
     explicitly_withdraws_pending_task_write, standalone_pending_task_title,
 )
@@ -104,6 +105,22 @@ def admit_primary_route_v1(
     if kind == "plan_create":
         if facts.checkpoint is not None:
             return decide("deny", "primary_v1_plan_exists")
+        if proposal.dependency_plan is not None:
+            # Host independently verifies the complete model proposal and
+            # this Turn's source; a forged BoundPrimaryProposal is not a grant.
+            if (not facts.dependency_plan_enabled or facts.pending_action is not None
+                    or not facts.current_request.strip() or proposal.steps
+                    or proposal.effect_intent != "mutation_requested"
+                    or proposal.execution_scope != "none"):
+                return decide("deny", "dependency_create_host_denied")
+            try:
+                from agent.primary_route_v1 import bind_unique_quote
+                bind_unique_quote(facts.current_request, proposal.evidence.exact_text)
+                parse_new_plan(proposal.dependency_plan.model_dump(),
+                               source_message=facts.current_request)
+            except (DependencyPlanError, ValueError, TypeError):
+                return decide("deny", "dependency_create_host_denied")
+            return decide("allow", "dependency_create_candidate")
         if not 2 <= len(proposal.steps) <= 8:
             return decide("deny", "primary_v1_create_steps_invalid")
         return decide("allow", "primary_v1_create_candidate")
