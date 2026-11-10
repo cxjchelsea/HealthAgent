@@ -157,3 +157,65 @@ def test_primary_generation_uses_one_model_call_and_optional_new_contract():
 
     asyncio.run(run(True))
     asyncio.run(run(False))
+
+
+@pytest.mark.parametrize("context", [
+    {"saved_plan_present": True, "pending_action": None,
+     "pending_origin_verified": False},
+    {"saved_plan_present": False, "pending_action": "create_task",
+     "pending_origin_verified": False},
+    {"saved_plan_present": False, "pending_action": "create_task",
+     "pending_origin_verified": True},
+])
+def test_unavailable_creation_context_never_exposes_new_schema_or_prompt(context):
+    class CapturingProvider:
+        def __init__(self):
+            self.calls = []
+
+        async def complete(self, **kwargs):
+            self.calls.append(kwargs)
+            return json.dumps(_signal(), ensure_ascii=False)
+
+    provider = CapturingProvider()
+
+    async def submit():
+        with pytest.raises(PrimaryRouteRejected):
+            await propose_primary_route(
+                provider, "fake-model", MESSAGE,
+                dependency_plan_enabled=True, **context)
+
+    asyncio.run(submit())
+    assert len(provider.calls) == 1
+    supplied = provider.calls[0]
+    assert "dependency_plan" not in supplied["response_schema"]["properties"]
+    assert all("S25-06 EXPERIMENTAL dependent plan creation"
+               not in m["content"] for m in supplied["messages"])
+
+
+def test_dependency_schema_is_valid_json_schema_not_root_conditional():
+    from jsonschema import Draft202012Validator
+
+    schema = primary_route_generation_schema(
+        MESSAGE, dependency_plan_enabled=True)
+    Draft202012Validator.check_schema(schema)
+    assert schema["type"] == "object"
+    assert "oneOf" not in schema
+    Draft202012Validator(schema).validate(_signal())
+    assert "dependency_plan" not in primary_route_generation_schema(
+        MESSAGE, dependency_plan_enabled=True,
+        saved_plan_present=True)["properties"]
+    assert "dependency_plan" not in primary_route_generation_schema(
+        MESSAGE, dependency_plan_enabled=True,
+        pending_action_present=True)["properties"]
+    assert "dependency_plan" not in primary_route_generation_schema(
+        MESSAGE, dependency_plan_enabled=True,
+        pending_origin_verified=True)["properties"]
+
+
+def test_unbound_root_quote_rejected_even_with_valid_dependency_plan():
+    raw = _signal()
+    raw["quote"] = "unseen intent"
+    with pytest.raises(PrimaryRouteRejected, match="primary_route_quote_not_found"):
+        bind_route_signal(RouteSignal.model_validate(raw), MESSAGE,
+                          saved_plan_present=False, pending_action=None,
+                          dependency_plan_enabled=True)
