@@ -31,6 +31,13 @@ This is not an approved production recovery runbook.
 
 All three unresolved Dispatch states remain in `UNRESOLVED_DISPATCH_STATUSES`, and the Host rejects new tool Dispatches for the conversation even after the prior Turn is marked partial. Claim release is **not** an execution clearance. Normal conversation turns may resume once the stranded running Turn is closed, subject to other application guards.
 
+## Concrete deployment and authentication findings (reviewed 2026-11-10)
+
+- Current `compose.yml` runs a single API service and sets `ALLOW_DEMO_IDENTITY=true`. The API's `user_tokens` are documented development-only bearer tokens; there is **no operator IAM role or orchestrator termination-proof adapter**. Do not promote dev tokens to a production operator authority.
+- New real-provider S25-06 configuration now fails closed if demo identity is enabled or no explicit user tokens exist. This prevents accidental anonymous S25-06 execution; it is **not certification of production user or operator authentication**. Fake-provider deterministic tests preserve their existing explicit canary configuration.
+- `tests/test_s25_06_slice_d_two_http_processes.py` uses two independent Python processes with separate FastAPI `TestClient`/DB sessions, sharing actual PostgreSQL, and verifies an in-flight dependency step cannot be dispatched twice. This is stronger than a single-process mock but is **not** an HTTP socket/reverse-proxy, real IAM, or orchestrated node-restart test.
+- Production prerequisites must be provided by actual deployment infrastructure: authenticated non-demo user and operator principals; explicit per-owner/conversation/Turn RBAC; irrevocable Worker termination or externally enforced fencing; and a complete unresolved-effect disposition protocol. Absent any proof, leave recovery disabled and the unknown Dispatch fenced.
+
 ## Still required before production authorization
 
 1. Install a real operator authorization provider with scoped identities, least privilege, auditability and denied-access tests.
