@@ -42,14 +42,20 @@ class PlanDispatchJournal:
     def record_receipt(self, dispatch_id, observation):
         # Store a bounded, non-credential result. Never imply a receipt
         # proves external commit unless the tool protocol guarantees it.
-        bounded = {"ok": observation.get("ok") is True,
-                   "error": str(observation.get("error", ""))[:80]}
-        if observation.get("ok") is True and "value" in observation:
-            bounded["value"] = str(observation["value"])[:256]
+        # Project tool-observed fields BEFORE losing the source observation.
+        # Use the same strict allowlist and size budget as S25-03 evidence;
+        # legacy receipts with only ok/error/value remain readable.
+        from services.evidence_store import bounded_projection
         with self.sessions.begin() as db:
             entry = db.get(PlanToolDispatch, dispatch_id)
             if not entry or entry.turn_id != self.turn_id or entry.status != "dispatch_unknown":
                 raise DispatchConflict("dispatch_not_current")
+            bounded = bounded_projection(entry.tool_name, observation)
+            # Retain the historical receipt's bounded error field and the
+            # string value convention expected by legacy offline recovery.
+            bounded["error"] = str(observation.get("error", ""))[:80]
+            if bounded["ok"] and "value" in bounded:
+                bounded["value"] = str(bounded["value"])[:256]
             entry.receipt_json = json.dumps(bounded, ensure_ascii=False)
             entry.status = "observed" if bounded["ok"] else "observed_failure"
 
