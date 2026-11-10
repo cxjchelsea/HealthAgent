@@ -23,3 +23,22 @@
 - 此次新增自动化 HTTP 测试使用 fake Primary 作为可控路由；不等同于真实 Qwen 的跨轮执行证据验收。
 - 即使最新 CI 通过，仍建议在部署前验证真实模型的 M4 非计算工具历史回放，并审查 API 的 owner 权限、分页接口需求。
 - 未获用户合并授权，PR #34 保持 Draft。
+
+
+## Step 6-A PR #34 二次代码复审与真实模型门禁（2026-11-10）
+
+**审查类型：** 同一助手对 PR Git Diff 的二次代码复审，非独立人类审阅/正式 GitHub Approve。
+
+- 已逐项核对 `services/plan_dispatch.py`、`services/s25_03_projection.py`、`services/task_state.py`、`apps/api/main.py` 变更与 SQLite HTTP、PostgreSQL 物理测试。工具调用仍由原有 M4 准入 + claim + guard + Dispatch 决定，新 `bounded_projection` 在收到观察后、持久化前运行，**不发放执行权限**。
+- 与旧回执的兼容：`record_receipt` 仍记录 `ok` 和 `error`，`calculate.value` 保留字符串格式并限长，未给历史 NULL Attempt 伪造最新 `tool_version`。新增允许字段由原 `_ALLOWED_OUTPUT` 统一治理。
+- 需保留的 **P2 数据保护限制**：`list_tasks` 白名单仍允许保存有界的 `tasks` 内容，和 `mcp_reference_lookup` 的检索定义。长度限制不等于完整隐私治理或防提示词污染；这些内容不得升级为指令或 Host 授权。当前属于已有输出策略的受限扩大持久化，生产部署需按个人信息类别复核保留期及最小化字段。
+- **已知非目标**：HTTP `task-history` 新增最新优先和 `has_more`，但尚无 cursor 扫描更早的历史；不宣称可浏览全量事件。历史已丢失字段不得合成回填。
+- 为填补真实模型证据缺口，新增 `evals/s25_03_step6_a_live.py`：强制 `RUN_S25_03_LIVE=1`、真实 provider、独立 SQLite；使用真实 Primary 先创建含 `utc_time` 首步的计划，再通过 Host 执行 FIRST，并同时核验 M4 持久 Dispatch、AgentAttempt 版本、Evidence HTTP 中的相同 `utc`。报告仅记录布尔裁决/执行元信息，不导出模型正文、记忆或 UTC 原值。
+- 运行命令（Windows PowerShell 环境启动 Ollama Proxy 并设置 `MODEL_BASE_URL` 后）：
+  ```powershell
+  $env:MODEL_PROVIDER="ollama_proxy"
+  $env:MODEL_NAME="qwen3:14b"
+  $env:RUN_S25_03_LIVE="1"
+  python -m evals.s25_03_step6_a_live --repeats 2 --output artifacts/s25-03-step6-a-live.json
+  ```
+- **门禁**：CI 检查真实模型验收脚本的安全拒绝条件，但不会自动访问用户本地 Qwen，因此 CI PASS 不等于本地真实模型 PASS。需要收到 `artifacts/s25-03-step6-a-live.json` 的实际 2/2 结果，再决定最终验收；未经合并授权不合并 PR #34。
