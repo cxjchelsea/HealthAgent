@@ -1882,7 +1882,7 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
         with Session() as db:
             get_owned(db, cid, uid)
         return {"conversation_id": cid,
-                "transitions": AgentTaskStateStore(cid).history(Session)}
+                **AgentTaskStateStore(cid).history_page(Session)}
 
     @app.get("/conversations/{cid}/turns/{turn_id}/evidence")
     def s25_turn_evidence(cid: str, turn_id: str, uid=Depends(user_id)):
@@ -1898,8 +1898,8 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                 AgentAttempt.created_at, AgentAttempt.id).limit(50)).all()
             return {"turn_id": turn_id, "attempts": [
                 {"attempt_id": a.id, "run_id": a.run_id, "step_id": a.step_id,
-                 "tool": a.tool_name, "status": a.status,
-                 "error_code": a.error_code,
+                 "tool": a.tool_name, "tool_version": a.tool_version,
+                 "status": a.status, "error_code": a.error_code,
                  "result": json.loads(a.result_projection or "{}")}
                 for a in attempts]}
 

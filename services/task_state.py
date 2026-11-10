@@ -33,12 +33,31 @@ class AgentTaskStateStore:
                 "plan_revision": row.plan_revision, "state": row.state,
                 "steps": json.loads(row.step_states)}
 
+    def history_page(self, session_factory, limit: int = 100):
+        """Newest-first bounded events, with an explicit older-history flag."""
+        from sqlalchemy import select
+        size = min(max(limit, 1), 100)
+        with session_factory() as db:
+            events = db.scalars(select(AgentStateTransition).where(
+                AgentStateTransition.conversation_id == self.conversation_id
+            ).order_by(AgentStateTransition.revision.desc(),
+                       AgentStateTransition.created_at.desc(),
+                       AgentStateTransition.id.desc()).limit(size + 1)).all()
+            return {"transitions": [
+                {"revision": event.revision, "entity_type": event.entity_type,
+                 "step_id": event.step_id, "from_state": event.from_state,
+                 "to_state": event.to_state, "reason_code": event.reason_code,
+                 "attempt_id": event.attempt_id}
+                for event in events[:size]], "has_more": len(events) > size}
+
     def history(self, session_factory, limit: int = 100):
+        """Legacy internal API: preserve oldest-first transition ordering."""
         from sqlalchemy import select
         with session_factory() as db:
             events = db.scalars(select(AgentStateTransition).where(
                 AgentStateTransition.conversation_id == self.conversation_id
-            ).order_by(AgentStateTransition.revision, AgentStateTransition.created_at,
+            ).order_by(AgentStateTransition.revision,
+                       AgentStateTransition.created_at,
                        AgentStateTransition.id).limit(min(max(limit, 1), 100))).all()
             return [{"revision": event.revision, "entity_type": event.entity_type,
                      "step_id": event.step_id, "from_state": event.from_state,

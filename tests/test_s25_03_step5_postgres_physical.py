@@ -127,3 +127,46 @@ os._exit(79)
     finally:
         _cleanup(Session, cid)
         engine.dispose()
+
+
+@pytest.mark.skipif(not os.getenv("TEST_POSTGRES_URL"),
+                    reason="requires isolated TEST_POSTGRES_URL")
+def test_postgres_step6_m4_utc_receipt_projection_and_version():
+    """Physical M4 receipt -> checkpoint -> S25-03 evidence, no model claims."""
+    import json
+    from services.plan_dispatch import PlanDispatchJournal
+
+    _, engine, Session, cid, tid = _setup()
+    checkpoint = {"revision": 1, "steps": [{
+        "id": 1, "status": "completed", "expected_tool": "utc_time",
+        "expected_arguments": {}, "evidence_tool": "utc_time",
+        "tool_version": "legacy-plan-v1",
+    }]}
+    try:
+        journal = PlanDispatchJournal(Session, cid, tid)
+        dispatch_id = journal.begin(1, "utc_time", {},
+                                    tool_version="legacy-plan-v1")
+        journal.record_receipt(dispatch_id, {
+            "ok": True, "utc": "2026-11-10T00:00:00Z",
+            "not_allowlisted": "DO_NOT_PERSIST"})
+        with Session.begin() as db:
+            journal.checkpoint_in_session(db, checkpoint)
+            project_finalized_turn(
+                db, conversation_id=cid, turn_id=tid,
+                result={"run_id": "step6-postgres"},
+                checkpoint=checkpoint, status="completed")
+            db.get(Turn, tid).state = "completed"
+        with Session() as db:
+            dispatch = db.get(PlanToolDispatch, dispatch_id)
+            attempt = db.get(AgentAttempt, dispatch_id)
+            receipt = json.loads(dispatch.receipt_json)
+            evidence = json.loads(attempt.result_projection)
+            assert dispatch.status == "checkpointed"
+            assert dispatch.tool_version == attempt.tool_version == "legacy-plan-v1"
+            assert receipt["utc"] == evidence["utc"] == "2026-11-10T00:00:00Z"
+            assert "DO_NOT_PERSIST" not in str(receipt)
+            assert "DO_NOT_PERSIST" not in str(evidence)
+            assert AgentTaskStateStore(cid).load(Session)["state"] == "completed"
+    finally:
+        _cleanup(Session, cid)
+        engine.dispose()
