@@ -12,7 +12,7 @@ from agent.config import Settings
 from agent.primary_route_v1 import RouteSignal, bind_route_signal
 from apps.api.main import create_app
 from services.db import (
-    AgentAttempt, AgentStateTransition, ConversationPlan, PlanExecutionClaim,
+    AgentAttempt, AgentStateTransition, AgentTaskState, ConversationPlan, PlanExecutionClaim,
     PlanToolDispatch, Turn, database,
 )
 
@@ -286,3 +286,38 @@ def test_http_second_tool_failure_preserves_first_checkpoint(tmp_path, monkeypat
         with Session() as db:
             assert db.query(PlanToolDispatch).count() == 2
             assert db.query(AgentAttempt).count() == 1
+
+
+def test_http_disabled_followup_never_reprojects_existing_dependency_task(
+        tmp_path, monkeypatch):
+    async def primary(*args, **kwargs):
+        return _route(args[2])
+
+    monkeypatch.setattr("apps.api.main.propose_primary_route", primary)
+    cfg = _settings(tmp_path)
+    with TestClient(create_app(cfg)) as client:
+        cid = client.post("/conversations").json()["id"]
+        _, Session = database(cfg.database_url)
+        _seed(Session, cid)
+        first = client.post(f"/conversations/{cid}/agent/messages", json={
+            "content": FIRST, "client_request_id": "s2506-http-projection-001"})
+        assert first.status_code == 200, first.text
+        with Session() as db:
+            task = db.get(AgentTaskState, cid)
+            original_revision = task.revision
+            original_state = task.state
+            original_steps = task.step_states
+            transitions = db.query(AgentStateTransition).count()
+            attempts = db.query(AgentAttempt).count()
+        cfg.s25_06_dependency_plan_enabled = False
+        denied = client.post(f"/conversations/{cid}/agent/messages", json={
+            "content": RESUME, "client_request_id": "s2506-http-projection-002"})
+        assert denied.status_code == 200, denied.text
+        assert denied.json()["termination_reason"] == "dependency_host_disabled"
+        with Session() as db:
+            task = db.get(AgentTaskState, cid)
+            assert (task.revision, task.state, task.step_states) == (
+                original_revision, original_state, original_steps)
+            assert db.query(AgentStateTransition).count() == transitions
+            assert db.query(AgentAttempt).count() == attempts
+            assert db.query(PlanToolDispatch).count() == 1
