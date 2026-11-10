@@ -1787,10 +1787,16 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                 # Release any saved-plan claim in the same transaction that
                 # persists the terminal Turn state, including partial/error paths.
                 if dependency_turn_mode:
-                    # In the same terminal transaction retire the generation:
-                    # a late Worker cannot mutate a Receipt after this Turn.
-                    revoke_dependency_fence_in_session(
-                        db, conversation_id=cid, turn_id=turn_id)
+                    # Failed minting must not revoke another Turn's generation.
+                    # The current Turn can own its Fence only after a
+                    # successfully committed generation acquisition.
+                    from services.db import DependencyWorkerFence
+                    owned_fence = db.execute(select(DependencyWorkerFence).where(
+                        DependencyWorkerFence.conversation_id == cid
+                    ).with_for_update()).scalar_one_or_none()
+                    if owned_fence is not None and owned_fence.turn_id == turn_id:
+                        revoke_dependency_fence_in_session(
+                            db, conversation_id=cid, turn_id=turn_id)
                 plan_store.release_execution_claim_in_session(db, turn_id=turn_id)
                 if (status == "partial"
                         and failure_code == "needs_input:create_task"
