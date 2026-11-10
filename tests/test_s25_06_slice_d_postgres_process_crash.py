@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 from sqlalchemy import delete, select
+from sqlalchemy.exc import OperationalError
 
 from services.db import (
     AgentAttempt, AgentStateTransition, AgentTaskState, Conversation,
@@ -20,7 +21,7 @@ from services.db import (
 )
 from services.evidence_store import arguments_digest
 from services.dependency_recovery import (
-    inspect_dependency_orphan, reconcile_dependency_orphan,
+    inspect_dependency_orphan, reconcile_dependency_orphan, _inspect_locked,
 )
 from services.primary_route_evidence import snapshot_digest
 
@@ -176,6 +177,18 @@ def test_real_postgres_process_exit_retains_exact_atomic_state(
             else:
                 assert db.get(AgentTaskState, cid) is None
                 assert rows[0].id not in plan["executions"]
+        # PostgreSQL: the inspector and concurrent Receipt writer must
+        # serialize on the SAME dispatch row. An independent transaction
+        # cannot NOWAIT-acquire that row during the operator attestation.
+        with Session.begin() as lock_db:
+            _inspect_locked(
+                lock_db, owner_id="crash-owner",
+                conversation_id=cid, turn_id=tid)
+            with Session() as second_db:
+                with pytest.raises(OperationalError):
+                    second_db.execute(select(PlanToolDispatch).where(
+                        PlanToolDispatch.conversation_id == cid
+                    ).with_for_update(nowait=True)).all()
         # A replacement worker uses a NEW SQLAlchemy engine and resolves
         # the orphan with explicit operator approval. No tool is invoked.
         inspected = inspect_dependency_orphan(
