@@ -9,6 +9,10 @@ depends_on = None
 
 
 def upgrade():
+    op.add_column("plan_tool_dispatches",
+                  sa.Column("worker_generation", sa.Integer(), nullable=True))
+    op.add_column("plan_tool_dispatches",
+                  sa.Column("worker_token_digest", sa.String(64), nullable=True))
     op.create_table(
         "dependency_worker_fences",
         sa.Column("conversation_id", sa.String(40),
@@ -24,3 +28,5 @@ def upgrade():
 
 def downgrade():
     op.drop_table("dependency_worker_fences")
+    op.drop_column("plan_tool_dispatches", "worker_token_digest")
+    op.drop_column("plan_tool_dispatches", "worker_generation")
