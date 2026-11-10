@@ -171,3 +171,118 @@ def test_http_unreceipted_dispatch_does_not_replay(tmp_path, monkeypatch):
         with Session() as db:
             assert db.query(PlanToolDispatch).count() == 1
             assert db.query(AgentAttempt).count() == 0
+
+
+def test_http_observed_receipt_before_checkpoint_is_never_replayed(tmp_path, monkeypatch):
+    async def primary(*args, **kwargs):
+        return _route(args[2])
+
+    monkeypatch.setattr("apps.api.main.propose_primary_route", primary)
+
+    def crash_after_receipt(*args, **kwargs):
+        raise RuntimeError("crash_after_receipt_before_checkpoint")
+
+    monkeypatch.setattr(
+        "agent.dependency_plan_runner.checkpoint_dependency_step_in_session",
+        crash_after_receipt)
+    cfg = _settings(tmp_path)
+    with TestClient(create_app(cfg)) as client:
+        cid = client.post("/conversations").json()["id"]
+        _, Session = database(cfg.database_url)
+        _seed(Session, cid)
+        response = client.post(f"/conversations/{cid}/agent/messages", json={
+            "content": RESUME, "client_request_id": "s2506-http-observed-001"})
+        assert response.status_code == 503, response.text
+        with Session() as db:
+            entries = db.scalars(select(PlanToolDispatch).where(
+                PlanToolDispatch.conversation_id == cid)).all()
+            assert len(entries) == 1
+            assert entries[0].status == "observed"
+            assert json.loads(entries[0].receipt_json)["ok"] is True
+            assert db.query(AgentAttempt).count() == 0
+            assert json.loads(db.get(ConversationPlan, cid).snapshot) == _plan()
+        retry = client.post(f"/conversations/{cid}/agent/messages", json={
+            "content": RESUME, "client_request_id": "s2506-http-observed-002"})
+        assert retry.status_code in {200, 503}, retry.text
+        with Session() as db:
+            assert db.query(PlanToolDispatch).count() == 1
+
+
+def test_http_checkpoint_survives_crash_before_turn_terminal(tmp_path, monkeypatch):
+    async def primary(*args, **kwargs):
+        return _route(args[2])
+
+    monkeypatch.setattr("apps.api.main.propose_primary_route", primary)
+    import apps.api.main as api
+    original = api.run_dependency_read_scope
+
+    def after_success(*args, **kwargs):
+        outcomes = original(*args, **kwargs)
+        assert len(outcomes) == 1
+        assert outcomes[0].status == "checkpointed"
+        raise RuntimeError("crash_after_checkpoint_before_turn_terminal")
+
+    monkeypatch.setattr("apps.api.main.run_dependency_read_scope", after_success)
+    cfg = _settings(tmp_path)
+    with TestClient(create_app(cfg)) as client:
+        cid = client.post("/conversations").json()["id"]
+        _, Session = database(cfg.database_url)
+        _seed(Session, cid)
+        response = client.post(f"/conversations/{cid}/agent/messages", json={
+            "content": FIRST, "client_request_id": "s2506-http-after-checkpoint-001"})
+        assert response.status_code == 503, response.text
+        with Session() as db:
+            checkpoint = json.loads(db.get(ConversationPlan, cid).snapshot)
+            assert [s["status"] for s in checkpoint["steps"]] == ["completed", "pending"]
+            assert db.query(AgentAttempt).count() == 1
+            assert db.query(PlanToolDispatch).one().status == "checkpointed"
+            assert db.get(PlanExecutionClaim, cid) is None
+            assert db.query(AgentStateTransition).filter_by(
+                reason_code="verified_step_completed").count() == 1
+        # The same first step is not eligible to run again, even in another Turn.
+        second = client.post(f"/conversations/{cid}/agent/messages", json={
+            "content": FIRST, "client_request_id": "s2506-http-after-checkpoint-002"})
+        assert second.status_code == 200, second.text
+        with Session() as db:
+            assert db.query(AgentAttempt).count() == 1
+            assert db.query(PlanToolDispatch).count() == 1
+
+
+def test_http_second_tool_failure_preserves_first_checkpoint(tmp_path, monkeypatch):
+    async def primary(*args, **kwargs):
+        return _route(args[2])
+
+    monkeypatch.setattr("apps.api.main.propose_primary_route", primary)
+    from agent.tool_registry import READ_REGISTRY
+    original = READ_REGISTRY.invoke
+
+    def fail_second(name, *args, **kwargs):
+        if name == "text_stats":
+            raise RuntimeError("crash_after_first_checkpoint_before_second_receipt")
+        return original(name, *args, **kwargs)
+
+    monkeypatch.setattr(READ_REGISTRY, "invoke", fail_second)
+    cfg = _settings(tmp_path)
+    with TestClient(create_app(cfg)) as client:
+        cid = client.post("/conversations").json()["id"]
+        _, Session = database(cfg.database_url)
+        _seed(Session, cid)
+        resp = client.post(f"/conversations/{cid}/agent/messages", json={
+            "content": RESUME, "client_request_id": "s2506-http-second-crash-001"})
+        assert resp.status_code == 503, resp.text
+        with Session() as db:
+            checkpoint = json.loads(db.get(ConversationPlan, cid).snapshot)
+            assert [s["status"] for s in checkpoint["steps"]] == ["completed", "pending"]
+            rows = db.scalars(select(PlanToolDispatch).where(
+                PlanToolDispatch.conversation_id == cid).order_by(
+                PlanToolDispatch.step_id)).all()
+            assert [d.status for d in rows] == ["checkpointed", "dispatch_unknown"]
+            assert db.query(AgentAttempt).count() == 1
+            assert db.query(AgentStateTransition).filter_by(
+                reason_code="verified_step_completed").count() == 1
+        retry = client.post(f"/conversations/{cid}/agent/messages", json={
+            "content": RESUME, "client_request_id": "s2506-http-second-crash-002"})
+        assert retry.status_code in {200, 503}, retry.text
+        with Session() as db:
+            assert db.query(PlanToolDispatch).count() == 2
+            assert db.query(AgentAttempt).count() == 1
