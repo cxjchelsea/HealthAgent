@@ -20,7 +20,8 @@ from agent.primary_host_admission_v1 import PrimaryHostDecision
 from agent.tool_registry import READ_REGISTRY
 from agent.tools import ReferenceArgs
 from services.db import (
-    Conversation, ConversationPlan, PlanExecutionClaim, Turn,
+    AgentAttempt, Conversation, ConversationPlan, PlanExecutionClaim,
+    PlanToolDispatch, Turn,
 )
 from services.dependency_observation import resolve_checkpointed_definition
 from services.evidence_store import arguments_digest
@@ -198,6 +199,44 @@ def _step_for_read(checkpoint: dict, step_id: int) -> dict:
     return selected
 
 
+
+def _verify_completed_records(db, *, checkpoint: dict, conversation_id: str) -> None:
+    """Every completed prefix step must have a durable, matching M4 receipt.
+
+    A claimed execution JSON entry alone is never enough to mark a source
+    prerequisite ready. This remains read-only and is not a tool grant.
+    """
+    for step in checkpoint["steps"]:
+        if step["status"] != "completed":
+            continue
+        record = checkpoint["executions"][str(step["id"])]
+        dispatch = db.get(PlanToolDispatch, record["dispatch_id"])
+        if (dispatch is None or dispatch.conversation_id != conversation_id
+                or dispatch.step_id != step["id"]
+                or dispatch.status != "checkpointed"
+                or dispatch.tool_name != step["expected_tool"]
+                or dispatch.tool_version != step["tool_version"]):
+            _deny("dependency_untrusted_observation")
+        attempt = db.get(AgentAttempt, record["dispatch_id"])
+        if (attempt is None or attempt.conversation_id != conversation_id
+                or attempt.turn_id != dispatch.turn_id
+                or attempt.step_id != step["id"]
+                or attempt.status != "succeeded"
+                or attempt.tool_name != dispatch.tool_name
+                or attempt.tool_version != dispatch.tool_version):
+            _deny("dependency_untrusted_observation")
+        try:
+            args = json.loads(dispatch.arguments_json)
+            receipt = json.loads(dispatch.receipt_json)
+        except (ValueError, TypeError):
+            _deny("dependency_untrusted_observation")
+        if (type(args) is not dict or type(receipt) is not dict
+                or receipt.get("ok") is not True
+                or arguments_digest(args) != record["resolved_arguments_digest"]
+                or attempt.arguments_digest != record["resolved_arguments_digest"]):
+            _deny("dependency_untrusted_observation")
+
+
 def bind_dependency_plan_read(
     session_factory, *, settings: Settings, decision: PrimaryHostDecision,
     owner_id: str, conversation_id: str, turn_id: str, request_id: str,
@@ -228,6 +267,9 @@ def bind_dependency_plan_read(
             _deny("dependency_host_claim_denied")
     checkpoint = _parse_snapshot(expected_raw)
     step = _step_for_read(checkpoint, step_id)
+    with session_factory() as db:
+        _verify_completed_records(
+            db, checkpoint=checkpoint, conversation_id=conversation_id)
     tool_name = step["expected_tool"]
     tool_version = step["tool_version"]
     if READ_REGISTRY.version_for(tool_name) != tool_version:
