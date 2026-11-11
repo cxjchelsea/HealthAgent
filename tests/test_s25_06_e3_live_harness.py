@@ -160,3 +160,55 @@ def test_e3_primary_shape_is_bounded_and_never_exports_model_contents():
     assert shape["dependency_steps_count"] == 2
     assert "DO_NOT_EXPORT" not in json.dumps(shape)
     assert safe_primary_output_shape("INVALID") == {"shape": "invalid_json"}
+
+
+
+def test_e3_binding_shape_identifies_invalid_argument_names_without_leaks():
+    from evals.s25_06_e3_live import safe_primary_output_shape
+    payload = {
+        "route_kind": "plan_create", "steps": [],
+        "dependency_plan": {
+            "steps": [
+                {"id": 1, "expected_tool": "mcp_reference_lookup",
+                 "argument_bindings": {
+                     "secret_term_name": {
+                         "kind": "literal", "value": "SENSITIVE_TERM",
+                         "source_quote": "SENSITIVE_QUOTE"}}},
+                {"id": 2, "expected_tool": "text_stats",
+                 "argument_bindings": {
+                     "text": {"kind": "observation_ref",
+                              "source_step_id": 1, "field": "definition"}}},
+            ]
+        }
+    }
+    shape = safe_primary_output_shape(
+        json.dumps(payload), "查询 SENSITIVE_TERM 的定义")
+    bindings = shape["dependency_binding_shapes"]
+    assert len(bindings) == 2
+    assert bindings[0]["tool"] == "mcp_reference_lookup"
+    assert bindings[0]["expected_key_present"] is False
+    assert bindings[0]["extra_key_count"] == 1
+    assert bindings[1]["expected_key_present"] is True
+    assert bindings[1]["extra_key_count"] == 0
+    assert bindings[1]["references_first_step"] is True
+    assert bindings[1]["field_is_definition"] is True
+    for secret in ("secret_term_name", "SENSITIVE_TERM", "SENSITIVE_QUOTE"):
+        assert secret not in json.dumps(shape)
+
+
+def test_e3_binding_shape_handles_untrusted_wrong_types_safely():
+    from evals.s25_06_e3_live import safe_primary_output_shape
+    payload = {
+        "route_kind": "plan_create", "steps": [],
+        "dependency_plan": {"steps": [
+            {"id": 1, "expected_tool": ["not", "a", "name"],
+             "argument_bindings": {"unsafe": {"kind": ["wrong"]}}},
+            {"id": 2, "expected_tool": "text_stats",
+             "argument_bindings": {"text": {"kind": ["wrong"]}}},
+        ]}
+    }
+    shape = safe_primary_output_shape(json.dumps(payload), "RAG")
+    bindings = shape["dependency_binding_shapes"]
+    assert bindings[0]["tool"] == "other"
+    assert bindings[1]["binding_kind"] == "missing_or_other"
+    assert "not" not in json.dumps(shape)
