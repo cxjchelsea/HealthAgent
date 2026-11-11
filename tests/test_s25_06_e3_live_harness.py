@@ -77,3 +77,47 @@ def test_e3_live_only_exports_allowlisted_issue_fields():
         ],
     }
     assert _safe_issues(data) == [{"field": "route_kind", "category": "missing"}]
+
+
+def test_e3_resume_rejects_target_not_using_source_receipt():
+    from types import SimpleNamespace as NS
+    response = NS(
+        status_code=200, headers={},
+        json=lambda: {"termination_reason": "dependency_steps_checkpointed"},
+    )
+    steps = [
+        {"id": 1, "status": "completed", "expected_tool": "mcp_reference_lookup"},
+        {"id": 2, "status": "completed", "expected_tool": "text_stats",
+         "argument_bindings": {"text": {
+             "kind": "observation_ref", "source_step_id": 1, "field": "definition"}}},
+    ]
+    source = NS(
+        id="a", status="checkpointed", tool_version="1.0.0",
+        tool_name="mcp_reference_lookup", receipt_json=json.dumps({
+            "ok": True, "definition": "AUTHENTIC_SOURCE"}),
+        arguments_json=json.dumps({"term": "RAG"}))
+    target = NS(
+        id="b", status="checkpointed", tool_version="1.0.0",
+        tool_name="text_stats", receipt_json=json.dumps({"ok": True}),
+        arguments_json=json.dumps({"text": "WRONG_SOURCE"}))
+    attempts = [
+        NS(id="a", status="succeeded", tool_version="1.0.0"),
+        NS(id="b", status="succeeded", tool_version="1.0.0"),
+    ]
+    state = {
+        "plan": {
+            "plan_schema_version": "dependency-plan-v1",
+            "plan_executor_version": "dependency-plan-read-v1",
+            "steps": steps,
+        },
+        "attempts": attempts, "dispatches": [source, target],
+        "primary": [
+            NS(disposition="allow"), NS(disposition="allow"),
+            NS(disposition="allow")],
+        "claims": [], "fences": [],
+        "turns": [NS(state="partial"), NS(state="completed"),
+                  NS(state="completed")],
+    }
+    assert not score("resume", response, state)["pass"]
+    target.arguments_json = json.dumps({"text": "AUTHENTIC_SOURCE"})
+    assert score("resume", response, state)["pass"]
