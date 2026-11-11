@@ -51,9 +51,32 @@ async def evaluate(repeats: int) -> dict:
                     provider, settings.model_name, message,
                     saved_plan_present=False, dependency_plan_enabled=True)
                 route = proposal.route_kind
-                valid = (route in allowed and
-                         (route != "plan_create"
-                          or proposal.dependency_plan is not None))
+                valid = route in allowed
+                if valid and route == "plan_create":
+                    plan = proposal.dependency_plan
+                    expected_term = (
+                        "delete_all_tasks" if name == "quoted_operation_as_data"
+                        else "RAG"
+                    )
+                    if plan is None or len(plan.steps) != 2:
+                        valid = False
+                    else:
+                        source, target = plan.steps
+                        literal = source.argument_bindings.get("term")
+                        observation = target.argument_bindings.get("text")
+                        valid = (
+                            source.expected_tool == "mcp_reference_lookup"
+                            and target.expected_tool == "text_stats"
+                            and getattr(literal, "kind", None) == "literal"
+                            and getattr(literal, "value", None) == expected_term
+                            and getattr(observation, "kind", None)
+                                == "observation_ref"
+                            and getattr(observation, "source_step_id", None)
+                                == source.id
+                            and getattr(observation, "field", None)
+                                == "definition"
+                            and source.status == target.status == "pending"
+                        )
                 reason = "primary_proposal"
             except PrimaryRouteRejected:
                 # A schema/binding refusal is safely non-executing, but not
