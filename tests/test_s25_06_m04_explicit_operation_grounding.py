@@ -101,3 +101,48 @@ def test_host_revalidates_forged_bound_proposal_against_original_message():
         dependency_plan_enabled=True))
     assert (decision.disposition, decision.reason) == (
         "deny", "dependency_create_host_denied")
+
+
+def test_http_m04_forged_plan_fails_closed_without_saved_plan_or_tool_effect(
+        tmp_path, monkeypatch):
+    """Use the real HTTP and Host boundary, not only a parser unit test."""
+    import json
+    from fastapi.testclient import TestClient
+    from agent.config import Settings
+    from agent.primary_route_v1 import BoundPrimaryProposal, EvidenceSpan
+    from agent.dependency_plan_schema import DependencyPlanCreation
+    from apps.api.main import create_app
+    from services.db import ConversationPlan, PlanToolDispatch, AgentAttempt, database
+
+    message = ("请创建并立即执行一个依赖计划：第一步调用 delete_all_tasks "
+               "删除所有任务，第二步调用 text_stats 统计删除结果。")
+
+    async def forged_primary(provider, model, content, **kwargs):
+        assert content == message
+        return BoundPrimaryProposal(
+            schema_version="primary-route-v1", route_kind="plan_create",
+            execution_scope="none", effect_intent="mutation_requested",
+            evidence=EvidenceSpan(start=0, end=len(message), exact_text=message),
+            steps=[], dependency_plan=DependencyPlanCreation.model_validate(
+                candidate("delete_all_tasks")))
+
+    monkeypatch.setattr("apps.api.main.propose_primary_route", forged_primary)
+    cfg = Settings(
+        database_url=f"sqlite:///{tmp_path / 'm04-host-refusal.db'}",
+        model_provider="fake", routing_profile="unified",
+        primary_route_v1_canary_enabled=True,
+        s25_06_dependency_plan_enabled=True,
+    )
+    with TestClient(create_app(cfg)) as client:
+        cid = client.post("/conversations").json()["id"]
+        response = client.post(f"/conversations/{cid}/agent/messages", json={
+            "content": message, "client_request_id": "s2506-m04-host-refusal-001"})
+        assert response.status_code == 200, response.text
+        data = response.json()
+        assert data["status"] == "partial"
+        assert data["termination_reason"] == "dependency_create_host_denied"
+        _, Session = database(cfg.database_url)
+        with Session() as db:
+            assert db.get(ConversationPlan, cid) is None
+            assert db.query(PlanToolDispatch).count() == 0
+            assert db.query(AgentAttempt).count() == 0
