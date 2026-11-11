@@ -735,10 +735,10 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                 skill_strategy=settings.skill_strategy,
                                 skill_budget_chars=settings.skill_budget_chars,
                             ).run(body.content, history=context,
-                                  # A versioned dependency plan is owned by the
-                                  # Host runner, never the legacy PlanLedger.
-                                  # Respond-only needs no executable plan;
-                                  # keep the durable snapshot untouched.
+                                  # The dependency plan belongs to its Host
+                                  # runner, not the legacy AgentLoop ledger.
+                                  # Ordinary work must not restore or mutate
+                                  # that snapshot. DB state stays untouched.
                                   plan_checkpoint=(
                                       None if (isinstance(existing_checkpoint, dict)
                                                and existing_checkpoint.get(
@@ -797,7 +797,14 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                     if settings.skill_strategy == "semantic_topk"
                                     else None),
                             ).run(body.content, history=context,
-                                  plan_checkpoint=existing_checkpoint,
+                                  # Ordinary Host-approved reads must also be
+                                  # isolated from the new-format plan ledger.
+                                  plan_checkpoint=(
+                                      None if (isinstance(existing_checkpoint, dict)
+                                               and existing_checkpoint.get(
+                                                   "plan_schema_version")
+                                               == "dependency-plan-v1")
+                                      else existing_checkpoint),
                                   understanding_result=None,
                                   execution_mode="read_only",
                                   memory_write_consent=False,
