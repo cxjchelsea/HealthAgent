@@ -34,11 +34,10 @@ _SUPPORTED_TOOLS = frozenset(_LITERAL_INPUTS)
 # Do not blacklist all snake_case tokens (they can be legitimate lookup terms).
 _OPERATION_NAME = r"([a-z][a-z0-9]*(?:_[a-z0-9]+)+)"
 _EXPLICIT_TOOL_CALLS = (
-    re.compile(r"(?:调用|call|invoke)\s*[\x60'\"“”]?\s*" + _OPERATION_NAME
+    re.compile(r"(?<![A-Za-z])(?:调用|执行|call|invoke)\s*[\x60'\"“”]?\s*" + _OPERATION_NAME
                + r"(?![A-Za-z0-9_])", re.IGNORECASE),
     re.compile(r"(?<![A-Za-z0-9_])(?:tool|function)\s*[:=]\s*[\x60'\"“”]?\s*"
                + _OPERATION_NAME + r"(?![A-Za-z0-9_])", re.IGNORECASE),
-    re.compile(r"(?<![A-Za-z0-9_])" + _OPERATION_NAME + r"\s*\("),
 )
 
 
