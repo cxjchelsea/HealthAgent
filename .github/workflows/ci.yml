@@ -67,6 +67,10 @@ jobs:
         env:
           TEST_POSTGRES_URL: postgresql+psycopg://healthagent:ci_local_only@localhost:5432/healthagent
         run: python -m pytest -q -rs tests/test_s25_06_step5_postgres_recovery.py
+      - name: S25-06 Step 5 abrupt PostgreSQL dependency worker exit
+        env:
+          TEST_POSTGRES_URL: postgresql+psycopg://healthagent:ci_local_only@localhost:5432/healthagent
+        run: python -m pytest -q -rs tests/test_s25_06_step5_postgres_process_crash.py
       - run: python -m evals.runner
       - run: python -m evals.s2a_benchmark
       - run: python -m evals.s2b5_benchmark
