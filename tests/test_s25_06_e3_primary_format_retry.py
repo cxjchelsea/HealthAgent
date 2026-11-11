@@ -137,3 +137,57 @@ def test_e3_generation_schema_requires_payload_key_without_granting_it():
         schema = primary_route_generation_schema(MESSAGE, **kwargs)
         assert "dependency_plan" not in schema["properties"]
         assert "dependency_plan" not in schema.get("required", [])
+
+
+
+def test_e3_generation_limits_argument_binding_names_without_host_bypass():
+    from jsonschema import Draft202012Validator
+    from agent.primary_route_v1 import primary_route_generation_schema
+
+    schema = primary_route_generation_schema(
+        MESSAGE, dependency_plan_enabled=True)
+    Draft202012Validator.check_schema(schema)
+    binding_schema = schema["$defs"]["DependencyStep"]["properties"][
+        "argument_bindings"]
+    assert binding_schema["additionalProperties"] is False
+    assert set(binding_schema["properties"]) == {"term", "text"}
+    assert binding_schema["minProperties"] == 1
+    assert binding_schema["maxProperties"] == 1
+    validator = Draft202012Validator(schema)
+    validator.validate(GOOD)
+    invalid_key = json.loads(json.dumps(GOOD))
+    invalid_key["dependency_plan"]["steps"][0]["argument_bindings"] = {
+        "query": {"kind": "literal", "value": "RAG", "source_quote": "RAG"},
+    }
+    assert not validator.is_valid(invalid_key)
+    two_keys = json.loads(json.dumps(GOOD))
+    two_keys["dependency_plan"]["steps"][0]["argument_bindings"]["text"] = {
+        "kind": "literal", "value": "RAG", "source_quote": "RAG",
+    }
+    assert not validator.is_valid(two_keys)
+    # Schema alone is not per-tool authority: Host rejects wrong-key
+    # proposals even if a JSON Schema validator accepts the key name.
+    from agent.primary_route_v1 import RouteSignal, bind_route_signal
+    from agent.primary_route_v1 import PrimaryRouteRejected
+    wrong_tool_key = json.loads(json.dumps(GOOD))
+    wrong_tool_key["dependency_plan"]["steps"][0]["argument_bindings"] = {
+        "text": {"kind": "literal", "value": "RAG", "source_quote": "RAG"},
+    }
+    assert validator.is_valid(wrong_tool_key)
+    with pytest.raises(PrimaryRouteRejected, match="dependency_invalid_arguments"):
+        bind_route_signal(
+            RouteSignal.model_validate(wrong_tool_key), MESSAGE,
+            saved_plan_present=False, pending_action=None,
+            dependency_plan_enabled=True)
+
+
+def test_default_off_and_pending_schema_never_exposes_dependency_bindings():
+    from agent.primary_route_v1 import primary_route_generation_schema
+
+    for kwargs in ({}, {"dependency_plan_enabled": True,
+                        "saved_plan_present": True},
+                   {"dependency_plan_enabled": True,
+                    "pending_action_present": True}):
+        schema = primary_route_generation_schema(MESSAGE, **kwargs)
+        assert "dependency_plan" not in schema["properties"]
+        assert "DependencyStep" not in schema.get("$defs", {})
