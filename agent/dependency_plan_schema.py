@@ -6,6 +6,7 @@ to create a plan or dispatch a tool.
 """
 from __future__ import annotations
 
+import re
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, ValidationError
@@ -25,6 +26,28 @@ _ALLOWED_SOURCE_FIELDS = {
     ("mcp_reference_lookup", PINNED_TOOL_VERSION): {"definition": str},
 }
 _SUPPORTED_TOOLS = frozenset(_LITERAL_INPUTS)
+
+# A literal function-style identifier is a machine-readable operation claim,
+# not a semantic classification of natural-language intent. The experimental
+# dependency-plan creator must not silently reinterpret an *unknown* identifier
+# as a lookup term and save an unrelated, apparently valid read-only plan.
+# The check is deliberately fail-closed: non-tool snake_case search targets
+# should be clarified instead of being guessed as executable steps.
+_EXPLICIT_OPERATION_IDENTIFIER = re.compile(
+    r"(?<![A-Za-z0-9_])([a-z][a-z0-9]*(?:_[a-z0-9]+)+)(?![A-Za-z0-9_])"
+)
+
+
+def validate_explicit_operation_identifiers(source_message: str) -> None:
+    """Fail closed for unsupported literal operation identifiers in proposals.
+
+    A syntactic, bounded tool-contract guard; it does NOT prove that a
+    natural-language goal is semantically equivalent to the proposed plan.
+    """
+    identifiers = set(_EXPLICIT_OPERATION_IDENTIFIER.findall(source_message))
+    if identifiers - _SUPPORTED_TOOLS:
+        raise DependencyPlanError("dependency_unsupported_operation_identifier")
+
 
 
 class DependencyPlanError(ValueError):
@@ -179,6 +202,7 @@ def parse_new_plan(snapshot: object, *, source_message: str) -> DependencyPlanCr
     if plan.executions:
         raise DependencyPlanError("dependency_execution_not_allowed")
     validate_dependency_graph(plan)
+    validate_explicit_operation_identifiers(source_message)
     validate_binding_graph(plan, source_message)
     return plan
 
