@@ -107,6 +107,11 @@ def _safe_dependency_bindings_shape(dep, message):
             "binding_kind": kind if kind in {"literal", "observation_ref"}
                             else "missing_or_other",
         }
+        if kind == "literal" and expected:
+            value = binding.get("value")
+            minimum, maximum = (1, 80) if tool == "mcp_reference_lookup" else (1, 4000)
+            result_item["literal_length_valid"] = (
+                isinstance(value, str) and minimum <= len(value) <= maximum)
         if tool == "mcp_reference_lookup" and kind == "literal":
             quote = binding.get("source_quote")
             value = binding.get("value")
