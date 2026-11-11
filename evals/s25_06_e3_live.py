@@ -149,9 +149,26 @@ def score(stage, response, state):
             set(EXPECTED_TOOLS[:count])
         )
         if count == 2:
-            # The second source must remain a typed checkpoint dependency.
+            # Independently compare the actual second dispatch argument with
+            # the first durable Receipt. Never export either raw value.
             dep = steps[1].get("argument_bindings", {}).get("text", {})
-            passed = passed and dep.get("kind") == "observation_ref"
+            source = next((d for d in dispatches
+                           if d.tool_name == "mcp_reference_lookup"), None)
+            target = next((d for d in dispatches
+                           if d.tool_name == "text_stats"), None)
+            try:
+                source_receipt = json.loads(source.receipt_json) if source else {}
+                target_args = json.loads(target.arguments_json) if target else {}
+                matches_observation = (
+                    source_receipt.get("ok") is True
+                    and isinstance(source_receipt.get("definition"), str)
+                    and target_args == {"text": source_receipt["definition"]}
+                )
+            except (ValueError, TypeError):
+                matches_observation = False
+            passed = (passed and dep.get("kind") == "observation_ref"
+                      and dep.get("source_step_id") == steps[0].get("id")
+                      and matches_observation)
     return {
         "stage": stage, "pass": bool(passed),
         "http_status": response.status_code,
