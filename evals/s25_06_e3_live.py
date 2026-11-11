@@ -75,7 +75,58 @@ def _safe_issues(data):
     return result
 
 
-def safe_primary_output_shape(raw):
+def _safe_dependency_bindings_shape(dep, message):
+    """Emit only fixed categories and booleans; no raw model key or value."""
+    steps = dep.get("steps") if isinstance(dep, dict) else None
+    if not isinstance(steps, list):
+        return []
+    result = []
+    for step in steps[:8]:
+        if not isinstance(step, dict):
+            result.append({"tool": "invalid", "bindings_shape": "invalid_step"})
+            continue
+        tool = step.get("expected_tool")
+        tool = tool if tool in {"mcp_reference_lookup", "text_stats"} else "other"
+        expected = "term" if tool == "mcp_reference_lookup" else (
+            "text" if tool == "text_stats" else None)
+        bindings = step.get("argument_bindings")
+        if not isinstance(bindings, dict):
+            result.append({"tool": tool, "bindings_shape": "not_object"})
+            continue
+        binding = bindings.get(expected) if expected else None
+        kind = binding.get("kind") if isinstance(binding, dict) else None
+        expected_keys = {"term"} if tool == "mcp_reference_lookup" else (
+            {"text"} if tool == "text_stats" else set())
+        # Only the count of unexpected names. NEVER persist those names.
+        result_item = {
+            "tool": tool, "bindings_shape": "object",
+            "binding_count": min(len(bindings), 9),
+            "expected_key_present": expected in bindings if expected else False,
+            "extra_key_count": min(len(set(bindings) - expected_keys), 9),
+            "binding_kind": kind if kind in {"literal", "observation_ref"}
+                            else "missing_or_other",
+        }
+        if tool == "mcp_reference_lookup" and kind == "literal":
+            quote = binding.get("source_quote")
+            value = binding.get("value")
+            result_item["source_quote_in_request"] = (
+                isinstance(quote, str) and bool(quote.strip())
+                and quote.strip().casefold() in message.casefold())
+            result_item["literal_in_quote"] = (
+                isinstance(quote, str) and isinstance(value, str)
+                and bool(value.strip())
+                and value.casefold() in quote.casefold())
+        elif tool == "text_stats" and kind == "observation_ref":
+            result_item["references_first_step"] = (
+                isinstance(steps[0], dict)
+                and binding.get("source_step_id") == steps[0].get("id"))
+            result_item["field_is_definition"] = (
+                binding.get("field") == "definition")
+        result.append(result_item)
+    return result
+
+
+def safe_primary_output_shape(raw, message=None):
     """Inspect only bounded structure, not model content or arguments."""
     try:
         data = json.loads(raw)
@@ -112,6 +163,9 @@ def safe_primary_output_shape(raw):
             min(len(dep["steps"]), 9)
             if isinstance(dep, dict) and isinstance(dep.get("steps"), list)
             else None),
+        "dependency_binding_shapes": (
+            _safe_dependency_bindings_shape(dep, message)
+            if isinstance(message, str) else []),
     }
 
 
@@ -124,7 +178,7 @@ def observe_real_primary_output():
         class ObservedProvider:
             async def complete(self, **params):
                 raw = await provider.complete(**params)
-                shapes.append(safe_primary_output_shape(raw))
+                shapes.append(safe_primary_output_shape(raw, message))
                 return raw
         return await original_primary_route(
             ObservedProvider(), model, message, **kwargs)
