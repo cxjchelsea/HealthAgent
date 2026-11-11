@@ -106,7 +106,6 @@ def test_host_revalidates_forged_bound_proposal_against_original_message():
 def test_http_m04_forged_plan_fails_closed_without_saved_plan_or_tool_effect(
         tmp_path, monkeypatch):
     """Use the real HTTP and Host boundary, not only a parser unit test."""
-    import json
     from fastapi.testclient import TestClient
     from agent.config import Settings
     from agent.primary_route_v1 import BoundPrimaryProposal, EvidenceSpan
