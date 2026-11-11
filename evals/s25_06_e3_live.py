@@ -20,6 +20,8 @@ from sqlalchemy import select
 
 from agent.config import Settings
 from apps.api.main import create_app
+from agent.primary_route_v1 import propose_primary_route as original_primary_route
+import apps.api.main as api_main
 from services.db import (
     AgentAttempt, ConversationPlan, DependencyWorkerFence,
     PlanExecutionClaim, PlanToolDispatch, PrimaryRouteEvidence, Turn, database,
@@ -71,6 +73,68 @@ def _safe_issues(data):
                 and category in _ROUTE_DIAGNOSTIC_TYPES):
             result.append({"field": field, "category": category})
     return result
+
+
+def safe_primary_output_shape(raw):
+    """Inspect only bounded structure, not model content or arguments."""
+    try:
+        data = json.loads(raw)
+    except (ValueError, TypeError):
+        return {"shape": "invalid_json"}
+    if not isinstance(data, dict):
+        return {"shape": "non_object"}
+    route = data.get("route_kind")
+    valid_routes = {"plan_create", "plan_execute_first", "plan_resume",
+                    "plan_revise", "plan_cancel", "plan_missing",
+                    "ordinary_tool", "respond", "clarify",
+                    "clarify_response", "reject"}
+    steps = data.get("steps")
+    dep = data.get("dependency_plan")
+    return {
+        "shape": "object",
+        "route": route if isinstance(route, str) and route in valid_routes
+                 else "invalid",
+        "steps_shape": ("array" if isinstance(steps, list)
+                        else "missing" if "steps" not in data
+                        else "not_array"),
+        "steps_count": min(len(steps), 9) if isinstance(steps, list) else None,
+        "dependency_plan_shape": (
+            "missing" if "dependency_plan" not in data else
+            "null" if dep is None else
+            "object" if isinstance(dep, dict) else "invalid"),
+        "dependency_steps_shape": (
+            "array" if isinstance(dep, dict)
+            and isinstance(dep.get("steps"), list) else
+            "missing" if isinstance(dep, dict)
+            and "steps" not in dep else "not_array" if isinstance(dep, dict)
+            else "not_applicable"),
+        "dependency_steps_count": (
+            min(len(dep["steps"]), 9)
+            if isinstance(dep, dict) and isinstance(dep.get("steps"), list)
+            else None),
+    }
+
+
+@contextmanager
+def observe_real_primary_output():
+    """Observe the unchanged real model response; never replace route/model."""
+    shapes = []
+
+    async def route(provider, model, message, **kwargs):
+        class ObservedProvider:
+            async def complete(self, **params):
+                raw = await provider.complete(**params)
+                shapes.append(safe_primary_output_shape(raw))
+                return raw
+        return await original_primary_route(
+            ObservedProvider(), model, message, **kwargs)
+
+    previous = api_main.propose_primary_route
+    api_main.propose_primary_route = route
+    try:
+        yield shapes
+    finally:
+        api_main.propose_primary_route = previous
 
 
 def snapshot(Session, cid):
@@ -224,7 +288,8 @@ def evaluate(repeats=2):
                 "s25_05_mcp_reference_registry_enabled": True,
             })
             with (TestClient(create_app(settings)) as client,
-                  evidence_session(settings.database_url) as Session):
+                  evidence_session(settings.database_url) as Session,
+                  observe_real_primary_output() as primary_shapes):
                 client.headers.update({"Authorization": "Bearer " + token})
                 cid_response = client.post("/conversations")
                 cid_response.raise_for_status()
@@ -240,6 +305,7 @@ def evaluate(repeats=2):
                         })
                         continue
                     started = time.monotonic()
+                    primary_start = len(primary_shapes)
                     try:
                         response = client.post(
                             f"/conversations/{cid}/agent/messages",
@@ -250,6 +316,11 @@ def evaluate(repeats=2):
                     except Exception as exc:
                         entry = {"stage": stage, "pass": False,
                                  "failure_kind": type(exc).__name__}
+                    if stage == "create":
+                        # Every attempt is bounded shape metadata; this
+                        # captures retries without exporting model output.
+                        entry["primary_output_shapes"] = primary_shapes[
+                            primary_start:primary_start + 4]
                     entry["repeat"] = repeat
                     entry["duration_ms"] = int((time.monotonic() - started) * 1000)
                     records.append(entry)
