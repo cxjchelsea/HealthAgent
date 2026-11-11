@@ -112,3 +112,28 @@ def test_do_not_retry_other_invalid_schema_conditions():
     with pytest.raises(PrimaryRouteRejected, match="primary_route_invalid_signal"):
         route(provider, enabled=True)
     assert len(provider.calls) == 1
+
+
+
+def test_e3_generation_schema_requires_payload_key_without_granting_it():
+    from jsonschema import Draft202012Validator
+    from agent.primary_route_v1 import primary_route_generation_schema
+
+    opted_in = primary_route_generation_schema(
+        MESSAGE, dependency_plan_enabled=True)
+    Draft202012Validator.check_schema(opted_in)
+    assert "dependency_plan" in opted_in["properties"]
+    assert "dependency_plan" in opted_in["required"]
+    with pytest.raises(Exception):
+        Draft202012Validator(opted_in).validate(BAD)
+    Draft202012Validator(opted_in).validate(GOOD)
+
+    for kwargs in (
+        {},
+        {"dependency_plan_enabled": True, "saved_plan_present": True},
+        {"dependency_plan_enabled": True, "pending_action_present": True},
+        {"dependency_plan_enabled": True, "pending_origin_verified": True},
+    ):
+        schema = primary_route_generation_schema(MESSAGE, **kwargs)
+        assert "dependency_plan" not in schema["properties"]
+        assert "dependency_plan" not in schema.get("required", [])
