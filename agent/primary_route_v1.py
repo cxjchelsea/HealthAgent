@@ -869,8 +869,13 @@ async def propose_primary_route(provider, model: str, message: str, *,
             "to the preceding lookup's definition field. All statuses must be pending, "
             "executions empty, revision 1; never invent input values or execution results. "
             "For ordinary legacy plan_create use dependency_plan=null and existing "
-            "steps. No tool call occurs during creation. If unsupported or ambiguous, "
-            "propose clarify or reject, not an invented plan."
+            "steps. No tool call occurs during creation. The proposed tools MUST "
+            "serve the user's original requested operations. If the user names "
+            "an unavailable operation or requests a write/destructive effect, "
+            "never replace it with mcp_reference_lookup(term=operation_name) or "
+            "another unrelated allowed read-only plan. Propose clarify or "
+            "reject instead; do not invent a safer but unrequested goal. "
+            "If unsupported or ambiguous, propose clarify or reject."
         )})
     if pending_origin_verified and pending_action == "create_task":
         messages.append({"role": "system",
