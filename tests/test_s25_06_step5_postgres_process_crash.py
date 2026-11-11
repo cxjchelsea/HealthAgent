@@ -1,7 +1,8 @@
 """S25-06 Step 5: abruptly terminated new-format worker on real PostgreSQL.
 
 The spawned process acquires the exact new-format worker Fence and writes the
-Host-validated pre-call Dispatch, then exits via os._exit without a Receipt.
+Host-validated pre-call Dispatch, optionally invokes the trusted local MCP
+read adapter, then exits via os._exit without a Receipt.
 A separate parent process inspects and reconciles it without ever retrying the
 tool. Only synthetic, independently checked operator verifiers are used.
 """
@@ -28,6 +29,7 @@ from services.primary_route_evidence import snapshot_digest
 _CHILD = r"""
 import os
 import sys
+from pathlib import Path
 from hashlib import sha256
 from agent.dependency_plan_host import PreparedDependencyRead
 from services.db import database
@@ -35,7 +37,7 @@ from services.dependency_fencing import acquire_dependency_fence
 from services.dependency_dispatch import begin_dependency_dispatch_in_session
 from services.evidence_store import arguments_digest
 
-url, cid, tid, raw = sys.argv[1:]
+url, cid, tid, raw, call_tool, marker_path = sys.argv[1:]
 engine, Session = database(url)
 fence = acquire_dependency_fence(
     Session, conversation_id=cid, turn_id=tid, expected_raw=raw)
@@ -52,7 +54,22 @@ with Session.begin() as db:
     begin_dependency_dispatch_in_session(
         db, binding=binding, expected_raw=raw,
         initial_turn_raw=raw, fence=fence)
-# Crash AFTER the PostgreSQL pre-call transaction, BEFORE the tool/Receipt.
+if call_tool == "yes":
+    from agent.tool_registry import READ_REGISTRY, ReadToolRuntime
+    from agent.mcp_stdio_client import StdioMCPClient
+    observation = READ_REGISTRY.invoke(
+        "mcp_reference_lookup", {"term": "RAG"},
+        granted_names=("mcp_reference_lookup",),
+        exposed_names=("mcp_reference_lookup",),
+        expected_version="1.0.0",
+        runtime=ReadToolRuntime(mcp_client=StdioMCPClient()))
+    assert observation.get("ok") is True, observation.get("error")
+    assert isinstance(observation.get("definition"), str)
+    # File is strictly a test-side invocation marker. It does NOT imply
+    # that a Receipt was committed in PostgreSQL.
+    Path(marker_path).write_text("tool-returned", encoding="utf-8")
+# Crash AFTER the PostgreSQL pre-call transaction, either before invoking
+# the tool or after its real read result but before persisting the Receipt.
 os._exit(73)
 """
 
@@ -88,7 +105,9 @@ def _plan():
 
 @pytest.mark.skipif(not os.getenv("TEST_POSTGRES_URL"),
                     reason="requires isolated real PostgreSQL")
-def test_postgres_abrupt_new_format_worker_recovery_never_replays(tmp_path):
+@pytest.mark.parametrize("crash_after_tool", [False, True])
+def test_postgres_abrupt_new_format_worker_recovery_never_replays(
+        tmp_path, crash_after_tool):
     url = os.environ["TEST_POSTGRES_URL"]
     assert url.startswith("postgresql")
     engine, Session = database(url)
@@ -114,13 +133,16 @@ def test_postgres_abrupt_new_format_worker_recovery_never_replays(tmp_path):
             admission_reason="primary_v1_plan_execution_candidate"))
     engine.dispose()
     child = None
+    tool_marker = tmp_path / "tool-returned.marker"
     try:
         child = subprocess.run(
-            [sys.executable, "-c", _CHILD, url, cid, tid, raw],
+            [sys.executable, "-c", _CHILD, url, cid, tid, raw,
+             "yes" if crash_after_tool else "no", str(tool_marker)],
             cwd=str(Path(__file__).resolve().parents[1]), timeout=35,
             capture_output=True, text=True,
         )
         assert child.returncode == 73, child.stderr[-2500:]
+        assert tool_marker.exists() is crash_after_tool
         engine, Session = database(url)
         with Session() as db:
             dispatches = db.query(PlanToolDispatch).filter_by(
