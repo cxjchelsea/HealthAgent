@@ -483,7 +483,13 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                 for i, step in enumerate(
                                     existing_checkpoint.get("steps", [])[:8])]
                                 if existing_checkpoint else []),
-                            recent_context=context)
+                            recent_context=context,
+                            dependency_plan_enabled=(
+                                settings.s25_06_dependency_plan_enabled
+                                and preturn_plan_raw is None
+                                and pending_action is None
+                                and clarification_id is None
+                                and body.goal_confirmation is None))
                         v1_primary_kind = primary_proposal.route_kind
                         v1_admission = admit_primary_route_v1(
                             primary_proposal, PrimaryHostFacts(
@@ -566,6 +572,28 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                 prior_pending_action=pending_action,
                                 prior_origin_verified=bool(
                                     pending_action and clarification_id and pending_question))
+                        # S25-06 E2: a newly proposed dependency plan is
+                        # saved ONLY in the terminal Turn transaction below.
+                        # Creation does not mint Claim/Fence, invoke any tool,
+                        # or enter legacy PlanLedger; its Host decision and
+                        # immutable Primary evidence have already committed.
+                        if (result is None
+                                and settings.s25_06_dependency_plan_enabled
+                                and primary_proposal.route_kind == "plan_create"
+                                and primary_proposal.dependency_plan is not None
+                                and v1_admission.disposition == "allow"
+                                and v1_admission.reason == "dependency_create_candidate"):
+                            candidate = primary_proposal.dependency_plan.model_dump()
+                            result = {
+                                "run_id": turn_id, "status": "partial",
+                                "termination_reason": "dependency_plan_created_pending_execution",
+                                "answer": "依赖计划已保存，尚未调用工具。请明确要求执行第一步或继续剩余步骤。",
+                                "trace": [{"step": 0, "type": "dependency_plan_created"}],
+                                "steps": 0, "plan": candidate["steps"],
+                                "plan_revision": candidate["revision"],
+                                "plan_events": [{"event": "plan_created",
+                                                 "revision": candidate["revision"]}],
+                                "plan_checkpoint": candidate}
                         # S25-06: the SAME Primary proposal/decision owns the
                         # dependency-plan branch. No second semantic classifier,
                         # no legacy PlanLedger, and no early tool call.
@@ -1720,34 +1748,61 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                   "trace": [{"step": 0, "type": "plan_snapshot_conflict"}],
                                   "steps": 0}
                 if status in {"completed", "partial"} and result.get("plan_checkpoint"):
+                    is_dependency_create = (
+                        result.get("termination_reason")
+                        == "dependency_plan_created_pending_execution")
                     try:
-                        # Every plan checkpoint, including tool-execution evidence,
-                        # must match the exact snapshot bound to this Turn.
-                        plan_store.compare_and_swap_in_session(
-                            db, expected_raw=preturn_plan_raw,
-                            snapshot=result["plan_checkpoint"],
-                            owner_turn_id=turn_id if plan_control in {"execute_first", "resume"} else None)
-                        if settings.route_admission_mode == "guarded" and plan_control in {"execute_first", "resume"}:
-                            PlanDispatchJournal(Session, cid, turn_id).checkpoint_in_session(db, result["plan_checkpoint"])
+                        # Every checkpoint must match the original pre-Turn
+                        # snapshot. A competing create may insert first; a
+                        # SAVEPOINT makes its PK conflict recoverable without
+                        # aborting the assistant/Turn terminal transaction.
+                        if is_dependency_create:
+                            with db.begin_nested():
+                                if preturn_plan_raw is not None:
+                                    raise PlanSnapshotConflict("dependency_plan_create_conflict")
+                                plan_store.compare_and_swap_in_session(
+                                    db, expected_raw=None,
+                                    snapshot=result["plan_checkpoint"])
+                        else:
+                            plan_store.compare_and_swap_in_session(
+                                db, expected_raw=preturn_plan_raw,
+                                snapshot=result["plan_checkpoint"],
+                                owner_turn_id=turn_id if plan_control in {
+                                    "execute_first", "resume"} else None)
+                            if (settings.route_admission_mode == "guarded"
+                                    and plan_control in {"execute_first", "resume"}):
+                                PlanDispatchJournal(Session, cid, turn_id).checkpoint_in_session(
+                                    db, result["plan_checkpoint"])
                     except PlanSnapshotConflict:
-                        # Never overwrite a newer durable plan. If a tool was
-                        # already dispatched, tell the user to verify its effect
-                        # before retrying; the database cannot roll that effect back.
-                        status = "partial"
-                        failure_code = ("plan_execution_outcome_unknown"
-                                        if settings.route_admission_mode == "guarded"
-                                        and execution_claim_acquired
-                                        else "plan_snapshot_conflict")
-                        answer = ("当前计划已发生变化，本次没有覆盖新计划。若本轮已调用工具，"
-                                  "请先核对工具执行结果，再决定是否重试，避免重复执行。")
-                        result = {
-                            "run_id": turn_id,
-                            "status": status,
-                            "termination_reason": "plan_snapshot_conflict",
-                            "answer": answer,
-                            "trace": [{"step": 0, "type": "plan_snapshot_conflict"}],
-                            "steps": 0,
-                        }
+                        if is_dependency_create:
+                            status = "partial"
+                            failure_code = "dependency_plan_create_conflict"
+                            answer = "会话中已有其他请求保存的计划；本轮没有覆盖，也没有执行工具。"
+                            result = {"run_id": turn_id, "status": "partial",
+                                      "termination_reason": "dependency_plan_create_conflict",
+                                      "answer": answer,
+                                      "trace": [{"step": 0,
+                                                 "type": "dependency_plan_create_conflict"}],
+                                      "steps": 0}
+                        else:
+                            # Never overwrite a newer durable plan. If a tool was
+                            # already dispatched, tell the user to verify its effect
+                            # before retrying; the database cannot roll that effect back.
+                            status = "partial"
+                            failure_code = ("plan_execution_outcome_unknown"
+                                            if settings.route_admission_mode == "guarded"
+                                            and execution_claim_acquired
+                                            else "plan_snapshot_conflict")
+                            answer = ("当前计划已发生变化，本次没有覆盖新计划。若本轮已调用工具，"
+                                      "请先核对工具执行结果，再决定是否重试，避免重复执行。")
+                            result = {
+                                "run_id": turn_id,
+                                "status": status,
+                                "termination_reason": "plan_snapshot_conflict",
+                                "answer": answer,
+                                "trace": [{"step": 0, "type": "plan_snapshot_conflict"}],
+                                "steps": 0,
+                            }
                 if (status in {"completed", "partial"} and parsed_result is not None
                         and not suppress_persistent_routing and execution_mode not in {"respond_only", "read_only"}
                         and execution_target == "goal_state"
@@ -1834,6 +1889,32 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                 turn.decision_steps = decision_steps
         except Exception:
             log.exception("conversation turn finalization failed turn=%s", turn_id)
+            if (result is not None and result.get("termination_reason")
+                    == "dependency_plan_created_pending_execution"):
+                # This is a *second* transaction after a failed finalization.
+                # Never claim that creation committed. Close the stranded
+                # running Turn, but leave a potentially in-doubt Plan untouched
+                # for operator inspection rather than deleting another writer.
+                try:
+                    with Session.begin() as cleanup_db:
+                        failed_turn = cleanup_db.get(Turn, turn_id)
+                        failed_response = cleanup_db.get(Message, assistant_id)
+                        if (failed_turn is not None
+                                and failed_turn.conversation_id == cid
+                                and failed_turn.state == "running"
+                                and failed_response is not None
+                                and failed_response.conversation_id == cid
+                                and failed_response.status == "pending"):
+                            failure_answer = (
+                                "计划保存事务未能确认完成；未执行工具，请检查已有计划后重试。")
+                            failed_turn.state = "partial"
+                            failed_turn.failure_code = "dependency_plan_create_commit_failed"
+                            failed_turn.output_chars = len(failure_answer)
+                            failed_response.content = failure_answer
+                            failed_response.status = "partial"
+                except Exception:
+                    log.exception("dependency create Turn failure cleanup failed turn=%s",
+                                  turn_id)
             raise HTTPException(503, "turn_finalization_failed")
         if status not in {"completed", "partial"}:
             # Only allowlisted metadata; never log messages, arguments or responses.

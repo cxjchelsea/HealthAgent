@@ -59,6 +59,10 @@ jobs:
         env:
           TEST_POSTGRES_URL: postgresql+psycopg://healthagent:ci_local_only@localhost:5432/healthagent
         run: python -m pytest -q -rs tests/test_s25_02_m4_postgres_api_workers.py
+      - name: S25-06 E2 physical PostgreSQL simultaneous HTTP plan creation
+        env:
+          TEST_POSTGRES_URL: postgresql+psycopg://healthagent:ci_local_only@localhost:5432/healthagent
+        run: python -m pytest -q -rs tests/test_s25_06_slice_e2_postgres_two_creators.py
       - run: python -m evals.runner
       - run: python -m evals.s2a_benchmark
       - run: python -m evals.s2b5_benchmark
