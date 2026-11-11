@@ -72,7 +72,8 @@ def _inspect_locked(db, *, owner_id, conversation_id, turn_id):
         PlanToolDispatch.conversation_id == conversation_id,
         PlanToolDispatch.turn_id == turn_id
     ).order_by(PlanToolDispatch.step_id, PlanToolDispatch.id).with_for_update()).all()
-    allowed = {"dispatch_unknown", "observed", "observed_failure", "checkpointed"}
+    allowed = {"dispatch_unknown", "observed", "observed_failure",
+               "checkpointed", "failure_finalized"}
     if any(item.status not in allowed for item in dispatches):
         _deny("dependency_recovery_unrecognized_dispatch")
     # A single Turn may have a committed prefix followed by one uncertain step.
