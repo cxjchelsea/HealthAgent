@@ -37,6 +37,7 @@ from agent.primary_route_v1 import PrimaryRouteRejected, propose_primary_route
 from agent.primary_route_v1_canary import admit_v1_canary
 from agent.primary_host_admission_v1 import PrimaryHostFacts, admit_primary_route_v1
 from agent.dependency_plan_runner import run_dependency_read_scope
+from agent.dependency_plan_schema import describe_dependency_plan_for_review
 from services.dependency_fencing import revoke_dependency_fence_in_session
 from agent.tool_registry import ReadToolRuntime
 from agent.host_plan_execution_binding import host_plan_binding_matches
@@ -587,7 +588,8 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                             result = {
                                 "run_id": turn_id, "status": "partial",
                                 "termination_reason": "dependency_plan_created_pending_execution",
-                                "answer": "依赖计划已保存，尚未调用工具。请明确要求执行第一步或继续剩余步骤。",
+                                "answer": describe_dependency_plan_for_review(
+                                    primary_proposal.dependency_plan),
                                 "trace": [{"step": 0, "type": "dependency_plan_created"}],
                                 "steps": 0, "plan": candidate["steps"],
                                 "plan_revision": candidate["revision"],
