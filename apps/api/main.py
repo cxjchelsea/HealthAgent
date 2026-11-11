@@ -634,17 +634,27 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                         mcp_client=StdioMCPClient()))
                                 complete = bool(outcomes) and all(
                                     item.status == "checkpointed" for item in outcomes)
+                                verified_failure = any(
+                                    item.status == "verified_failure"
+                                    for item in outcomes)
                                 if not complete:
-                                    failure_code = "plan_execution_outcome_unknown"
+                                    failure_code = (
+                                        "dependency_verified_failure"
+                                        if verified_failure else
+                                        "plan_execution_outcome_unknown")
                                 result = {
                                     "run_id": turn_id,
                                     "status": "completed" if complete else "partial",
                                     "termination_reason": (
                                         "dependency_steps_checkpointed" if complete
+                                        else "dependency_verified_failure_pending_replan"
+                                        if verified_failure
                                         else "plan_execution_reconciliation_required"),
                                     "answer": (
                                         "依赖计划步骤已按已验证的工具结果提交。"
                                         if complete else
+                                        "工具已确认报告失败，已保存失败证据；未重试或修改计划。"
+                                        if verified_failure else
                                         "执行结果尚未完成核对，已停止后续工具调用。"),
                                     "trace": [{"step": i + 1, "type": "tool",
                                                "name": "dependency_read",
