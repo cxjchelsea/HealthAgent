@@ -2,6 +2,8 @@
 
 Baseline: merged `main@4dcb57ceaa8f16e4a094eb351012527616dc7f71`. This is an **opt-in evaluation**, not an activated production feature.
 
+> **Historical document / superseded operational instructions (Step 6):** The E3 branch and checklist below describe the original November 11 acceptance stage; PR #43 and PR #44 have since merged. For current re-validation switch to the **latest reviewed `main`** instead of the historical E3 feature branch. See `docs/S2.5/S25-06-STEP6-DEVELOPMENT-CLOSEOUT-20261111.md` for the immutable evidence record and `docs/S2.5/S25-06-INTEGRATION-HANDOFF-20261111.md` for the current test/activation boundary. The unchecked historical checklist is **not** a statement that E3 remains unaccepted.
+
 ## Scope
 
 A fresh synthetic-owner conversation calls the **actual configured Primary real model** (no mocked proposal, no patched provider or response). The model must create a `dependency-plan-v1` graph from the request: a trusted local `mcp_reference_lookup` for the explicit literal `RAG`, followed by `text_stats` consuming the first step's checkpointed `definition` via a typed `observation_ref`. The original Host performs all admission. The HTTP calls are CREATE (no dispatch), FIRST (only source), and RESUME (only dependent target). Each step is independently verified against the durable Plan, PrimaryRouteEvidence, PlanToolDispatch, AgentAttempt, and Claim/Fence state. A model narrative claiming success is not accepted as evidence.
