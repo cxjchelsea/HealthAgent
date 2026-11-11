@@ -1,0 +1,273 @@
+"""S25-06 E3 real-model dependency plan creation -> FIRST -> RESUME acceptance.
+
+Only the real configured provider proposes routes. Uses isolated SQLite, trusted
+checked-in local MCP catalog and a temporary development bearer identity.
+Exports bounded verdicts and safe enums, never user/model text or tool results.
+"""
+import argparse
+from contextlib import contextmanager
+import json
+import os
+from pathlib import Path
+import secrets
+import statistics
+import tempfile
+import time
+import uuid
+
+from fastapi.testclient import TestClient
+from sqlalchemy import select
+
+from agent.config import Settings
+from apps.api.main import create_app
+from services.db import (
+    AgentAttempt, ConversationPlan, DependencyWorkerFence,
+    PlanExecutionClaim, PlanToolDispatch, PrimaryRouteEvidence, Turn, database,
+)
+
+CREATE = "请先使用 MCP 查询 RAG 的定义，然后把第一步查询结果中的 definition 原文传给 text_stats 统计字符数。先保存这两步依赖计划，不要执行。"
+FIRST = "现在只执行已保存计划的第一步，不要执行第二步。"
+RESUME = "继续执行已保存计划的剩余步骤，第二步必须使用第一步的实际查询结果。"
+EXPECTED_TOOLS = ("mcp_reference_lookup", "text_stats")
+EXPECTED_VERSION = "1.0.0"
+
+
+@contextmanager
+def evidence_session(url):
+    engine, Session = database(url)
+    try:
+        yield Session
+    finally:
+        engine.dispose()
+
+
+def _as_json(response):
+    try:
+        data = response.json()
+        return data if isinstance(data, dict) else {}
+    except (ValueError, TypeError):
+        return {}
+
+
+def _safe_issues(data):
+    return [
+        {"field": x["field"], "category": x["category"]}
+        for x in (data.get("primary_v1_validation_issues") or [])[:8]
+        if isinstance(x, dict)
+        and x.get("field") in {
+            "dependency_plan", "steps", "argument_bindings", "source_quote",
+            "plan_schema_version", "plan_executor_version", "route_kind",
+            "quote", "status", "executions",
+        }
+        and x.get("category") in {
+            "missing", "extra_forbidden", "literal_error", "value_error",
+            "model_type", "list_type", "dict_type",
+            "primary_route_dependency_payload_mismatch",
+        }
+    ]
+
+
+def snapshot(Session, cid):
+    """Evidence from durable rows, not model answer/trace assertions."""
+    with Session() as db:
+        record = db.get(ConversationPlan, cid)
+        plan = json.loads(record.snapshot) if record else None
+        attempts = list(db.scalars(select(AgentAttempt).where(
+            AgentAttempt.conversation_id == cid)))
+        dispatches = list(db.scalars(select(PlanToolDispatch).where(
+            PlanToolDispatch.conversation_id == cid)))
+        primary = list(db.scalars(select(PrimaryRouteEvidence).where(
+            PrimaryRouteEvidence.conversation_id == cid)))
+        claims = list(db.scalars(select(PlanExecutionClaim).where(
+            PlanExecutionClaim.conversation_id == cid)))
+        fences = list(db.scalars(select(DependencyWorkerFence).where(
+            DependencyWorkerFence.conversation_id == cid)))
+        turns = list(db.scalars(select(Turn).where(Turn.conversation_id == cid)))
+        return {
+            "plan": plan, "attempts": attempts, "dispatches": dispatches,
+            "primary": primary, "claims": claims, "fences": fences,
+            "turns": turns,
+        }
+
+
+def score(stage, response, state):
+    data = _as_json(response)
+    plan = state["plan"]
+    steps = plan.get("steps", []) if isinstance(plan, dict) else []
+    versions = plan.get("plan_schema_version") if isinstance(plan, dict) else None
+    statuses = [s.get("status") for s in steps if isinstance(s, dict)]
+    tools = [s.get("expected_tool") for s in steps if isinstance(s, dict)]
+    dispatches = state["dispatches"]
+    attempts = state["attempts"]
+    primary = state["primary"]
+    no_running_turn = not any(t.state == "running" for t in state["turns"])
+    evidence = len(primary) == len(state["turns"]) and all(
+        e.disposition == "allow" for e in primary)
+    common = (
+        response.status_code == 200
+        and versions == "dependency-plan-v1"
+        and plan.get("plan_executor_version") == "dependency-plan-read-v1"
+        and len(steps) == 2
+        and tools == list(EXPECTED_TOOLS)
+        and no_running_turn and evidence
+        and not state["claims"]
+    )
+    if stage == "create":
+        # Actual model must emit valid dependency bindings, not two
+        # independent literal steps or a legacy linear plan.
+        bindings = steps[1].get("argument_bindings", {}) if len(steps) == 2 else {}
+        dependency = bindings.get("text", {}) if isinstance(bindings, dict) else {}
+        passed = (
+            common and statuses == ["pending", "pending"]
+            and steps[1].get("depends_on") == [steps[0].get("id")]
+            and dependency.get("kind") == "observation_ref"
+            and dependency.get("source_step_id") == steps[0].get("id")
+            and dependency.get("field") == "definition"
+            and data.get("termination_reason") ==
+            "dependency_plan_created_pending_execution"
+            and len(attempts) == 0 and len(dispatches) == 0
+            and len(state["fences"]) == 0
+            and primary[0].route_kind == "plan_create"
+            and primary[0].admission_reason == "dependency_create_candidate"
+        )
+    else:
+        count = 1 if stage == "first" else 2
+        expected_status = (["completed", "pending"] if count == 1
+                           else ["completed", "completed"])
+        passed = (
+            common and statuses == expected_status
+            and data.get("termination_reason") == "dependency_steps_checkpointed"
+            and len(dispatches) == count and len(attempts) == count
+            and len({d.id for d in dispatches}) == count
+            and all(d.status == "checkpointed"
+                    and d.tool_version == EXPECTED_VERSION
+                    and d.receipt_json is not None for d in dispatches)
+            and all(a.status == "succeeded"
+                    and a.tool_version == EXPECTED_VERSION for a in attempts)
+            and {d.id for d in dispatches} == {a.id for a in attempts}
+            and {d.tool_name for d in dispatches} ==
+            set(EXPECTED_TOOLS[:count])
+        )
+        if count == 2:
+            # The second source must remain a typed checkpoint dependency.
+            dep = steps[1].get("argument_bindings", {}).get("text", {})
+            passed = passed and dep.get("kind") == "observation_ref"
+    return {
+        "stage": stage, "pass": bool(passed),
+        "http_status": response.status_code,
+        "termination_reason": data.get("termination_reason"),
+        "refusal_code": data.get("primary_v1_refusal_code"),
+        "validation_issues": _safe_issues(data),
+        "plan_format": versions,
+        "step_statuses": statuses[:8],
+        "attempt_count": len(attempts),
+        "dispatch_count": len(dispatches),
+        "primary_evidence_count": len(primary),
+        "claim_count": len(state["claims"]),
+        "model_http_attempts": response.headers.get(
+            "X-HealthAgent-Model-HTTP-Attempts"),
+    }
+
+
+def evaluate(repeats=2):
+    if os.getenv("RUN_S25_06_E3_LIVE") != "1":
+        raise RuntimeError("RUN_S25_06_E3_LIVE=1 required")
+    if not 1 <= repeats <= 5:
+        raise ValueError("repeats must be 1..5")
+    base = Settings()
+    if base.model_provider not in {"ollama_proxy", "openai_compatible"}:
+        raise RuntimeError("real model provider required (not fake)")
+    if not base.model_base_url or base.model_base_url.startswith(
+            "https://api.openai.com"):
+        raise RuntimeError("explicit authorized local/compatible endpoint required")
+    records = []
+    with tempfile.TemporaryDirectory(prefix="s25-06-e3-") as directory:
+        for repeat in range(1, repeats + 1):
+            token = secrets.token_urlsafe(32)
+            runtime = base.model_dump()
+            for key in ("route_admission_mode", "understanding_strategy",
+                        "m5_unified_route_enabled", "m5_first_route_enabled",
+                        "routing_profile"):
+                runtime.pop(key, None)
+            dbfile = (Path(directory) / f"e3-{repeat}.sqlite").resolve()
+            settings = Settings(**{
+                **runtime, "database_url": "sqlite:///" + dbfile.as_posix(),
+                "routing_profile": "unified",
+                "s25_06_dependency_plan_enabled": True,
+                "allow_demo_identity": False,
+                "user_tokens": token + ":s25-06-e3-synthetic-owner",
+                "skill_strategy": "all",
+                "s25_05_text_stats_enabled": True,
+                "s25_05_mcp_reference_registry_enabled": True,
+            })
+            with (TestClient(create_app(settings)) as client,
+                  evidence_session(settings.database_url) as Session):
+                client.headers.update({"Authorization": "Bearer " + token})
+                cid_response = client.post("/conversations")
+                cid_response.raise_for_status()
+                cid = cid_response.json()["id"]
+                previous_ok = True
+                for stage, prompt in (
+                        ("create", CREATE), ("first", FIRST),
+                        ("resume", RESUME)):
+                    if not previous_ok:
+                        records.append({
+                            "repeat": repeat, "stage": stage, "pass": False,
+                            "failure_kind": "prerequisite_not_verified",
+                        })
+                        continue
+                    started = time.monotonic()
+                    try:
+                        response = client.post(
+                            f"/conversations/{cid}/agent/messages",
+                            json={"content": prompt,
+                                  "client_request_id": "s25-06-e3-" + uuid.uuid4().hex},
+                            timeout=max(120.0, settings.model_timeout_seconds * 8))
+                        entry = score(stage, response, snapshot(Session, cid))
+                    except Exception as exc:
+                        entry = {"stage": stage, "pass": False,
+                                 "failure_kind": type(exc).__name__}
+                    entry["repeat"] = repeat
+                    entry["duration_ms"] = int((time.monotonic() - started) * 1000)
+                    records.append(entry)
+                    previous_ok = entry["pass"]
+    durations = [x["duration_ms"] for x in records if "duration_ms" in x]
+    passed = sum(x["pass"] for x in records)
+    return {
+        "suite": "s25-06-e3-live-v1", "real_provider": True,
+        "provider": base.model_provider, "model": base.model_name,
+        "routing_profile": "unified", "repeats": repeats,
+        "passed": passed, "total": len(records),
+        "all_passed": len(records) > 0 and passed == len(records),
+        "median_duration_ms": statistics.median(durations) if durations else None,
+        "cases": records,
+        "limitations": [
+            "Real Qwen must run in the operator's configured environment.",
+            "Isolated SQLite, local trusted MCP catalog, development bearer only.",
+            "No raw provider output, prompts, results, credentials or tokens exported.",
+            "PostgreSQL crash/restart and recovery disposition are separate gates.",
+            "No clinical or production IAM/effect guarantee is implied.",
+        ],
+    }
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--repeats", type=int, default=2)
+    parser.add_argument("--output", default="artifacts/s25-06-e3-live.json")
+    args = parser.parse_args()
+    report = evaluate(args.repeats)
+    path = Path(args.output)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(report, ensure_ascii=False, indent=2),
+                    encoding="utf-8")
+    print(json.dumps({
+        "passed": report["passed"], "total": report["total"],
+        "all_passed": report["all_passed"], "output": str(path),
+    }, ensure_ascii=False))
+    if not report["all_passed"]:
+        raise SystemExit(1)
+
+
+if __name__ == "__main__":
+    main()
