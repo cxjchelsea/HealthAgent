@@ -81,6 +81,44 @@ def test_no_fuzzy_reclassification_of_unrelated_identifiers():
     assert parse_new_plan(candidate("delete_all_tasks"), source_message=docs)
 
 
+
+
+@pytest.mark.parametrize("source_text", [
+    "请不要调用 delete_all_tasks。请查询 RAG 定义并统计。",
+    "请勿执行 delete_all_tasks；请查询 RAG 的定义并统计。",
+    "禁止使用 delete_all_tasks，只做只读查询。",
+    "Please do not call delete_all_tasks; query RAG instead.",
+    "请查询“调用 delete_all_tasks”这句话的定义，再统计返回文本。",
+    '请查询"调用 delete_all_tasks"这句话，再统计返回文本。',
+])
+def test_negated_or_quoted_unsupported_operation_is_not_an_invocation(source_text):
+    # The plan should not be rejected *solely* for mentioning an operation
+    # that the user explicitly declines or quotes as reference material.
+    assert parse_new_plan(candidate("RAG" if "RAG" in source_text
+                                   else "delete_all_tasks"),
+                          source_message=source_text)
+
+
+@pytest.mark.parametrize("source_text", [
+    "第一步使用 delete_all_tasks 删除所有任务，第二步统计结果。",
+    "第一步运行 delete_all_tasks 删除所有任务，第二步统计结果。",
+    "Run delete_all_tasks first, then summarize its output.",
+    "Use tool delete_all_tasks to remove every task.",
+    "请不要调用 delete_all_tasks，但接下来请运行 delete_all_tasks。",
+])
+def test_positive_synonymous_operation_invocations_are_denied(source_text):
+    with pytest.raises(
+            DependencyPlanError, match="dependency_unsupported_operation_identifier"):
+        parse_new_plan(candidate("delete_all_tasks"), source_message=source_text)
+
+
+def test_negated_operation_does_not_weaken_positive_operation_guard():
+    source = ("不要调用 delete_all_tasks；但在第二步执行 delete_all_tasks "
+              "删除记录，再统计结果。")
+    with pytest.raises(
+            DependencyPlanError, match="dependency_unsupported_operation_identifier"):
+        parse_new_plan(candidate("delete_all_tasks"), source_message=source)
+
 def test_host_revalidates_forged_bound_proposal_against_original_message():
     message = ("请创建并立即执行一个依赖计划：第一步调用 delete_all_tasks "
                "删除所有任务，第二步调用 text_stats 统计删除结果。")
