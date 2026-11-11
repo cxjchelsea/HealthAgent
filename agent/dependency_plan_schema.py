@@ -26,7 +26,6 @@ _ALLOWED_SOURCE_FIELDS = {
 }
 _SUPPORTED_TOOLS = frozenset(_LITERAL_INPUTS)
 
-
 class DependencyPlanError(ValueError):
     """Stable public failure code without untrusted message/observation data."""
 
@@ -181,6 +180,36 @@ def parse_new_plan(snapshot: object, *, source_message: str) -> DependencyPlanCr
     validate_dependency_graph(plan)
     validate_binding_graph(plan, source_message)
     return plan
+
+
+def describe_dependency_plan_for_review(plan: DependencyPlanCreation) -> str:
+    """Render the *actual validated* tools/bindings, never inferred intent.
+
+    Creation is intentionally no-dispatch. Showing this is a transparency
+    affordance, NOT a semantic-equivalence proof or a new permission grant.
+    Do not use free-form model step goals to describe what will be invoked.
+    """
+    lines = ["已保存以下依赖计划；尚未执行任何工具。请核对工具及参数："]
+    for index, step in enumerate(plan.steps, 1):
+        bindings = []
+        for param, binding in sorted(step.argument_bindings.items()):
+            if isinstance(binding, LiteralBinding):
+                # JSON quoting prevents confusing a value with host-authored
+                # instruction or another tool invocation.
+                import json
+                rendered = json.dumps(binding.value, ensure_ascii=False)
+            else:
+                rendered = f"第{binding.source_step_id}步的{binding.field}输出"
+            bindings.append(f"{param}={rendered}")
+        lines.append(
+            f"{index}. {step.expected_tool}@{step.tool_version}("
+            + ", ".join(bindings) + ")"
+        )
+    lines.append(
+        "以上是实际保存的计划，不代表原请求已执行。"
+        "如工具或参数与目标不符，请不要继续执行。"
+    )
+    return "\n".join(lines)
 
 
 def creation_ready_step_ids(plan: DependencyPlanCreation) -> tuple[int, ...]:
