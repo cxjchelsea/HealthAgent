@@ -747,6 +747,22 @@ def primary_route_generation_schema(message: str, *,
             defs.pop(name, None)
         if not defs:
             schema.pop("$defs", None)
+    elif dependency_plan_enabled:
+        # Ollama structured-output generation must not silently OMIT the
+        # optional E1 payload. Required means present, not authorized: it
+        # remains nullable for non-dependency routes, and the RouteSignal
+        # XOR validator plus independent Host still check its full content.
+        required = list(schema.get("required", []))
+        if "dependency_plan" not in required:
+            required.append("dependency_plan")
+        schema["required"] = required
+        schema["properties"]["dependency_plan"]["description"] = (
+            "Always include this key when the experiment is enabled. "
+            "For a new read-only dependent plan set route_kind=plan_create, "
+            "steps=[] and supply the full dependency-plan-v1 OBJECT; "
+            "for other route kinds or legacy plan creation use null. "
+            "An empty steps array with absent/null dependency_plan is never "
+            "a valid plan_create.")
     if 1 <= len(message) <= 400:
         schema["properties"]["quote"] = {
             "type": "string", "const": message,
