@@ -118,7 +118,32 @@ def _inspect_locked(db, *, owner_id, conversation_id, turn_id):
             _deny("dependency_recovery_untrusted_dispatch")
         record = executions.get(str(item.step_id))
         attempt = locked_attempts[item.id]
-        if item.status == "checkpointed":
+        if item.status == "failure_finalized":
+            # Verified negative Receipt is terminal evidence, NOT a successful
+            # checkpoint or a grant to retry an executed logical step.
+            try:
+                args = json.loads(item.arguments_json)
+                receipt = json.loads(item.receipt_json)
+                projection = json.loads(attempt.result_projection) if attempt else None
+            except (TypeError, ValueError):
+                _deny("dependency_recovery_untrusted_dispatch")
+            if (step.get("status") != "pending" or record is not None
+                    or type(args) is not dict or type(receipt) is not dict
+                    or set(receipt) != {"ok", "error"}
+                    or receipt.get("ok") is not False
+                    or type(receipt.get("error")) is not str
+                    or len(receipt["error"]) > 80
+                    or attempt is None or attempt.status != "failed"
+                    or attempt.error_code != "dependency_tool_reported_failure"
+                    or attempt.conversation_id != conversation_id
+                    or attempt.turn_id != item.turn_id
+                    or attempt.step_id != item.step_id
+                    or attempt.tool_name != item.tool_name
+                    or attempt.tool_version != item.tool_version
+                    or attempt.arguments_digest != arguments_digest(args)
+                    or projection != bounded_projection(item.tool_name, receipt)):
+                _deny("dependency_recovery_untrusted_dispatch")
+        elif item.status == "checkpointed":
             if (step.get("status") != "completed" or type(record) is not dict
                     or record.get("dispatch_id") != item.id
                     or record.get("tool_version") != item.tool_version
