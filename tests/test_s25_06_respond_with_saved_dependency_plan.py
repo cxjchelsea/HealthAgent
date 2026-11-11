@@ -171,3 +171,61 @@ def test_legacy_plan_still_uses_legacy_restore_when_answer_only(tmp_path, monkey
         assert response.json()["status"] == "partial"
         assert response.json()["termination_reason"] == "pending_plan_steps"
         assert seen and seen[0] == snapshot
+
+
+def test_http_ordinary_read_with_saved_dependency_skips_legacy_ledger(
+        tmp_path, monkeypatch):
+    """A normal Host-admitted read is equally independent from saved dependency plan."""
+    message = "与刚才的计划无关，请用计算工具计算 19+23。"
+
+    async def primary(provider, model, message, **kwargs):
+        assert kwargs["saved_plan_present"] is True
+        return bind_route_signal(RouteSignal.model_validate({
+            "schema_version": "primary-route-v1",
+            "route_kind": "ordinary_tool",
+            "quote": message,
+            "execution_scope": "none",
+            "effect_intent": "read_only",
+        }), message, saved_plan_present=True, pending_action=None,
+            saved_step_count=2)
+
+    class NoToolModel:
+        def __init__(self, settings):
+            pass
+
+        async def decide(self, messages, tools):
+            # An admitted ordinary read must fail closed without real
+            # observation. This deliberately challenges ledger isolation,
+            # rather than claiming the tool has successfully executed.
+            return Decision(content="42", tool_calls=[])
+
+    monkeypatch.setattr("apps.api.main.propose_primary_route", primary)
+    monkeypatch.setattr("apps.api.main.NativeToolDecision", NoToolModel)
+    settings = _cfg(tmp_path)
+    with TestClient(create_app(settings)) as client:
+        cid = client.post("/conversations").json()["id"]
+        _, Session = database(settings.database_url)
+        snapshot = json.dumps(_dependency_plan(), ensure_ascii=False)
+        with Session.begin() as db:
+            db.add(ConversationPlan(conversation_id=cid, snapshot=snapshot))
+
+        response = client.post(f"/conversations/{cid}/agent/messages", json={
+            "content": message,
+            "client_request_id": "s2506-ordinary-read-topic-switch-001",
+        })
+        assert response.status_code == 200, response.text
+        result = response.json()
+        assert result["status"] == "partial"
+        assert result["termination_reason"] == "ordinary_read_unverified"
+        assert result["execution_mode"] == "read_only"
+        with Session() as db:
+            assert db.get(ConversationPlan, cid).snapshot == snapshot
+            assert db.get(PlanExecutionClaim, cid) is None
+            assert db.scalars(select(PlanToolDispatch).where(
+                PlanToolDispatch.conversation_id == cid)).all() == []
+            assert db.scalars(select(AgentAttempt).where(
+                AgentAttempt.conversation_id == cid)).all() == []
+            primary_evidence = db.get(PrimaryRouteEvidence, result["turn_id"])
+            assert primary_evidence.route_kind == "ordinary_tool"
+            assert primary_evidence.disposition == "allow"
+            assert primary_evidence.admission_reason == "primary_v1_ordinary_read_only"
