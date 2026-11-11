@@ -121,3 +121,19 @@ def test_e3_resume_rejects_target_not_using_source_receipt():
     assert not score("resume", response, state)["pass"]
     target.arguments_json = json.dumps({"text": "AUTHENTIC_SOURCE"})
     assert score("resume", response, state)["pass"]
+
+
+def test_e3_live_preserves_safe_nested_schema_diagnostics():
+    issues = {
+        "primary_v1_validation_issues": [
+            {"field": "dependency_plan.steps.argument_bindings",
+             "category": "missing"},
+            {"field": "root", "category": "other"},
+            {"field": "dependency_plan.steps.private_payload",
+             "category": "missing"},
+        ]
+    }
+    assert _safe_issues(issues) == [
+        {"field": "dependency_plan.steps.argument_bindings",
+         "category": "missing"},
+    ]
