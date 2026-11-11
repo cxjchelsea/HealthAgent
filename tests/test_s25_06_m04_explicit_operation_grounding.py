@@ -75,6 +75,10 @@ def test_no_fuzzy_reclassification_of_unrelated_identifiers():
     message = ("请查询 delete_all_tasks 的定义，其中提到 "
                "my_custom_name 也是术语；然后统计查询结果。")
     assert parse_new_plan(candidate("delete_all_tasks"), source_message=message)
+    # Function-looking text is also a legitimate topic for documentation,
+    # unless the user actually invokes it as a requested operation.
+    docs = "请查询 delete_all_tasks() 的使用方法，再统计返回文本。"
+    assert parse_new_plan(candidate("delete_all_tasks"), source_message=docs)
 
 
 def test_host_revalidates_forged_bound_proposal_against_original_message():
