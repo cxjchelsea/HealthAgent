@@ -1,0 +1,36 @@
+# S25-06 Step 5 — Independent audit and physical acceptance ledger
+
+**Immutable baseline:** `main@65e164e9e51ae9541507cbec36dfd8bf5add7112` (merged PR #43). Review the implementation separately from its positive test assertions. This ledger is a tracked acceptance contract, **not** a claim of production deployment or of final Step 5 closure.
+
+## Evidence already present at baseline
+
+| Boundary | Grounded implementation / check | What it actually proves |
+| --- | --- | --- |
+| Primary → Host creation | E1/E2 tests, `agent/primary_route_v1.py`, `agent/primary_host_admission_v1.py` | Typed dependent plan is not itself permission; Host checks before atomic creation |
+| Real model | Operator-provided E3 v7 JSON, 2 independent conversations / 6 stages PASS | Actual `ollama_proxy/qwen3:14b` CREATE → FIRST → RESUME on transient SQLite + trusted local reference catalog |
+| Tool evidence | `services/dependency_dispatch.py`, `services/dependency_execution.py`, `tests/test_s25_06_slice_d_http.py` | Dispatch-before-tool, Receipt, Attempt and checkpoint; no automatic retry of unknown dispatch |
+| PostgreSQL committed-step atomicity | `tests/test_s25_06_slice_d_postgres.py` | Real PostgreSQL transactions for one checkpoint and two racing finalizers; **not** a process-kill proof |
+| PostgreSQL double creation | `tests/test_s25_06_slice_e2_postgres_two_creators.py` | Two processes: incumbent running Turn wins, second receives 409 before Primary; **not** concurrent finalization of two admitted creators |
+| Orphan recovery semantics | `services/dependency_recovery.py`, `services/dependency_fencing.py`, `tests/test_s25_06_slice_d_recovery.py` | Explicit external authorization, independent worker termination verifier, immutable evidence digest, monotonic generation fence; recovery test previously uses SQLite and test verifier stubs |
+| Main CI baseline | PR #43 run `42943343389` | `1494 passed, 5 skipped` and existing targeted PostgreSQL jobs passed, including E2 dual HTTP worker |
+
+## Newly added in this audit branch
+
+- `tests/test_s25_06_step5_postgres_recovery.py`: *real PostgreSQL* orphan `dispatch_unknown` state, negative termination proof, successful synthetic-authority reconciliation, atomic claim release + fence revocation, original checkpoint and dispatch preservation, old fence cannot commit, repeated inspection denied.
+- CI runs this test explicitly with `TEST_POSTGRES_URL`. The proof is still **not** a physically killed worker or production operator IAM proof: trusted verifiers are test substitutes, and the tool is never invoked in this fixture.
+
+## Final outstanding gates (not auto-waived by passing CI)
+
+1. **Real process termination / restart** on isolated PostgreSQL: run a real new-format HTTP worker into a controlled pre-/post-dispatch crash boundary, terminate its process, restart a separate worker, and verify dispatch `unknown` never replays. Capture DB state before and after.
+2. **Operator access + worker termination verification:** independently configured trusted verifiers (not caller-supplied boolean attestations or testing lambdas). There is no production-grade verifier implementation in the present audited service boundary.
+3. **Concurrency across recovery and late worker receipt:** physical two-process race with generation fence and locked Plan→Claim→Dispatch→Attempt, including both winner orders and no post-revocation checkpoint.
+4. **E3 beyond happy path:** independent provider/model evaluation of invalid graph, spoofed source, illegal write-tool request, ambiguous provider completion; real Qwen 6/6 covers only one trusted two-step positive task.
+5. **Final evidence release review:** ensure no Prompt/Receipt/arguments/credential data exported in accepted reports; do not claim external exactly-once effects.
+6. **Default-OFF and regression:** full CI, legacy paths, and real PostgreSQL gates at the **final** audit commit, plus explicit user authorization before merging this branch.
+
+## Review disposition
+
+- E3 acceptance = **PASS** for the bounded real-provider positive case.
+- Existing safety architecture = **designed to fail closed** with test-backed scope specified above.
+- Step 5 complete = **NOT YET** until unresolved physical-process and operator verification gates are addressed or explicitly accepted as documented non-production limits.
+- Do not alter the user-facing feature flag default or introduce a public recovery endpoint as part of audit.
