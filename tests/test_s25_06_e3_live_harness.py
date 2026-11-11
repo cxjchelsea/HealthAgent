@@ -137,3 +137,26 @@ def test_e3_live_preserves_safe_nested_schema_diagnostics():
         {"field": "dependency_plan.steps.argument_bindings",
          "category": "missing"},
     ]
+
+
+def test_e3_primary_shape_is_bounded_and_never_exports_model_contents():
+    from evals.s25_06_e3_live import safe_primary_output_shape
+    payload = {
+        "route_kind": "plan_create", "steps": [],
+        "dependency_plan": None,
+        "quote": "DO_NOT_EXPORT_QUOTE",
+        "arguments": {"token": "DO_NOT_EXPORT_TOKEN"},
+    }
+    shape = safe_primary_output_shape(json.dumps(payload))
+    assert shape["route"] == "plan_create"
+    assert shape["steps_shape"] == "array"
+    assert shape["steps_count"] == 0
+    assert shape["dependency_plan_shape"] == "null"
+    assert "DO_NOT_EXPORT" not in json.dumps(shape)
+    payload["dependency_plan"] = {"steps": [{}, {}],
+                                  "unsafe_source": "DO_NOT_EXPORT_SOURCE"}
+    shape = safe_primary_output_shape(json.dumps(payload))
+    assert shape["dependency_plan_shape"] == "object"
+    assert shape["dependency_steps_count"] == 2
+    assert "DO_NOT_EXPORT" not in json.dumps(shape)
+    assert safe_primary_output_shape("INVALID") == {"shape": "invalid_json"}
