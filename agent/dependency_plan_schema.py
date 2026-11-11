@@ -27,31 +27,55 @@ _ALLOWED_SOURCE_FIELDS = {
 }
 _SUPPORTED_TOOLS = frozenset(_LITERAL_INPUTS)
 
-# Explicit invocation syntax has a stronger meaning than a bare identifier:
-# "调用 foo_bar" names an operation; "查询 foo_bar 的定义" names DATA.
-# This is only an exact, source-bound contract check of user-named tool calls;
-# the Primary model remains the sole natural-language intent classifier.
-# Do not blacklist all snake_case tokens (they can be legitimate lookup terms).
-_OPERATION_NAME = r"([a-z][a-z0-9]*(?:_[a-z0-9]+)+)"
+# Only explicit machine-shaped operation invocations are checked at this
+# boundary. A bare snake_case term, a quoted instruction being discussed, and
+# an explicitly negated invocation are DATA, not a positive operation claim.
+# This is not another natural-language classifier: Primary owns the semantics,
+# while Host can reject an unsupported operation named in a positive command.
+_OPERATION_NAME = r"(?P<operation>[a-z][a-z0-9]*(?:_[a-z0-9]+)+)"
 _EXPLICIT_TOOL_CALLS = (
-    re.compile(r"(?<![A-Za-z])(?:调用|执行|call|invoke)\s*[\x60'\"“”]?\s*" + _OPERATION_NAME
-               + r"(?![A-Za-z0-9_])", re.IGNORECASE),
-    re.compile(r"(?<![A-Za-z0-9_])(?:tool|function)\s*[:=]\s*[\x60'\"“”]?\s*"
-               + _OPERATION_NAME + r"(?![A-Za-z0-9_])", re.IGNORECASE),
+    re.compile(
+        r"(?<![A-Za-z])(?:调用|执行|使用|运行|call|invoke|run|use)"
+        r"\s*(?:工具|tool\s+)?[\x60'\"“”]?\s*"
+        + _OPERATION_NAME + r"(?![A-Za-z0-9_])", re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?<![A-Za-z0-9_])(?:tool|function)\s*[:=]\s*"
+        r"[\x60'\"“”]?\s*" + _OPERATION_NAME + r"(?![A-Za-z0-9_])",
+        re.IGNORECASE,
+    ),
 )
+# Limited, adjacent negation check for literal call syntax. Complex negation
+# scope still belongs to Primary rather than growing a second route parser.
+_NEGATED_CALL = re.compile(
+    r"(?:不要|请勿|禁止|无需|不应|不能|别|never|do not|don't)\s*$",
+    re.IGNORECASE,
+)
+_QUOTED_TEXT = re.compile(r"“[^”]*”|\"[^\"]*\"|\x60[^\x60]*\x60")
+
+
+def _literal_quoted_reference(source: str, start: int, end: int) -> bool:
+    """Ignore a *whole* quoted instruction; quoted tool names still count."""
+    return any(m.start() <= start and end <= m.end()
+               for m in _QUOTED_TEXT.finditer(source))
 
 
 def validate_explicit_operation_identifiers(source_message: str) -> None:
-    """Reject only unsupported *explicitly invoked* tool identifiers.
+    """Fail closed on positive, explicit unsupported tool-call identifiers.
 
-    Bare snake_case lookup targets are ordinary user data. This limited
-    syntactic safeguard cannot determine generic semantic goal equivalence.
+    Negative instruction, quoted example or bare lookup term is not a command.
+    This cannot prove arbitrary semantic equivalence of proposed plan goals.
     """
-    invoked = {
-        match.group(1)
-        for pattern in _EXPLICIT_TOOL_CALLS
-        for match in pattern.finditer(source_message)
-    }
+    invoked = set()
+    for pattern in _EXPLICIT_TOOL_CALLS:
+        for match in pattern.finditer(source_message):
+            if _literal_quoted_reference(
+                    source_message, match.start(), match.end()):
+                continue
+            prefix = re.split(r"[，。；;.!?\n]", source_message[:match.start()])[-1]
+            if _NEGATED_CALL.search(prefix):
+                continue
+            invoked.add(match.group("operation").lower())
     if invoked - _SUPPORTED_TOOLS:
         raise DependencyPlanError("dependency_unsupported_operation_identifier")
 
