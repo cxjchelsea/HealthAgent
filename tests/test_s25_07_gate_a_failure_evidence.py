@@ -175,3 +175,37 @@ def test_failure_is_not_a_completed_source_for_downstream(seeded, monkeypatch):
         assert saved["steps"][0]["status"] == "pending"
         assert saved["steps"][1]["status"] == "pending"
         assert db.query(PlanToolDispatch).count() == 1
+
+
+def test_second_step_negative_receipt_preserves_verified_prefix(seeded, monkeypatch):
+    Session, raw = seeded
+    calls = []
+    def observed(name, *args, **kwargs):
+        calls.append(name)
+        if name == "mcp_reference_lookup":
+            return {"ok": True, "definition": "retrieval augmented generation",
+                    "source": "trusted-reference"}
+        return {"ok": False, "error": "text_stats_failed"}
+    monkeypatch.setattr(READ_REGISTRY, "invoke", observed)
+    outcomes = _execute(Session, raw)
+    assert [x.status for x in outcomes] == ["checkpointed", "verified_failure"]
+    assert calls == ["mcp_reference_lookup", "text_stats"]
+    with Session() as db:
+        data = json.loads(db.get(ConversationPlan, "cid").snapshot)
+        assert [s["status"] for s in data["steps"]] == ["completed", "pending"]
+        assert list(data["executions"]) == ["1"]
+        dispatches = db.query(PlanToolDispatch).order_by(PlanToolDispatch.step_id).all()
+        assert [x.status for x in dispatches] == [
+            "checkpointed", "failure_finalized"]
+        assert [db.get(AgentAttempt, d.id).status for d in dispatches] == [
+            "succeeded", "failed"]
+        state = db.get(AgentTaskState, "cid")
+        assert state.state == "blocked"
+        assert state.revision == 2
+        assert state.plan_revision == 1
+        assert json.loads(state.step_states)[0]["status"] == "completed"
+        assert json.loads(state.step_states)[1]["status"] == "pending"
+    with pytest.raises(DependencyPlanError, match="dependency_worker_fenced"):
+        _execute(Session, raw)
+    with Session() as db:
+        assert db.query(PlanToolDispatch).count() == 2
