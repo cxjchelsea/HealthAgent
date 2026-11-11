@@ -166,5 +166,8 @@ def test_legacy_plan_still_uses_legacy_restore_when_answer_only(tmp_path, monkey
             "client_request_id": "s2506-respond-legacy-preserve-001",
         })
         assert response.status_code == 200, response.text
-        assert response.json()["status"] == "completed"
+        # Preserve the legacy behavior too: an unfinished old plan can keep
+        # an unrelated response partial, but must not lose its checkpoint.
+        assert response.json()["status"] == "partial"
+        assert response.json()["termination_reason"] == "pending_plan_steps"
         assert seen and seen[0] == snapshot
