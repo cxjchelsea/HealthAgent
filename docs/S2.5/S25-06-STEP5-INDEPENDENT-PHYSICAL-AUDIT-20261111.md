@@ -17,11 +17,12 @@
 ## Newly added in this audit branch
 
 - `tests/test_s25_06_step5_postgres_recovery.py`: *real PostgreSQL* orphan `dispatch_unknown` state, negative termination proof, successful synthetic-authority reconciliation, atomic claim release + fence revocation, original checkpoint and dispatch preservation, old fence cannot commit, repeated inspection denied.
-- CI runs this test explicitly with `TEST_POSTGRES_URL`. The proof is still **not** a physically killed worker or production operator IAM proof: trusted verifiers are test substitutes, and the tool is never invoked in this fixture.
+- `tests/test_s25_06_step5_postgres_process_crash.py`: separate worker process writes its actual new-format fenced pre-tool dispatch to PostgreSQL, then terminates abruptly via `os._exit(73)`. Parent process verifies durable `dispatch_unknown`, performs evidence-bound recovery with termination verified by observed subprocess exit, and checks no Receipt/Attempt/replay and permanent fencing.
+- CI runs **both** tests explicitly with `TEST_POSTGRES_URL`. Operator authority is represented by independently checked test-only verifiers; **not** production IAM. The abrupt-exit test kills the worker **before tool invocation** and does not prove post-call external effect uncertainty or recovery versus a still-active worker.
 
 ## Final outstanding gates (not auto-waived by passing CI)
 
-1. **Real process termination / restart** on isolated PostgreSQL: run a real new-format HTTP worker into a controlled pre-/post-dispatch crash boundary, terminate its process, restart a separate worker, and verify dispatch `unknown` never replays. Capture DB state before and after.
+1. **Full HTTP process termination / restart** on isolated PostgreSQL: the new test now proves a real subprocess exit immediately after durable pre-dispatch, but does **not** cover a full FastAPI worker restart, a kill after the external tool has been invoked, or exactly-once external effects. Capture DB and tool-side state before and after those distinct boundaries.
 2. **Operator access + worker termination verification:** independently configured trusted verifiers (not caller-supplied boolean attestations or testing lambdas). There is no production-grade verifier implementation in the present audited service boundary.
 3. **Concurrency across recovery and late worker receipt:** physical two-process race with generation fence and locked Plan→Claim→Dispatch→Attempt, including both winner orders and no post-revocation checkpoint.
 4. **E3 beyond happy path:** independent provider/model evaluation of invalid graph, spoofed source, illegal write-tool request, ambiguous provider completion; real Qwen 6/6 covers only one trusted two-step positive task.
