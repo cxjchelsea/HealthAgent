@@ -154,3 +154,78 @@ def test_postgres_unknown_dispatch_requires_external_proof_then_fences_old_worke
     with pytest.raises(DependencyPlanError, match="dependency_recovery_claim_unverified"):
         inspect_dependency_orphan(
             Session, owner_id="physical-owner", conversation_id=cid, turn_id=tid)
+
+
+def test_postgres_real_dispatch_row_lock_race_receipt_vs_recovery(physical_orphan):
+    """Two real PostgreSQL connections race; either valid serialization wins.
+
+    The fixture's operator/termination verifiers are test-only. This proves
+    DB lock serialization and no false checkpoint, NOT safe termination of a
+    genuinely live tool worker or production operator authority.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    import time
+    from sqlalchemy import select
+    from services.plan_dispatch import PlanDispatchJournal, DispatchConflict
+
+    Session, cid, tid, did, raw, fence = physical_orphan
+    before = inspect_dependency_orphan(
+        Session, owner_id="physical-owner", conversation_id=cid, turn_id=tid)
+    started_receipt, started_recovery = Event(), Event()
+
+    def receipt_worker():
+        started_receipt.set()
+        try:
+            PlanDispatchJournal(Session, cid, tid).record_receipt(
+                did, {"ok": True, "definition": "trusted-synthetic-definition",
+                      "source": "trusted-reference"}, fence=fence)
+            return "observed"
+        except (DependencyPlanError, DispatchConflict) as exc:
+            return str(exc)
+
+    def recovery_worker():
+        started_recovery.set()
+        try:
+            _reconcile(Session, cid=cid, tid=tid, inspection=before)
+            return "recovered"
+        except DependencyPlanError as exc:
+            return exc.code
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        # Parent holds the physical Dispatch row. Two independent connections
+        # subsequently request that row; both must wait until the lock exits.
+        with Session.begin() as db:
+            row = db.execute(select(PlanToolDispatch).where(
+                PlanToolDispatch.id == did).with_for_update()).scalar_one()
+            assert row.status == "dispatch_unknown"
+            receipt_future = pool.submit(receipt_worker)
+            recovery_future = pool.submit(recovery_worker)
+            assert started_receipt.wait(timeout=4)
+            assert started_recovery.wait(timeout=4)
+            time.sleep(.2)
+            assert not receipt_future.done()
+            assert not recovery_future.done()
+        receipt_outcome = receipt_future.result(timeout=15)
+        recovery_outcome = recovery_future.result(timeout=15)
+
+    assert (receipt_outcome, recovery_outcome) in {
+        ("observed", "dependency_recovery_evidence_changed"),
+        ("dependency_worker_fenced", "recovered"),
+    }
+    with Session() as db:
+        row = db.get(PlanToolDispatch, did)
+        assert db.get(ConversationPlan, cid).snapshot == raw
+        assert db.query(PlanToolDispatch).filter_by(conversation_id=cid).count() == 1
+        if recovery_outcome == "recovered":
+            assert row.status == "dispatch_unknown"
+            assert row.receipt_json is None
+            assert db.get(PlanExecutionClaim, cid) is None
+            assert db.get(Turn, tid).state == "partial"
+            assert db.get(DependencyWorkerFence, cid).state == "fenced"
+        else:
+            assert row.status == "observed"
+            assert row.receipt_json is not None
+            assert db.get(PlanExecutionClaim, cid) is not None
+            assert db.get(Turn, tid).state == "running"
+            assert db.get(DependencyWorkerFence, cid).state == "active"
