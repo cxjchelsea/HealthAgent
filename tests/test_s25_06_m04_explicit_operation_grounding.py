@@ -49,13 +49,32 @@ def test_valid_named_read_only_dependency_still_admitted():
     assert parsed.steps[1].argument_bindings["text"].source_step_id == 1
 
 
-def test_other_snake_case_literals_are_not_silently_assumed_to_be_tools():
-    # Experimental feature errs on the side of clarification for an ambiguous
-    # function-shaped identifier. This is not generalized semantic fidelity.
+def test_bare_snake_case_lookup_term_is_legitimate_data():
+    # A term with underscores alone must NEVER be treated as an invocation.
+    for term in ("some_custom_identifier", "delete_all_tasks", "call_model"):
+        message = f"请查询 {term} 的定义，再统计返回文本。只保存计划，不执行。"
+        assert parse_new_plan(candidate(term), source_message=message)
+
+
+@pytest.mark.parametrize("request", [
+    "第一步调用 delete_all_tasks 删除所有任务，第二步调用 text_stats 统计。",
+    "Please call delete_all_tasks to delete all tasks, then text_stats.",
+    "Please invoke delete_all_tasks to delete all tasks.",
+    "第一步执行工具 tool:delete_all_tasks，再统计结果。",
+    "请先执行 delete_all_tasks()，再统计删除结果。",
+])
+def test_explicit_unsupported_invocations_are_rejected(request):
     with pytest.raises(
             DependencyPlanError, match="dependency_unsupported_operation_identifier"):
-        parse_new_plan(candidate("some_custom_identifier"),
-                       source_message="请查询 some_custom_identifier 定义后统计文本")
+        parse_new_plan(candidate("delete_all_tasks"), source_message=request)
+
+
+def test_no_fuzzy_reclassification_of_unrelated_identifiers():
+    # An identifier anywhere in the user text must not poison a read-only
+    # plan if it is plainly data instead of an explicit requested invocation.
+    message = ("请查询 delete_all_tasks 的定义，其中提到 "
+               "my_custom_name 也是术语；然后统计查询结果。")
+    assert parse_new_plan(candidate("delete_all_tasks"), source_message=message)
 
 
 def test_host_revalidates_forged_bound_proposal_against_original_message():
