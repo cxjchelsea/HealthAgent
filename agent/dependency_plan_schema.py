@@ -6,7 +6,6 @@ to create a plan or dispatch a tool.
 """
 from __future__ import annotations
 
-import re
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, ValidationError
@@ -26,60 +25,6 @@ _ALLOWED_SOURCE_FIELDS = {
     ("mcp_reference_lookup", PINNED_TOOL_VERSION): {"definition": str},
 }
 _SUPPORTED_TOOLS = frozenset(_LITERAL_INPUTS)
-
-# Only explicit machine-shaped operation invocations are checked at this
-# boundary. A bare snake_case term, a quoted instruction being discussed, and
-# an explicitly negated invocation are DATA, not a positive operation claim.
-# This is not another natural-language classifier: Primary owns the semantics,
-# while Host can reject an unsupported operation named in a positive command.
-_OPERATION_NAME = r"(?P<operation>[a-z][a-z0-9]*(?:_[a-z0-9]+)+)"
-_EXPLICIT_TOOL_CALLS = (
-    re.compile(
-        r"(?<![A-Za-z])(?:调用|执行|使用|运行|call|invoke|run|use)"
-        r"\s*(?:工具|tool\s+)?[\x60'\"“”]?\s*"
-        + _OPERATION_NAME + r"(?![A-Za-z0-9_])", re.IGNORECASE,
-    ),
-    re.compile(
-        r"(?<![A-Za-z0-9_])(?:tool|function)\s*[:=]\s*"
-        r"[\x60'\"“”]?\s*" + _OPERATION_NAME + r"(?![A-Za-z0-9_])",
-        re.IGNORECASE,
-    ),
-)
-# Limited, adjacent negation check for literal call syntax. Complex negation
-# scope still belongs to Primary rather than growing a second route parser.
-_NEGATED_CALL = re.compile(
-    r"(?:不要|请勿|禁止|无需|不应|不能|别|never|do not|don't)\s*$",
-    re.IGNORECASE,
-)
-_QUOTED_TEXT = re.compile(r"“[^”]*”|\"[^\"]*\"|\x60[^\x60]*\x60")
-
-
-def _literal_quoted_reference(source: str, start: int, end: int) -> bool:
-    """Ignore a *whole* quoted instruction; quoted tool names still count."""
-    return any(m.start() <= start and end <= m.end()
-               for m in _QUOTED_TEXT.finditer(source))
-
-
-def validate_explicit_operation_identifiers(source_message: str) -> None:
-    """Fail closed on positive, explicit unsupported tool-call identifiers.
-
-    Negative instruction, quoted example or bare lookup term is not a command.
-    This cannot prove arbitrary semantic equivalence of proposed plan goals.
-    """
-    invoked = set()
-    for pattern in _EXPLICIT_TOOL_CALLS:
-        for match in pattern.finditer(source_message):
-            if _literal_quoted_reference(
-                    source_message, match.start(), match.end()):
-                continue
-            prefix = re.split(r"[，。；;.!?\n]", source_message[:match.start()])[-1]
-            if _NEGATED_CALL.search(prefix):
-                continue
-            invoked.add(match.group("operation").lower())
-    if invoked - _SUPPORTED_TOOLS:
-        raise DependencyPlanError("dependency_unsupported_operation_identifier")
-
-
 
 class DependencyPlanError(ValueError):
     """Stable public failure code without untrusted message/observation data."""
@@ -233,9 +178,38 @@ def parse_new_plan(snapshot: object, *, source_message: str) -> DependencyPlanCr
     if plan.executions:
         raise DependencyPlanError("dependency_execution_not_allowed")
     validate_dependency_graph(plan)
-    validate_explicit_operation_identifiers(source_message)
     validate_binding_graph(plan, source_message)
     return plan
+
+
+def describe_dependency_plan_for_review(plan: DependencyPlanCreation) -> str:
+    """Render the *actual validated* tools/bindings, never inferred intent.
+
+    Creation is intentionally no-dispatch. Showing this is a transparency
+    affordance, NOT a semantic-equivalence proof or a new permission grant.
+    Do not use free-form model step goals to describe what will be invoked.
+    """
+    lines = ["已保存以下依赖计划；尚未执行任何工具。请核对工具及参数："]
+    for index, step in enumerate(plan.steps, 1):
+        bindings = []
+        for param, binding in sorted(step.argument_bindings.items()):
+            if isinstance(binding, LiteralBinding):
+                # JSON quoting prevents confusing a value with host-authored
+                # instruction or another tool invocation.
+                import json
+                rendered = json.dumps(binding.value, ensure_ascii=False)
+            else:
+                rendered = f"第{binding.source_step_id}步的{binding.field}输出"
+            bindings.append(f"{param}={rendered}")
+        lines.append(
+            f"{index}. {step.expected_tool}@{step.tool_version}("
+            + ", ".join(bindings) + ")"
+        )
+    lines.append(
+        "以上是实际保存的计划，不代表原请求已执行。"
+        "如工具或参数与目标不符，请不要继续执行。"
+    )
+    return "\n".join(lines)
 
 
 def creation_ready_step_ids(plan: DependencyPlanCreation) -> tuple[int, ...]:
