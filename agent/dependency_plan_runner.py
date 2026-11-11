@@ -17,6 +17,7 @@ from services.dependency_fencing import (
     acquire_dependency_fence, assert_dependency_fence_in_session, DependencyFenceToken,
 )
 from services.dependency_execution import checkpoint_dependency_step_in_session
+from services.dependency_failure import finalize_dependency_failure_in_session
 from services.plan_dispatch import PlanDispatchJournal
 
 
