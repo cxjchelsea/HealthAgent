@@ -66,8 +66,8 @@ except (DependencyPlanError, DispatchConflict) as exc:
         os._exit(71)
     Path(result_file).write_text("fenced", encoding="utf-8")
     os._exit(0)
-Path(result_file).write_text("unsafe_written", encoding="utf-8")
-os._exit(72)
+Path(result_file).write_text("observed", encoding="utf-8")
+os._exit(0)
 """
 
 
@@ -94,7 +94,9 @@ def _plan():
 
 @pytest.mark.skipif(not os.getenv("TEST_POSTGRES_URL"),
                     reason="requires isolated real PostgreSQL")
-def test_postgres_recovery_fences_late_receipt_from_independent_process(tmp_path):
+@pytest.mark.parametrize("receipt_wins", [False, True])
+def test_postgres_recovery_fences_late_receipt_from_independent_process(
+        tmp_path, receipt_wins):
     url = os.environ["TEST_POSTGRES_URL"]
     assert url.startswith("postgresql")
     engine, Session = database(url)
@@ -147,13 +149,23 @@ def test_postgres_recovery_fences_late_receipt_from_independent_process(tmp_path
             assert proc.poll() is None, "stale worker exited prematurely"
             time.sleep(.025)
         assert ready.exists(), "stale worker did not reach wait gate"
+        if receipt_wins:
+            # The deterministic earlier-Receipt order is *not* a zombie:
+            # the worker has completed the journal transaction before the
+            # operator takes a fresh evidence snapshot. Receipt remains
+            # observed, never silently checkpointed as successful.
+            go.touch()
+            _, stderr = proc.communicate(timeout=20)
+            assert proc.returncode == 0, stderr[-2500:]
+            assert result.read_text(encoding="utf-8") == "observed"
         evidence = inspect_dependency_orphan(
             Session, owner_id="step5-owner", conversation_id=cid,
             turn_id=tid)
         assert evidence.classification == "uncertain_no_replay"
-        # The trusted operator+termination verification functions are test
-        # stubs. Here the deliberately delayed writer is not the real tool
-        # executor; the fixture only probes a stale generation commit race.
+        # The external verifiers are test stubs, never production IAM.
+        # In receipt-first mode worker exit is independently observed; in
+        # recovery-first mode the delayed process is ONLY a synthetic stale
+        # token holder, not the original worker claimed to be dead.
         reconcile_dependency_orphan(
             Session, owner_id="step5-owner", conversation_id=cid,
             turn_id=tid, operator_id="test-operator",
@@ -161,16 +173,22 @@ def test_postgres_recovery_fences_late_receipt_from_independent_process(tmp_path
             expected_evidence_sha256=evidence.evidence_sha256,
             operator_authorized=True, worker_terminated_confirmed=True,
             operator_access_verifier=lambda *_: True,
-            worker_termination_verifier=lambda *_: True,
+            worker_termination_verifier=lambda *_: (
+                not receipt_wins or proc.poll() == 0),
         )
-        go.touch()
-        _, stderr = proc.communicate(timeout=20)
-        assert proc.returncode == 0, stderr[-2500:]
-        assert result.read_text(encoding="utf-8") == "fenced"
+        if not receipt_wins:
+            go.touch()
+            _, stderr = proc.communicate(timeout=20)
+            assert proc.returncode == 0, stderr[-2500:]
+            assert result.read_text(encoding="utf-8") == "fenced"
         with Session() as db:
             dispatch = db.get(PlanToolDispatch, did)
-            assert dispatch.status == "dispatch_unknown"
-            assert dispatch.receipt_json is None
+            assert dispatch.status == (
+                "observed" if receipt_wins else "dispatch_unknown")
+            if receipt_wins:
+                assert dispatch.receipt_json is not None
+            else:
+                assert dispatch.receipt_json is None
             assert db.query(AgentAttempt).filter_by(
                 conversation_id=cid).count() == 0
             assert db.get(ConversationPlan, cid).snapshot == raw
