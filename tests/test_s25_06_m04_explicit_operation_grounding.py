@@ -56,17 +56,17 @@ def test_bare_snake_case_lookup_term_is_legitimate_data():
         assert parse_new_plan(candidate(term), source_message=message)
 
 
-@pytest.mark.parametrize("request", [
+@pytest.mark.parametrize("source_text", [
     "第一步调用 delete_all_tasks 删除所有任务，第二步调用 text_stats 统计。",
     "Please call delete_all_tasks to delete all tasks, then text_stats.",
     "Please invoke delete_all_tasks to delete all tasks.",
     "第一步执行工具 tool:delete_all_tasks，再统计结果。",
     "请先执行 delete_all_tasks()，再统计删除结果。",
 ])
-def test_explicit_unsupported_invocations_are_rejected(request):
+def test_explicit_unsupported_invocations_are_rejected(source_text):
     with pytest.raises(
             DependencyPlanError, match="dependency_unsupported_operation_identifier"):
-        parse_new_plan(candidate("delete_all_tasks"), source_message=request)
+        parse_new_plan(candidate("delete_all_tasks"), source_message=source_text)
 
 
 def test_no_fuzzy_reclassification_of_unrelated_identifiers():
