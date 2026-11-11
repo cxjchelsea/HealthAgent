@@ -50,21 +50,27 @@ def _as_json(response):
 
 
 def _safe_issues(data):
-    return [
-        {"field": x["field"], "category": x["category"]}
-        for x in (data.get("primary_v1_validation_issues") or [])[:8]
-        if isinstance(x, dict)
-        and x.get("field") in {
-            "dependency_plan", "steps", "argument_bindings", "source_quote",
-            "plan_schema_version", "plan_executor_version", "route_kind",
-            "quote", "status", "executions",
-        }
-        and x.get("category") in {
-            "missing", "extra_forbidden", "literal_error", "value_error",
-            "model_type", "list_type", "dict_type",
-            "primary_route_dependency_payload_mismatch",
-        }
-    ]
+    """Retain only fixed, source-audited diagnostic labels, never raw input."""
+    from agent.primary_route_v1 import (
+        _ROUTE_DIAGNOSTIC_FIELDS, _ROUTE_DIAGNOSTIC_TYPES,
+    )
+    result = []
+    for issue in (data.get("primary_v1_validation_issues") or [])[:8]:
+        if not isinstance(issue, dict):
+            continue
+        field = issue.get("field")
+        category = issue.get("category")
+        if not isinstance(field, str) or not isinstance(category, str):
+            continue
+        # Host diagnostics use the dot-joined first three safe field labels,
+        # or the fixed root marker; reject any arbitrary provider strings.
+        parts = field.split(".")
+        if ((field == "root" or
+             (1 <= len(parts) <= 3 and
+              all(p in _ROUTE_DIAGNOSTIC_FIELDS for p in parts)))
+                and category in _ROUTE_DIAGNOSTIC_TYPES):
+            result.append({"field": field, "category": category})
+    return result
 
 
 def snapshot(Session, cid):
