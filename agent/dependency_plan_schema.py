@@ -27,25 +27,33 @@ _ALLOWED_SOURCE_FIELDS = {
 }
 _SUPPORTED_TOOLS = frozenset(_LITERAL_INPUTS)
 
-# A literal function-style identifier is a machine-readable operation claim,
-# not a semantic classification of natural-language intent. The experimental
-# dependency-plan creator must not silently reinterpret an *unknown* identifier
-# as a lookup term and save an unrelated, apparently valid read-only plan.
-# The check is deliberately fail-closed: non-tool snake_case search targets
-# should be clarified instead of being guessed as executable steps.
-_EXPLICIT_OPERATION_IDENTIFIER = re.compile(
-    r"(?<![A-Za-z0-9_])([a-z][a-z0-9]*(?:_[a-z0-9]+)+)(?![A-Za-z0-9_])"
+# Explicit invocation syntax has a stronger meaning than a bare identifier:
+# "调用 foo_bar" names an operation; "查询 foo_bar 的定义" names DATA.
+# This is only an exact, source-bound contract check of user-named tool calls;
+# the Primary model remains the sole natural-language intent classifier.
+# Do not blacklist all snake_case tokens (they can be legitimate lookup terms).
+_OPERATION_NAME = r"([a-z][a-z0-9]*(?:_[a-z0-9]+)+)"
+_EXPLICIT_TOOL_CALLS = (
+    re.compile(r"(?:调用|call|invoke)\\s*[\x60'\"“”]?\\s*" + _OPERATION_NAME
+               + r"(?![A-Za-z0-9_])", re.IGNORECASE),
+    re.compile(r"(?<![A-Za-z0-9_])(?:tool|function)\\s*[:=]\\s*[\x60'\"“”]?\\s*"
+               + _OPERATION_NAME + r"(?![A-Za-z0-9_])", re.IGNORECASE),
+    re.compile(r"(?<![A-Za-z0-9_])" + _OPERATION_NAME + r"\\s*\\("),
 )
 
 
 def validate_explicit_operation_identifiers(source_message: str) -> None:
-    """Fail closed for unsupported literal operation identifiers in proposals.
+    """Reject only unsupported *explicitly invoked* tool identifiers.
 
-    A syntactic, bounded tool-contract guard; it does NOT prove that a
-    natural-language goal is semantically equivalent to the proposed plan.
+    Bare snake_case lookup targets are ordinary user data. This limited
+    syntactic safeguard cannot determine generic semantic goal equivalence.
     """
-    identifiers = set(_EXPLICIT_OPERATION_IDENTIFIER.findall(source_message))
-    if identifiers - _SUPPORTED_TOOLS:
+    invoked = {
+        match.group(1)
+        for pattern in _EXPLICIT_TOOL_CALLS
+        for match in pattern.finditer(source_message)
+    }
+    if invoked - _SUPPORTED_TOOLS:
         raise DependencyPlanError("dependency_unsupported_operation_identifier")
 
 
