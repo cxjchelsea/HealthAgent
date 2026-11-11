@@ -86,7 +86,7 @@ def _safe_dependency_bindings_shape(dep, message):
             result.append({"tool": "invalid", "bindings_shape": "invalid_step"})
             continue
         tool = step.get("expected_tool")
-        tool = tool if tool in {"mcp_reference_lookup", "text_stats"} else "other"
+        tool = tool if isinstance(tool, str) and tool in {"mcp_reference_lookup", "text_stats"} else "other"
         expected = "term" if tool == "mcp_reference_lookup" else (
             "text" if tool == "text_stats" else None)
         bindings = step.get("argument_bindings")
@@ -95,6 +95,7 @@ def _safe_dependency_bindings_shape(dep, message):
             continue
         binding = bindings.get(expected) if expected else None
         kind = binding.get("kind") if isinstance(binding, dict) else None
+        kind = kind if isinstance(kind, str) else None
         expected_keys = {"term"} if tool == "mcp_reference_lookup" else (
             {"text"} if tool == "text_stats" else set())
         # Only the count of unexpected names. NEVER persist those names.
