@@ -443,7 +443,11 @@ _PRIMARY_SYSTEM = (
     "from recent_context. "
     "Always copy a UNIQUE contiguous verbatim quote from current_request as evidence. "
     "Never use legacy alias 'other'. If unsure, clarify/reject, not an executable route. "
-    "For plan_create output ordered steps with exact quote and grounded arguments. "
+    "For legacy plan_create without dependency_plan, output 2-8 ordered steps "
+    "with exact quotes and grounded arguments. For opted-in S25-06 "
+    "dependency_plan creation output steps=[] and the full versioned "
+    "dependency_plan object instead; never send empty steps without a "
+    "dependency_plan for plan_create. "
     "OUTPUT-vs-CONTEXT BOUNDARY: saved_plan_steps in the input JSON is a "
     "READ-ONLY Host snapshot used to understand an existing plan. NEVER "
     "copy saved_plan_steps or any of its entries into the output field steps. "
@@ -759,6 +763,18 @@ def primary_route_generation_schema(message: str, *,
     return schema
 
 
+def _is_missing_dependency_create_shape(raw: str) -> bool:
+    """Retry eligibility only; NEVER fabricate/authorize a missing payload."""
+    try:
+        data = json.loads(raw)
+    except (ValueError, TypeError):
+        return False
+    return (type(data) is dict
+            and data.get("route_kind") == "plan_create"
+            and data.get("steps") == []
+            and data.get("dependency_plan") is None)
+
+
 @attributed("primary")
 async def propose_primary_route(provider, model: str, message: str, *,
                                 saved_plan_present: bool,
@@ -799,7 +815,12 @@ async def propose_primary_route(provider, model: str, message: str, *,
             "S25-06 EXPERIMENTAL dependent plan creation: when the user explicitly "
             "requests saving a multi-step read-only plan with a real data dependency, "
             "use route_kind=plan_create, steps=[], and dependency_plan matching "
-            "the versioned dependency-plan-v1 creation schema. Plan a 2-8-step "
+            "the versioned dependency-plan-v1 creation schema. These three "
+            "fields must be present together: route_kind=plan_create, "
+            "steps=[] and dependency_plan as an OBJECT (never null or "
+            "omitted). For legacy plan_create instead use 2-8 legacy "
+            "steps and dependency_plan=null; plan_create with empty steps "
+            "and absent/null dependency_plan is INVALID. Plan a 2-8-step "
             "topologically ordered DAG using ONLY mcp_reference_lookup and "
             "text_stats version 1.0.0. For literal inputs cite exact current_request "
             "substrings in source_quote; for dependent text_stats use observation_ref "
@@ -834,12 +855,31 @@ async def propose_primary_route(provider, model: str, message: str, *,
         # only. The old answer is not supplied to the model, is never modified,
         # and can never grant Host/tool authority. No generic error retries.
         # The model still determines whether clarification is actually needed.
-        if (not pending_origin_verified and
-                any(item["category"] == "primary_route_pending_read_invalid"
-                    for item in issues)):
+        needs_pending_read_correction = (
+            not pending_origin_verified and
+            any(item["category"] == "primary_route_pending_read_invalid"
+                for item in issues))
+        needs_dependency_format_correction = (
+            effective_dependency_creation and
+            any(item["category"] == "primary_route_steps_mismatch"
+                for item in issues)
+            and _is_missing_dependency_create_shape(raw))
+        if needs_pending_read_correction or needs_dependency_format_correction:
             correction = {
                 "role": "system",
                 "content": (
+                    "The previous output was not a valid Primary route. "
+                    "Generate a NEW COMPLETE JSON object from the current "
+                    "request, not a modified/echoed response. If the actual "
+                    "user request calls for a versioned dependency plan, "
+                    "plan_create MUST have steps=[] AND a non-null "
+                    "dependency_plan object with two or more bound steps; "
+                    "never emit empty steps with dependency_plan absent/null. "
+                    "If this request is instead a legacy plan, use 2-8 "
+                    "legacy steps. If unable to propose valid grounded "
+                    "arguments, choose clarify or reject. Do not invent "
+                    "values, execution evidence or permissions. "
+                    if needs_dependency_format_correction else
                     "Your previous proposal failed schema validation because "
                     "pending_read_tool_name may be non-null ONLY when "
                     "route_kind=clarify. Generate a NEW complete JSON proposal "
