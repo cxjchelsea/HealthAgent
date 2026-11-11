@@ -756,6 +756,32 @@ def primary_route_generation_schema(message: str, *,
         if "dependency_plan" not in required:
             required.append("dependency_plan")
         schema["required"] = required
+        # E3 real Qwen produced arbitrary argument_bindings keys for both
+        # allowed tools because dict[str, InputBinding] advertises an open
+        # additionalProperties map. Narrow GENERATION ONLY to the two
+        # registered parameter names; independent Host checks still require
+        # the exact tool-specific key and trusted binding provenance.
+        binding_schema = schema["$defs"]["DependencyStep"]["properties"][
+            "argument_bindings"]
+        value_schema = binding_schema["additionalProperties"]
+        binding_schema.pop("additionalProperties")
+        binding_schema.update({
+            "type": "object",
+            "properties": {
+                "term": value_schema,
+                "text": value_schema,
+            },
+            "additionalProperties": False,
+            "minProperties": 1,
+            "maxProperties": 1,
+            "description": (
+                "EXACTLY ONE parameter key. For expected_tool="
+                "mcp_reference_lookup use term only with a source-grounded "
+                "literal binding. For expected_tool=text_stats use text only "
+                "with an observation_ref to the dependency's definition field. "
+                "Never output generic argument names or both term and text."
+            ),
+        })
         schema["properties"]["dependency_plan"]["description"] = (
             "Always include this key when the experiment is enabled. "
             "For a new read-only dependent plan set route_kind=plan_create, "
