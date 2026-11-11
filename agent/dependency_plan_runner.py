@@ -71,6 +71,16 @@ def run_one_dependency_read(
     journal = PlanDispatchJournal(session_factory, conversation_id, turn_id)
     journal.record_receipt(dispatch_id, observed, fence=fence)
     if observed.get("ok") is not True:
+        if settings.s25_07_failure_evidence_enabled:
+            # Only a committed, source-validated negative Receipt may become
+            # a failed Attempt. Never replay this dispatch automatically.
+            with session_factory.begin() as db:
+                error_code = finalize_dependency_failure_in_session(
+                    db, binding=prepared, initial_turn_raw=initial_turn_raw,
+                    expected_raw=current_raw, dispatch_id=dispatch_id, fence=fence)
+            return DependencyReadOutcome(
+                status="verified_failure", dispatch_id=dispatch_id,
+                checkpoint=None, error=error_code)
         return DependencyReadOutcome(
             status="blocked", dispatch_id=dispatch_id, checkpoint=None,
             error=str(observed.get("error", "tool_execution_error"))[:80])
