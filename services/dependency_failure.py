@@ -122,6 +122,39 @@ def finalize_dependency_failure_in_session(
             or bounded_projection(binding.tool_name, receipt) != receipt
             or db.get(AgentAttempt, dispatch.id) is not None):
         _deny("dependency_failure_receipt_conflict")
+    # A caller-supplied PreparedDependencyRead is not authority by itself.
+    # Revalidate the argument binding from the *saved plan* and only accept
+    # source text that came from a checkpointed, verified predecessor.
+    if binding.tool_name == "mcp_reference_lookup":
+        term = step["argument_bindings"]["term"]
+        if (term.get("kind") != "literal"
+                or actual != {"term": term.get("value")}
+                or binding.source_dispatch_id is not None):
+            _deny("dependency_failure_binding_invalid")
+    elif binding.tool_name == "text_stats":
+        text_ref = step["argument_bindings"]["text"]
+        if (text_ref.get("kind") != "observation_ref"
+                or text_ref.get("field") != "definition"
+                or text_ref.get("source_step_id") not in step["depends_on"]):
+            _deny("dependency_failure_binding_invalid")
+        source = checkpoint["executions"].get(str(text_ref["source_step_id"]))
+        if (type(source) is not dict
+                or source.get("dispatch_id") != binding.source_dispatch_id
+                or binding.source_dispatch_id is None):
+            _deny("dependency_failure_binding_invalid")
+        predecessor = db.get(PlanToolDispatch, binding.source_dispatch_id)
+        try:
+            source_receipt = json.loads(predecessor.receipt_json)
+        except (AttributeError, TypeError, ValueError):
+            _deny("dependency_failure_binding_invalid")
+        if (predecessor.status != "checkpointed"
+                or type(source_receipt) is not dict
+                or source_receipt.get("ok") is not True
+                or type(source_receipt.get("definition")) is not str
+                or actual != {"text": source_receipt["definition"]}):
+            _deny("dependency_failure_binding_invalid")
+    else:
+        _deny("dependency_host_tool_denied")
 
     # Validate and advance the existing S25-03 projection without changing
     # the pending/completed flags or manufacturing a completed execution.
