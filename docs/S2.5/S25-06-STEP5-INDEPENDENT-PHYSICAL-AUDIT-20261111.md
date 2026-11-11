@@ -16,7 +16,7 @@
 
 ## Newly added in this audit branch
 
-- `tests/test_s25_06_step5_postgres_recovery.py`: *real PostgreSQL* orphan `dispatch_unknown` state, negative termination proof, successful synthetic-authority reconciliation, atomic claim release + fence revocation, original checkpoint and dispatch preservation, old fence cannot commit, repeated inspection denied.
+- `tests/test_s25_06_step5_postgres_recovery.py`: *real PostgreSQL* orphan `dispatch_unknown` state, negative termination proof, successful synthetic-authority reconciliation, atomic claim release + fence revocation, original checkpoint and dispatch preservation, old fence cannot commit, repeated inspection denied. An added **two-connection row-lock contention test** holds the physical Dispatch lock, starts a Receipt writer and recovery concurrently, then accepts only the two safe serializations (Receipt first → stale evidence rejection; recovery first → late Receipt fenced). This is not a two-process simultaneous HTTP race.
 - `tests/test_s25_06_step5_postgres_process_crash.py`: separate worker process writes its actual new-format fenced pre-tool dispatch to PostgreSQL, then terminates abruptly via `os._exit(73)`. Parent process verifies durable `dispatch_unknown`, performs evidence-bound recovery with termination verified by observed subprocess exit, and checks no Receipt/Attempt/replay and permanent fencing.
 - CI runs **both** tests explicitly with `TEST_POSTGRES_URL`. Operator authority is represented by independently checked test-only verifiers; **not** production IAM. The abrupt-exit test kills the worker **before tool invocation** and does not prove post-call external effect uncertainty or recovery versus a still-active worker.
 
@@ -27,7 +27,7 @@
 
 1. **Full HTTP process termination / restart** on isolated PostgreSQL: subprocess tests now cover pre-call and post-local-MCP-result/pre-Receipt exits, but not a full FastAPI worker restart, remote MCP with effects, or exactly-once external delivery.
 2. **Operator access + worker termination verification:** independently configured trusted verifiers (not caller-supplied boolean attestations or testing lambdas). There is no production-grade verifier implementation in the present audited service boundary.
-3. **Concurrency across recovery and late worker receipt:** the new two-process test covers both **deterministic commit orders**, but genuine simultaneous PostgreSQL row-lock contention, process scheduling hazards and crash-without-operator-access remain unproven.
+3. **Concurrency across recovery and late worker receipt:** two-process deterministic commit orders are covered, and a separate two-connection PostgreSQL row-lock contention test now probes both possible serializations. Production-scale multi-process scheduling and operator/worker-termination attestation remain outside this proof.
 4. **E3 beyond happy path:** independent provider/model evaluation of invalid graph, spoofed source, illegal write-tool request, ambiguous provider completion; real Qwen 6/6 covers only one trusted two-step positive task.
 5. **Final evidence release review:** ensure no Prompt/Receipt/arguments/credential data exported in accepted reports; do not claim external exactly-once effects.
 6. **Default-OFF and regression:** full CI, legacy paths, and real PostgreSQL gates at the **final** audit commit, plus explicit user authorization before merging this branch.
