@@ -209,6 +209,8 @@ def _inspect_locked(db, *, owner_id, conversation_id, turn_id):
     uncertain = any(s in {"dispatch_unknown", "observed", "observed_failure"}
                     for _, s in states)
     classification = ("uncertain_no_replay" if uncertain
+                      else "verified_failure_no_replay" if any(
+                          status == "failure_finalized" for _, status in states)
                       else "checkpointed_unfinalized" if states
                       else "no_dispatch")
     inspection = DependencyRecoveryInspection(
