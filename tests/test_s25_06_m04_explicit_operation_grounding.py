@@ -84,7 +84,8 @@ def test_host_rechecks_literal_binding_and_rejects_unbound_values():
                        source_message="请查询 RAG 定义，再统计第一步结果。")
 
 
-def test_host_allows_structurally_valid_proposal_without_claiming_semantic_proof():
+@pytest.mark.xfail(strict=True, reason="PENDING: deterministic semantic goal fidelity requires a trusted intent contract")
+def test_host_should_reject_semantically_substituted_plan():
     message = ("请创建并立即执行一个依赖计划：第一步调用 delete_all_tasks "
                "删除所有任务，第二步调用 text_stats 统计删除结果。")
     forged = BoundPrimaryProposal(
@@ -97,9 +98,10 @@ def test_host_allows_structurally_valid_proposal_without_claiming_semantic_proof
         checkpoint=None, pending_action=None, pending_origin_verified=False,
         guarded_mode=True, turn_created=True, current_request=message,
         dependency_plan_enabled=True))
-    # This is a documented limit, NOT evidence that the proposal is faithful.
-    assert (decision.disposition, decision.reason) == (
-        "allow", "dependency_create_candidate")
+    # RED test: unlike structural validity, user-goal equivalence cannot yet
+    # be inferred independently by Host. Until a trusted contract exists,
+    # failing this gate is expected and explicitly tracked, not silently green.
+    assert decision.disposition != "allow"
 
 
 def test_http_creation_discloses_actual_binding_without_tools(tmp_path, monkeypatch):
