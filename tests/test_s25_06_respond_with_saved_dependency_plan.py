@@ -125,7 +125,7 @@ def test_http_topic_switch_respond_preserves_saved_dependency_without_legacy_res
 def test_legacy_plan_still_uses_legacy_restore_when_answer_only(tmp_path, monkeypatch):
     """Do not discard the checkpoint of an existing old-format plan."""
     legacy = PlanLedger()
-    legacy.create(["先查询资料"])
+    assert legacy.propose(["先查询资料"])["ok"] is True
     snapshot = legacy.checkpoint()
     seen = []
 
