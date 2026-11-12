@@ -301,8 +301,15 @@ def bind_route_signal(signal: RouteSignal, message: str, *,
             index = signal.step_number - 1
             if (index < 0 or index >= len(parent_steps)
                     or parent_steps[index]["status"] != "pending"
-                    or compiled.candidate["steps"][index] == parent_steps[index]):
+                    or compiled.candidate["steps"][index] == parent_steps[index]
+                    or any(before != after for i, (before, after) in enumerate(
+                        zip(parent_steps, compiled.candidate["steps"]))
+                        if i != index)):
                 raise PrimaryRouteRejected("dependency_revision_target_unbound")
+            replacement_goal = compiled.candidate["steps"][index]["goal"]
+            if (replacement_goal != parent_steps[index]["goal"]
+                    and replacement_goal.casefold() not in message.casefold()):
+                raise PrimaryRouteRejected("dependency_revision_goal_unbound")
         elif not (signal.revision_old_argument and signal.revision_new_argument):
             raise PrimaryRouteRejected("primary_route_revision_arguments_missing")
         if (signal.dependency_revision_steps is None
@@ -924,7 +931,7 @@ async def propose_primary_route(provider, model: str, message: str, *,
             "saved-plan revision request set route_kind=plan_revise and "
             "step_number=1-based target. Supply dependency_revision_steps as "
             "ALL pending steps, preserving IDs, order, tool names, versions, "
-            "dependencies and status=pending; change only requested goals and "
+            "dependencies and status=pending; change only the selected step goal and "
             "bindings. New literals require source_quote verbatim from the "
             "current_request. For other routes set dependency_revision_steps=null. "
             "Set revision_old_argument=null and revision_new_argument=null. "
