@@ -22,6 +22,7 @@ from services.dependency_revision_commit import commit_dependency_revision_in_se
 from services.evidence_store import arguments_digest, bounded_projection
 from services.migrate import migrate
 from services.primary_route_evidence import snapshot_digest
+from services.dependency_revision_fingerprint import revision_fingerprint
 
 
 def _parent():
@@ -59,6 +60,13 @@ def seeded(tmp_path, request):
     parent = _parent()
     raw = json.dumps(parent, ensure_ascii=False)
     message_text = "请将第一步改为查询 MCP，第二步保持不变"
+    initial_suffix = copy.deepcopy(parent["steps"])
+    initial_suffix[0]["argument_bindings"]["term"] = {
+        "kind": "literal", "value": "MCP", "source_quote": "MCP"}
+    initial_suffix[0]["goal"] = "查询 MCP"
+    approved = compile_revision_candidate(
+        expected_raw=raw, replacement_pending=initial_suffix,
+        current_user_message=message_text)
     with Session.begin() as db:
         db.add(Conversation(id=cid, owner_id="owner-b2"))
         db.flush()
@@ -76,7 +84,8 @@ def seeded(tmp_path, request):
             route_kind="plan_revise", semantic_attempts=1,
             preturn_snapshot_digest=snapshot_digest(raw),
             disposition="allow",
-            admission_reason="dependency_revision_candidate"))
+            admission_reason="dependency_revision_candidate",
+            approved_revision_digest=revision_fingerprint(approved.candidate)))
     def proposal_for(raw_parent=raw, text=message_text):
         candidate_steps = [copy.deepcopy(s) for s in json.loads(raw_parent)["steps"]]
         candidate_steps[0]["argument_bindings"]["term"] = {
@@ -279,6 +288,9 @@ def test_verified_completed_prefix_is_preserved_and_tamper_rolls_back(seeded):
         expected_raw=completed_raw, replacement_pending=pending,
         current_user_message="请调整第二步的统计说明")
     with Session.begin() as db:
+        db.get(PrimaryRouteEvidence, tid).approved_revision_digest = (
+            revision_fingerprint(proposal.candidate))
+    with Session.begin() as db:
         saved = commit_dependency_revision_in_session(
             db, owner_id="owner-b2", conversation_id=cid,
             turn_id=tid, request_id="req-b2", user_message_id=mid,
@@ -470,6 +482,9 @@ def test_missing_task_projection_blocks_completed_prefix_revision(seeded):
     proposal = compile_revision_candidate(
         expected_raw=completed_raw, replacement_pending=pending,
         current_user_message="调整第二步统计说明")
+    with Session.begin() as db:
+        db.get(PrimaryRouteEvidence, tid).approved_revision_digest = (
+            revision_fingerprint(proposal.candidate))
     with pytest.raises(DependencyPlanError,
                        match="dependency_revision_task_conflict"):
         with Session.begin() as db:
@@ -627,6 +642,9 @@ def test_two_step_checkpointed_source_chain_is_rebound(seeded, tamper):
         current_user_message="请调整第三步为整理统计结果")
     if tamper == "none":
         with Session.begin() as db:
+            db.get(PrimaryRouteEvidence, tid).approved_revision_digest = (
+                revision_fingerprint(proposal.candidate))
+        with Session.begin() as db:
             revised = commit_dependency_revision_in_session(
                 db, owner_id="owner-b2", conversation_id=cid,
                 turn_id=tid, request_id="req-b2", user_message_id=mid,
@@ -677,3 +695,19 @@ def test_old_same_conversation_user_message_is_not_current_turn(seeded):
     with Session() as db:
         assert db.get(ConversationPlan, cid).snapshot == raw
         assert db.get(AgentTaskState, cid) is None
+
+
+def test_pre_b2b3_admission_without_frozen_digest_cannot_commit(seeded):
+    """Historical B2b2 proposal-only admissions must never gain write rights."""
+    Session, cid, tid, mid, raw, proposal_for, commit = seeded
+    with Session.begin() as db:
+        db.get(PrimaryRouteEvidence, tid).approved_revision_digest = None
+    with pytest.raises(DependencyPlanError,
+                       match="dependency_revision_approval_mismatch"):
+        commit()
+    with Session() as db:
+        assert db.get(ConversationPlan, cid).snapshot == raw
+        assert db.get(AgentTaskState, cid) is None
+        assert db.query(AgentStateTransition).filter_by(
+            conversation_id=cid).count() == 0
+        assert db.get(Turn, tid).state == "running"

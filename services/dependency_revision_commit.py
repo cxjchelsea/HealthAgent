@@ -21,6 +21,7 @@ from services.db import (
 )
 from services.evidence_store import arguments_digest, bounded_projection
 from services.primary_route_evidence import snapshot_digest
+from services.dependency_revision_fingerprint import revision_fingerprint
 
 
 def _deny(code: str):
@@ -220,6 +221,13 @@ def commit_dependency_revision_in_session(
         if (s["status"] == "pending" and s["expected_tool"] == "text_stats"
                 and s["argument_bindings"]["text"]["kind"] != "observation_ref"):
             _deny("dependency_revision_binding_not_executable")
+    # The immutable Host admission must identify the exact approved
+    # candidate, not merely the general route and parent snapshot.
+    # Legacy B2b2 proposal-only receipts have a NULL digest: fail closed.
+    if (admission.approved_revision_digest is None
+            or admission.approved_revision_digest
+                != revision_fingerprint(verified.candidate)):
+        _deny("dependency_revision_approval_mismatch")
     changed_plan = db.execute(update(ConversationPlan).where(
         ConversationPlan.conversation_id == conversation_id,
         ConversationPlan.snapshot == expected_raw,

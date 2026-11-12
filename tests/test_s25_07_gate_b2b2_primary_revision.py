@@ -168,7 +168,7 @@ def test_model_primary_one_call_and_saved_parent_bound():
     assert host(result).disposition == "allow"
 
 
-def test_http_revision_admission_durable_but_parent_unchanged(tmp_path, monkeypatch):
+def test_http_revision_admission_is_finalized_as_atomic_saved_revision(tmp_path, monkeypatch):
     cfg = Settings(
         database_url=f"sqlite:///{tmp_path / 'b2b2.db'}",
         model_provider="fake", routing_profile="unified",
@@ -195,17 +195,22 @@ def test_http_revision_admission_durable_but_parent_unchanged(tmp_path, monkeypa
             "content": MESSAGE, "client_request_id": "b2b2-http-001"})
         assert response.status_code == 200, response.text
         result = response.json()
-        assert result["termination_reason"] == "dependency_revision_admitted_not_saved"
+        assert result["termination_reason"] == "dependency_revision_saved_pending_execution"
         assert result["status"] == "partial"
         with Session() as db:
-            assert db.get(ConversationPlan, cid).snapshot == raw
-            assert db.get(AgentTaskState, cid) is None
+            saved = json.loads(db.get(ConversationPlan, cid).snapshot)
+            assert saved["revision"] == 2
+            assert saved["plan_executor_version"] == "dependency-plan-read-replan-v1"
+            assert saved["steps"][1]["goal"] == GOAL
+            assert db.get(AgentTaskState, cid).plan_revision == 2
             assert db.query(AgentAttempt).filter_by(conversation_id=cid).count() == 0
             assert db.query(PlanToolDispatch).filter_by(conversation_id=cid).count() == 0
             evidence = db.get(PrimaryRouteEvidence, result["turn_id"])
             assert evidence.disposition == "allow"
             assert evidence.admission_reason == "dependency_revision_candidate"
+            assert evidence.approved_revision_digest is not None
             turn = db.get(Turn, result["turn_id"])
+            assert turn.state == "partial"
             assert turn.user_message_id is not None
             assert db.get(Message, turn.user_message_id).content == MESSAGE
         replay = client.post(f"/conversations/{cid}/agent/messages", json={

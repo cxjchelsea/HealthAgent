@@ -8,7 +8,7 @@ import uuid
 
 from sqlalchemy import select
 
-from services.db import PrimaryRouteEvidence, Turn
+from services.db import Message, PrimaryRouteEvidence, Turn
 
 
 def snapshot_digest(raw: str | None) -> str:
@@ -38,6 +38,33 @@ def record_primary_admission(*, session_factory, conversation_id: str,
             decision.route_kind != proposal.route_kind
             or decision.disposition not in {"allow", "deny", "restrict", "clarify"}):
         raise ValueError("primary_evidence_host_mismatch")
+    approved_revision_digest = None
+    if (proposal is not None and decision is not None
+            and decision.disposition == "allow"
+            and decision.reason == "dependency_revision_candidate"):
+        if (preturn_plan_raw is None or proposal.dependency_revision_steps is None):
+            raise ValueError("primary_revision_evidence_incomplete")
+        from agent.dependency_revision_candidate import compile_revision_candidate
+        from services.dependency_revision_fingerprint import revision_fingerprint
+        with session_factory() as evidence_db:
+            current_turn = evidence_db.get(Turn, turn_id)
+            current_message = (evidence_db.get(Message, current_turn.user_message_id)
+                               if current_turn is not None and current_turn.user_message_id
+                               else None)
+            if (current_turn is None or current_turn.conversation_id != conversation_id
+                    or current_turn.state != "running"
+                    or current_message is None
+                    or current_message.conversation_id != conversation_id
+                    or current_message.role != "user"):
+                raise ValueError("primary_revision_evidence_unbound")
+            compiled = compile_revision_candidate(
+                expected_raw=preturn_plan_raw,
+                replacement_pending=[s.model_dump() for s in proposal.dependency_revision_steps],
+                current_user_message=current_message.content)
+            calculated_digest = revision_fingerprint(compiled.candidate)
+            if (decision.approved_revision_digest != calculated_digest):
+                raise ValueError("primary_revision_candidate_changed_after_host")
+            approved_revision_digest = calculated_digest
     values = {
         "turn_id": turn_id,
         "conversation_id": conversation_id,
@@ -46,6 +73,7 @@ def record_primary_admission(*, session_factory, conversation_id: str,
         "route_kind": proposal.route_kind if proposal else None,
         "semantic_attempts": semantic_attempts,
         "preturn_snapshot_digest": snapshot_digest(preturn_plan_raw),
+        "approved_revision_digest": approved_revision_digest,
         "disposition": decision.disposition if decision else "refused",
         "admission_reason": (decision.reason if decision else refusal_reason),
     }
@@ -73,6 +101,7 @@ def read_primary_evidence(db, *, conversation_id: str, turn_id: str):
         "schema_version": row.schema_version, "route_kind": row.route_kind,
         "semantic_attempts": row.semantic_attempts,
         "preturn_snapshot_digest": row.preturn_snapshot_digest,
+        "approved_revision_digest": row.approved_revision_digest,
         "disposition": row.disposition,
         "admission_reason": row.admission_reason,
     }

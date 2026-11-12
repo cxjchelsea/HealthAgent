@@ -39,6 +39,7 @@ class PrimaryHostDecision:
     route_kind: str
     execution_mode: Literal["none", "respond_only", "read_only"] = "none"
     plan_control: Literal["execute_first", "resume"] | None = None
+    approved_revision_digest: str | None = None  # frozen with this Host decision
 
 
 def admit_primary_route_v1(
@@ -47,8 +48,10 @@ def admit_primary_route_v1(
     """A single deterministic decision; no model calls and no side effects."""
     kind = proposal.route_kind
 
-    def decide(disposition, reason, mode="none", control=None):
-        return PrimaryHostDecision(disposition, reason, kind, mode, control)
+    def decide(disposition, reason, mode="none", control=None,
+               approved_revision_digest=None):
+        return PrimaryHostDecision(
+            disposition, reason, kind, mode, control, approved_revision_digest)
 
     if not facts.turn_created or not facts.guarded_mode:
         return decide("deny", "primary_v1_host_precondition_denied")
@@ -192,7 +195,10 @@ def admit_primary_route_v1(
                     # Python type despite its originally validated model.
                     # Host must deny without emitting an unhandled 500.
                     return decide("deny", "dependency_revision_host_denied")
-                return decide("allow", "dependency_revision_candidate")
+                from services.dependency_revision_fingerprint import revision_fingerprint
+                return decide(
+                    "allow", "dependency_revision_candidate",
+                    approved_revision_digest=revision_fingerprint(compiled.candidate))
             if kind not in {"plan_execute_first", "plan_resume"}:
                 return decide("deny", "dependency_control_not_supported")
             scope = "execute_first" if kind == "plan_execute_first" else "resume"
