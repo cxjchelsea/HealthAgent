@@ -116,7 +116,10 @@ def test_e2_http_create_then_first_resume_uses_same_primary_and_no_create_tool(
             assert saved == _plan()
             assert db.get(PrimaryRouteEvidence, creation.json()["turn_id"]).admission_reason == (
                 "dependency_create_candidate")
-            assert db.get(Turn, creation.json()["turn_id"]).state == "partial"
+            created_turn = db.get(Turn, creation.json()["turn_id"])
+            assert created_turn.state == "partial"
+            assert created_turn.user_message_id is not None
+            assert db.get(Message, created_turn.user_message_id).content == CREATE
             assert db.query(PlanToolDispatch).count() == 0
             assert db.query(PlanExecutionClaim).count() == 0
             assert db.query(DependencyWorkerFence).count() == 0
