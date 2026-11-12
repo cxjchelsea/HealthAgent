@@ -12,7 +12,7 @@
 
 ## Explicit incompleteness
 
-**B2b3** must connect the proposed pending suffix to the B2a transaction in the same official HTTP terminal commit, ensuring Turn still running, the exact immutable user Message and Primary Evidence match, and Plan/TaskState/Turn/assistant Message commit or roll back together. The B2b2 HTTP result deliberately terminalizes the Turn without saving revision 2; it is not replayable as B2a CAS authority after the fact. Do NOT expose B2a standalone or add a second routing owner.
+**B2b3** must connect the proposed pending suffix to the B2a transaction in the same official HTTP terminal commit, ensuring Turn still running, the exact immutable user Message and Primary Evidence match, and Plan/TaskState/Turn/assistant Message commit or roll back together. **Security prerequisite:** current `PrimaryRouteEvidence` persists route/reason/snapshot digest, but NOT the exact approved revised suffix fingerprint. B2b3 must close this proposal-to-commit binding (e.g., a write-once candidate SHA-256, verified by B2a) before any official revision write; trusting only `allow/dependency_revision_candidate` permits a different user-grounded proposal to be substituted after Host review. The B2b2 HTTP result deliberately terminalizes the Turn without saving revision 2; it is not replayable as B2a CAS authority after the fact. Do NOT expose B2a standalone or add a second routing owner.
 
 **B3** must implement cross-revision evidence and executable resume. **Gate C** handles revised attempt model / bounded retry. No revision 2 execution, retry, re-dispatch, Claim or Fence is authorized by B2b2.
 
