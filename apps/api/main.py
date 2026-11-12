@@ -486,6 +486,16 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                     existing_checkpoint.get("steps", [])[:8])]
                                 if existing_checkpoint else []),
                             recent_context=context,
+                            dependency_revision_enabled=(
+                                settings.s25_06_dependency_plan_enabled
+                                and settings.s25_07_dependency_revision_proposal_enabled
+                                and isinstance(existing_checkpoint, dict)
+                                and existing_checkpoint.get("plan_schema_version")
+                                    == "dependency-plan-v1"
+                                and pending_action is None
+                                and clarification_id is None
+                                and body.goal_confirmation is None),
+                            saved_plan_raw=preturn_plan_raw,
                             dependency_plan_enabled=(
                                 settings.s25_06_dependency_plan_enabled
                                 and preturn_plan_raw is None
@@ -507,7 +517,14 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                 turn_created=True,
                                 write_consent=body.memory_write_consent,
                                 current_request=body.content,
-                                dependency_plan_enabled=settings.s25_06_dependency_plan_enabled))
+                                dependency_plan_enabled=settings.s25_06_dependency_plan_enabled,
+                                dependency_revision_enabled=(
+                                    settings.s25_06_dependency_plan_enabled
+                                    and settings.s25_07_dependency_revision_proposal_enabled
+                                    and isinstance(existing_checkpoint, dict)
+                                    and existing_checkpoint.get("plan_schema_version")
+                                        == "dependency-plan-v1"),
+                                checkpoint_raw=preturn_plan_raw))
                         # AC1/AC3: durable, immutable proposal+Host evidence
                         # must commit before any tool, task, memory or plan effect.
                         counter = model_call_counter.get() or {}
@@ -574,6 +591,19 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                                 prior_pending_action=pending_action,
                                 prior_origin_verified=bool(
                                     pending_action and clarification_id and pending_question))
+                        # B2b2: approval of a proposal is NOT a plan write.
+                        # B2b3 will add an atomic terminal revision CAS.
+                        if (result is None
+                                and primary_proposal.route_kind == "plan_revise"
+                                and primary_proposal.dependency_revision_steps is not None
+                                and v1_admission.disposition == "allow"
+                                and v1_admission.reason == "dependency_revision_candidate"):
+                            result = {
+                                "run_id": turn_id, "status": "partial",
+                                "termination_reason": "dependency_revision_admitted_not_saved",
+                                "answer": "依赖计划修订候选已通过 Host 检查，但未保存、未执行。原计划不变。",
+                                "trace": [{"step": 0, "type": "dependency_revision_proposal_only"}],
+                                "steps": 0}
                         # S25-06 E2: a newly proposed dependency plan is
                         # saved ONLY in the terminal Turn transaction below.
                         # Creation does not mint Claim/Fence, invoke any tool,

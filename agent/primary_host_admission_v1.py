@@ -28,6 +28,8 @@ class PrimaryHostFacts:
     pending_write_authority_verified: bool = False
     current_request: str = ""
     dependency_plan_enabled: bool = False  # explicit S25-06 flag; never on by inference
+    dependency_revision_enabled: bool = False  # B2b2 opt-in; no execution
+    checkpoint_raw: str | None = None  # exact pre-Turn plan bytes for B1 SHA
 
 
 @dataclass(frozen=True)
@@ -134,6 +136,63 @@ def admit_primary_route_v1(
                 and facts.checkpoint.get("plan_schema_version") == "dependency-plan-v1"):
             if not facts.dependency_plan_enabled:
                 return decide("deny", "dependency_host_disabled")
+            if kind == "plan_revise":
+                if (not facts.dependency_revision_enabled
+                        or facts.pending_action is not None
+                        or not facts.checkpoint_raw
+                        or proposal.dependency_revision_steps is None
+                        or proposal.revision_old_argument is not None
+                        or proposal.revision_new_argument is not None
+                        or proposal.execution_scope != "none"
+                        or proposal.effect_intent != "mutation_requested"
+                        or type(proposal.step_number) is not int
+                        or not facts.current_request.strip()):
+                    return decide("deny", "dependency_revision_host_denied")
+                try:
+                    from agent.dependency_revision_candidate import compile_revision_candidate
+                    from agent.primary_route_v1 import bind_unique_quote
+                    import json
+                    if json.loads(facts.checkpoint_raw) != facts.checkpoint:
+                        return decide("deny", "dependency_revision_snapshot_mismatch")
+                    canonical_evidence = bind_unique_quote(
+                        facts.current_request, proposal.evidence.exact_text)
+                    if proposal.evidence != canonical_evidence:
+                        return decide("deny", "dependency_revision_evidence_mismatch")
+                    compiled = compile_revision_candidate(
+                        expected_raw=facts.checkpoint_raw,
+                        replacement_pending=[
+                            step.model_dump() for step in proposal.dependency_revision_steps],
+                        current_user_message=facts.current_request)
+                    steps = facts.checkpoint["steps"]
+                    idx = proposal.step_number - 1
+                    if (idx < 0 or idx >= len(steps)
+                            or steps[idx]["status"] != "pending"
+                            or steps[idx] == compiled.candidate["steps"][idx]
+                            or any(before != after for i, (before, after)
+                                   in enumerate(zip(steps, compiled.candidate["steps"]))
+                                   if i != idx)):
+                        return decide("deny", "dependency_revision_target_unbound")
+                    proposed_goal = compiled.candidate["steps"][idx]["goal"]
+                    if (proposed_goal != steps[idx]["goal"]
+                            and proposed_goal.casefold()
+                                not in facts.current_request.casefold()):
+                        return decide("deny", "dependency_revision_goal_unbound")
+                    # S25-06 dispatch does not support text_stats literals.
+                    # A syntactically valid B1 proposal cannot be admitted
+                    # as a future runnable revision until B3 supports it.
+                    for revised_step in compiled.candidate["steps"]:
+                        if (revised_step["status"] == "pending"
+                                and revised_step["expected_tool"] == "text_stats"
+                                and revised_step["argument_bindings"]["text"]["kind"]
+                                    != "observation_ref"):
+                            return decide("deny", "dependency_revision_binding_not_executable")
+                except (DependencyPlanError, ValueError, TypeError, KeyError,
+                        AttributeError, IndexError):
+                    # A forged/mutated BoundPrimaryProposal may hold the wrong
+                    # Python type despite its originally validated model.
+                    # Host must deny without emitting an unhandled 500.
+                    return decide("deny", "dependency_revision_host_denied")
+                return decide("allow", "dependency_revision_candidate")
             if kind not in {"plan_execute_first", "plan_resume"}:
                 return decide("deny", "dependency_control_not_supported")
             scope = "execute_first" if kind == "plan_execute_first" else "resume"

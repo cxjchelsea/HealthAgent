@@ -12,7 +12,7 @@ from pydantic_core import PydanticCustomError
 
 from agent.route_shadow import EvidenceSpan
 from agent.m5_model_call_metrics import attributed
-from agent.dependency_plan_schema import DependencyPlanCreation, parse_new_plan, DependencyPlanError
+from agent.dependency_plan_schema import DependencyPlanCreation, DependencyStep, parse_new_plan, DependencyPlanError
 
 ROUTE_SCHEMA_VERSION = "primary-route-v1"
 RouteKind = Literal[
@@ -134,6 +134,7 @@ class RouteSignal(StrictRouteModel):
     effect_intent: Effect = "none"
     steps: list[ProposedStep] = Field(default_factory=list, max_length=8)
     dependency_plan: DependencyPlanCreation | None = None  # gated S25-06 E1 proposal only
+    dependency_revision_steps: list[DependencyStep] | None = Field(default=None, max_length=8)
     step_number: int | None = Field(default=None, ge=1, le=8)
     clarification_question: str | None = Field(default=None, min_length=1, max_length=500)
     revision_old_argument: str | None = Field(default=None, min_length=1, max_length=400)
@@ -178,6 +179,12 @@ class RouteSignal(StrictRouteModel):
             # Keep the exact legacy diagnostic for non-create routes.
             raise PydanticCustomError(
                 "primary_route_steps_mismatch", "primary_route_steps_mismatch")
+        if self.dependency_revision_steps is not None:
+            if (self.route_kind != "plan_revise" or not self.dependency_revision_steps
+                    or self.revision_old_argument is not None
+                    or self.revision_new_argument is not None):
+                raise PydanticCustomError("primary_route_dependency_revision_payload_mismatch",
+                                           "primary_route_dependency_revision_payload_mismatch")
         if self.route_kind == "plan_revise" and self.step_number is None:
             raise PydanticCustomError("primary_route_revision_needs_step", "primary_route_revision_needs_step")
         if self.route_kind != "plan_revise" and self.step_number is not None:
@@ -221,6 +228,7 @@ class BoundPrimaryProposal(StrictRouteModel):
     evidence: EvidenceSpan
     steps: list[BoundStep] = Field(default_factory=list)
     dependency_plan: DependencyPlanCreation | None = None
+    dependency_revision_steps: list[DependencyStep] | None = Field(default=None, max_length=8)
     step_number: int | None = None
     clarification_question: str | None = None
     revision_old_argument: str | None = None
@@ -252,7 +260,9 @@ def bind_route_signal(signal: RouteSignal, message: str, *,
                       pending_action: str | None,
                       pending_origin_verified: bool = False,
                       saved_step_count: int | None = None,
-                      dependency_plan_enabled: bool = False) -> BoundPrimaryProposal:
+                      dependency_plan_enabled: bool = False,
+                      dependency_revision_enabled: bool = False,
+                      saved_plan_raw: str | None = None) -> BoundPrimaryProposal:
     """Host-owned evidence and context checks; DOES NOT authorize execution.
 
     A pending reply requires a verified durable original request. A saved-plan
@@ -275,10 +285,36 @@ def bind_route_signal(signal: RouteSignal, message: str, *,
         # A revision must bind both the old and replacement arguments to the
         # current message. The existing Host apply_plan_revision validates the
         # checkpoint, explicit step target and exact current stored argument.
-        if not (signal.revision_old_argument and signal.revision_new_argument):
+        if signal.dependency_revision_steps is not None:
+            if (not dependency_revision_enabled or not saved_plan_raw
+                    or pending_action is not None):
+                raise PrimaryRouteRejected("dependency_revision_payload_denied")
+            from agent.dependency_revision_candidate import compile_revision_candidate
+            try:
+                compiled = compile_revision_candidate(
+                    expected_raw=saved_plan_raw,
+                    replacement_pending=[step.model_dump() for step in signal.dependency_revision_steps],
+                    current_user_message=message)
+            except DependencyPlanError as exc:
+                raise PrimaryRouteRejected(exc.code) from exc
+            parent_steps = json.loads(saved_plan_raw)["steps"]
+            index = signal.step_number - 1
+            if (index < 0 or index >= len(parent_steps)
+                    or parent_steps[index]["status"] != "pending"
+                    or compiled.candidate["steps"][index] == parent_steps[index]
+                    or any(before != after for i, (before, after) in enumerate(
+                        zip(parent_steps, compiled.candidate["steps"]))
+                        if i != index)):
+                raise PrimaryRouteRejected("dependency_revision_target_unbound")
+            replacement_goal = compiled.candidate["steps"][index]["goal"]
+            if (replacement_goal != parent_steps[index]["goal"]
+                    and replacement_goal.casefold() not in message.casefold()):
+                raise PrimaryRouteRejected("dependency_revision_goal_unbound")
+        elif not (signal.revision_old_argument and signal.revision_new_argument):
             raise PrimaryRouteRejected("primary_route_revision_arguments_missing")
-        if signal.revision_old_argument.casefold() not in message.casefold() or (
-                signal.revision_new_argument.casefold() not in message.casefold()):
+        if (signal.dependency_revision_steps is None
+                and (signal.revision_old_argument.casefold() not in message.casefold() or
+                     signal.revision_new_argument.casefold() not in message.casefold())):
             raise PrimaryRouteRejected("primary_route_revision_arguments_unbound")
     if signal.route_kind == "ordinary_tool" and signal.effect_intent == "mutation_requested":
         from agent.tools import SCHEMAS
@@ -326,7 +362,9 @@ def bind_route_signal(signal: RouteSignal, message: str, *,
         schema_version=ROUTE_SCHEMA_VERSION, route_kind=signal.route_kind,
         execution_scope=signal.execution_scope, effect_intent=signal.effect_intent,
         evidence=root, steps=bound_steps,
-        dependency_plan=dependency_plan, step_number=signal.step_number,
+        dependency_plan=dependency_plan,
+        dependency_revision_steps=signal.dependency_revision_steps,
+        step_number=signal.step_number,
         clarification_question=signal.clarification_question,
         revision_old_argument=signal.revision_old_argument,
         revision_new_argument=signal.revision_new_argument,
@@ -722,7 +760,8 @@ def primary_route_generation_schema(message: str, *,
                                     pending_origin_verified: bool = False,
                                     dependency_plan_enabled: bool = False,
                                     saved_plan_present: bool = False,
-                                    pending_action_present: bool = False) -> dict:
+                                    pending_action_present: bool = False,
+                                    dependency_revision_enabled: bool = False) -> dict:
     """Constrain generation, never rewrite or authorize a model proposal.
 
     For a short request the whole request is already a unique source span.
@@ -732,6 +771,25 @@ def primary_route_generation_schema(message: str, *,
     route_kind: a user can withdraw or change a Pending request.
     """
     schema = RouteSignal.model_json_schema()
+    if not dependency_revision_enabled:
+        schema["properties"].pop("dependency_revision_steps", None)
+    else:
+        # Generation-only shape guidance: require the nullable key so a
+        # structured-output model cannot silently omit it on plan_revise.
+        # No field here grants Host authority. Normal non-revise routes use
+        # null. A dependency revision does NOT use legacy old/new args.
+        required = list(schema.get("required", []))
+        if "dependency_revision_steps" not in required:
+            required.append("dependency_revision_steps")
+        schema["required"] = required
+        schema["properties"]["dependency_revision_steps"]["description"] = (
+            "For plan_revise of a saved dependency plan ONLY: the exact ordered "
+            "pending steps from saved_dependency_pending_steps, with the "
+            "single chosen step modified. Keep all other pending steps and "
+            "all IDs, tools, versions and dependencies unchanged. For "
+            "all other routes use null; never provide completed steps.")
+        schema["properties"]["revision_old_argument"] = {"type": "null"}
+        schema["properties"]["revision_new_argument"] = {"type": "null"}
     if (not dependency_plan_enabled or saved_plan_present
             or pending_origin_verified or pending_action_present):
         # Only advertise the new payload for a fresh, unencumbered Turn.
@@ -742,8 +800,9 @@ def primary_route_generation_schema(message: str, *,
         # Strip only the definitions introduced by this opt-in field, so
         # default-OFF Primary has no hidden dependency plan schema surface.
         defs = schema.get("$defs", {})
-        for name in ("DependencyPlanCreation", "DependencyStep",
-                     "LiteralBinding", "ObservationBinding"):
+        for name in (("DependencyPlanCreation",) if dependency_revision_enabled
+                     else ("DependencyPlanCreation", "DependencyStep",
+                           "LiteralBinding", "ObservationBinding")):
             defs.pop(name, None)
         if not defs:
             schema.pop("$defs", None)
@@ -827,6 +886,8 @@ async def propose_primary_route(provider, model: str, message: str, *,
                                 saved_plan_steps: list[dict] | None = None,
                                 recent_context: list | None = None,
                                 dependency_plan_enabled: bool = False,
+                                dependency_revision_enabled: bool = False,
+                                saved_plan_raw: str | None = None,
                                 ) -> BoundPrimaryProposal:
     """One Primary semantic owner; at most one bounded schema-consistency retry.
 
@@ -848,6 +909,32 @@ async def propose_primary_route(provider, model: str, message: str, *,
     # A separate trailing system instruction is used ONLY for a verified
     # Pending context. It is adjacent to the current request in the model
     # context; it does not add a second model invocation or post-hoc route edit.
+    effective_dependency_revision = (
+        dependency_revision_enabled and saved_plan_present
+        and saved_plan_raw is not None and pending_action is None
+        and not pending_origin_verified)
+    if effective_dependency_revision:
+        # Present only pending-step data, not historical Attempt/Dispatch/
+        # Receipt or completed-prefix details. This is prompt context,
+        # never evidence or a Host grant; B1+Host revalidate the exact raw DB
+        # snapshot independently after the model proposes a suffix.
+        try:
+            revision_parent = json.loads(saved_plan_raw)
+            if (type(revision_parent) is not dict
+                    or revision_parent.get("plan_schema_version")
+                        != "dependency-plan-v1"
+                    or revision_parent.get("plan_executor_version")
+                        != "dependency-plan-read-v1"
+                    or revision_parent.get("revision") != 1
+                    or type(revision_parent.get("steps")) is not list):
+                effective_dependency_revision = False
+            else:
+                payload["saved_dependency_pending_steps"] = [
+                    {"step_number": index + 1, "step": step}
+                    for index, step in enumerate(revision_parent["steps"])
+                    if type(step) is dict and step.get("status") == "pending"]
+        except (TypeError, ValueError):
+            effective_dependency_revision = False
     effective_dependency_creation = (
         dependency_plan_enabled and not saved_plan_present
         and pending_action is None and not pending_origin_verified)
@@ -877,6 +964,19 @@ async def propose_primary_route(provider, model: str, message: str, *,
             "reject instead; do not invent a safer but unrequested goal. "
             "If unsupported or ambiguous, propose clarify or reject."
         )})
+    if effective_dependency_revision:
+        messages.append({"role": "system", "content": (
+            "S25-07 B2b2 dependency suffix revision PROPOSAL only. For an explicit "
+            "saved-plan revision request set route_kind=plan_revise and "
+            "step_number=1-based target. Supply dependency_revision_steps as "
+            "ALL pending steps, preserving IDs, order, tool names, versions, "
+            "dependencies and status=pending; change only the selected step goal and "
+            "bindings. New literals require source_quote verbatim from the "
+            "current_request. For other routes set dependency_revision_steps=null. "
+            "Set revision_old_argument=null and revision_new_argument=null. "
+            "Never include completed steps, historical executions or lineage. "
+            "No persistence or tool execution occurs in this proposal phase."
+        )})
     if pending_origin_verified and pending_action == "create_task":
         messages.append({"role": "system",
                          "content": _PENDING_CURRENT_TURN_SYSTEM})
@@ -891,7 +991,8 @@ async def propose_primary_route(provider, model: str, message: str, *,
             pending_action and pending_origin_verified),
         dependency_plan_enabled=effective_dependency_creation,
         saved_plan_present=saved_plan_present,
-        pending_action_present=pending_action is not None)
+        pending_action_present=pending_action is not None,
+        dependency_revision_enabled=effective_dependency_revision)
     raw = await provider.complete(
         model=model, messages=messages, response_schema=generation_schema)
     try:
@@ -964,4 +1065,6 @@ async def propose_primary_route(provider, model: str, message: str, *,
         signal, message, saved_plan_present=saved_plan_present,
         pending_action=pending_action, pending_origin_verified=pending_origin_verified,
         saved_step_count=saved_step_count,
-        dependency_plan_enabled=effective_dependency_creation)
+        dependency_plan_enabled=effective_dependency_creation,
+        dependency_revision_enabled=effective_dependency_revision,
+        saved_plan_raw=saved_plan_raw)
