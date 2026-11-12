@@ -29,7 +29,7 @@ def migrate(database_url: str | None = None) -> str:
                 # Unversioned S0/S1 and S2-B3 schemas predate turn diagnostics.
                 # Stamp their verified baseline, then apply migrations normally.
                 if table.name == "turns" and existing in (legacy, prior):
-                    required -= {"failure_code", "decision_steps"}
+                    required -= {"failure_code", "decision_steps", "user_message_id"}
                 if actual != required:
                     raise RuntimeError(f"Unversioned schema mismatch in {table.name}; backup and review required")
             mode = ("validated_existing" if existing == expected else
