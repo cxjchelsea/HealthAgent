@@ -373,7 +373,8 @@ def _b3b_host(raw, message_text, enabled=True, *,
             "schema_version": "primary-route-v1", "route_kind": kind,
             "quote": message_text, "effect_intent": "read_only",
             "execution_scope": scope,
-        }), message_text, saved_plan_present=True)
+        }), message_text, saved_plan_present=True,
+        pending_action=None)
     decision = admit_primary_route_v1(proposal, PrimaryHostFacts(
         checkpoint=json.loads(raw), checkpoint_raw=raw,
         pending_action=None, pending_origin_verified=False,
