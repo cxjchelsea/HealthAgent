@@ -141,6 +141,12 @@ def commit_dependency_revision_in_session(
         if (s["status"] == "pending" and s["expected_tool"] == "text_stats"
                 and s["argument_bindings"]["text"]["kind"] != "observation_ref"):
             _deny("dependency_revision_binding_not_executable")
+    changed_plan = db.execute(update(ConversationPlan).where(
+        ConversationPlan.conversation_id == conversation_id,
+        ConversationPlan.snapshot == expected_raw,
+    ).values(snapshot=json.dumps(verified.candidate, ensure_ascii=False)))
+    if changed_plan.rowcount != 1:
+        _deny("dependency_revision_snapshot_conflict")
     task = db.execute(select(AgentTaskState).where(
         AgentTaskState.conversation_id == conversation_id
     ).with_for_update()).scalar_one_or_none()
@@ -170,12 +176,6 @@ def commit_dependency_revision_in_session(
             conversation_id=conversation_id, task_id=task_id,
             revision=revision, plan_revision=2, state=new_state,
             step_states=old_projection_raw, updated_at=now()))
-    changed_plan = db.execute(update(ConversationPlan).where(
-        ConversationPlan.conversation_id == conversation_id,
-        ConversationPlan.snapshot == expected_raw,
-    ).values(snapshot=json.dumps(verified.candidate, ensure_ascii=False)))
-    if changed_plan.rowcount != 1:
-        _deny("dependency_revision_snapshot_conflict")
     db.add(AgentStateTransition(
         id=str(uuid.uuid4()), conversation_id=conversation_id,
         task_id=task_id, revision=revision, entity_type="task",
