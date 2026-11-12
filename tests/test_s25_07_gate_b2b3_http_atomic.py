@@ -16,9 +16,47 @@ from services.db import (
     PlanToolDispatch, PrimaryRouteEvidence, Turn, database,
 )
 from services.dependency_revision_fingerprint import revision_fingerprint
-from tests.test_s25_07_gate_b2b2_primary_revision import (
-    MESSAGE, bind, parent, raw_parent,
-)
+from agent.primary_route_v1 import RouteSignal, bind_route_signal
+
+MESSAGE = "请将第二步的说明改为统计定义的字符数，暂不执行"
+GOAL = "统计定义的字符数"
+
+
+def parent():
+    return {
+        "plan_schema_version": "dependency-plan-v1",
+        "plan_executor_version": "dependency-plan-read-v1",
+        "revision": 1, "next_step_id": 3,
+        "steps": [
+            {"id": 1, "goal": "查询 RAG", "depends_on": [], "status": "pending",
+             "expected_tool": "mcp_reference_lookup", "tool_version": "1.0.0",
+             "argument_bindings": {
+                 "term": {"kind": "literal", "value": "RAG", "source_quote": "RAG"}}},
+            {"id": 2, "goal": "统计定义", "depends_on": [1], "status": "pending",
+             "expected_tool": "text_stats", "tool_version": "1.0.0",
+             "argument_bindings": {"text": {
+                 "kind": "observation_ref", "source_step_id": 1,
+                 "field": "definition"}}},
+        ], "executions": {},
+    }
+
+
+def raw_parent():
+    return json.dumps(parent(), ensure_ascii=False)
+
+
+def bind(*, raw):
+    pending = copy.deepcopy(parent()["steps"])
+    pending[1]["goal"] = GOAL
+    return bind_route_signal(RouteSignal.model_validate({
+        "schema_version": "primary-route-v1",
+        "route_kind": "plan_revise", "quote": MESSAGE,
+        "execution_scope": "none", "effect_intent": "mutation_requested",
+        "step_number": 2, "dependency_revision_steps": pending,
+        "revision_old_argument": None, "revision_new_argument": None,
+    }), MESSAGE, saved_plan_present=True, pending_action=None,
+        saved_step_count=2, dependency_revision_enabled=True,
+        saved_plan_raw=raw)
 
 
 @pytest.fixture(params=["sqlite", "postgres"])
