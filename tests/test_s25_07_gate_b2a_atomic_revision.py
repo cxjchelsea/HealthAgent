@@ -100,7 +100,7 @@ def seeded(tmp_path, request):
                     AgentStateTransition, AgentAttempt, AgentTaskState,
                     PlanToolDispatch, PrimaryRouteEvidence,
                     PlanExecutionClaim, DependencyWorkerFence,
-                    ConversationPlan, Message, Turn):
+                    ConversationPlan, Turn, Message):
                 db.execute(delete(model).where(model.conversation_id == cid))
             db.execute(delete(Conversation).where(Conversation.id == cid))
         engine.dispose()
