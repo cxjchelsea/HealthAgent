@@ -30,6 +30,7 @@ class PrimaryHostFacts:
     dependency_plan_enabled: bool = False  # explicit S25-06 flag; never on by inference
     dependency_revision_enabled: bool = False  # B2b2 opt-in; no execution
     checkpoint_raw: str | None = None  # exact pre-Turn plan bytes for B1 SHA
+    revision_resume_prepare_enabled: bool = False  # B3b internal Host-only; no HTTP
 
 
 @dataclass(frozen=True)
@@ -199,6 +200,43 @@ def admit_primary_route_v1(
                 return decide(
                     "allow", "dependency_revision_candidate",
                     approved_revision_digest=revision_fingerprint(compiled.candidate))
+            if (facts.checkpoint.get("plan_executor_version")
+                    == "dependency-plan-read-replan-v1"):
+                # B3b only admits a model-proposed, explicitly scoped
+                # RESUME for offline preparation. No dispatch or HTTP claim
+                # may be inferred from this allow decision.
+                if (not facts.revision_resume_prepare_enabled
+                        or kind != "plan_resume"
+                        or proposal.execution_scope != "remaining_steps"
+                        or proposal.effect_intent != "read_only"
+                        or facts.pending_action is not None
+                        or proposal.dependency_revision_steps is not None
+                        or not facts.checkpoint_raw):
+                    return decide("deny", "dependency_revision_resume_disabled")
+                try:
+                    import json
+                    from agent.primary_route_v1 import bind_unique_quote
+                    from agent.dependency_revision_candidate import REVISED_EXECUTOR_VERSION
+                    current = json.loads(facts.checkpoint_raw)
+                    if (current != facts.checkpoint or type(current) is not dict
+                            or current.get("revision") != 2
+                            or current.get("plan_executor_version")
+                                != REVISED_EXECUTOR_VERSION
+                            or type(current.get("steps")) is not list):
+                        return decide("deny", "dependency_revision_resume_snapshot_invalid")
+                    canonical = bind_unique_quote(
+                        facts.current_request, proposal.evidence.exact_text)
+                    if proposal.evidence != canonical:
+                        return decide("deny", "dependency_revision_resume_quote_invalid")
+                    pending = [step for step in current["steps"]
+                               if type(step) is dict
+                               and step.get("status") == "pending"]
+                    if (not pending or type(pending[0].get("id")) is not int):
+                        return decide("deny", "dependency_revision_resume_not_ready")
+                except (TypeError, ValueError, KeyError, AttributeError):
+                    return decide("deny", "dependency_revision_resume_snapshot_invalid")
+                return decide("allow", "dependency_revision_resume_prepare_only",
+                              "read_only", "resume")
             if kind not in {"plan_execute_first", "plan_resume"}:
                 return decide("deny", "dependency_control_not_supported")
             scope = "execute_first" if kind == "plan_execute_first" else "resume"
