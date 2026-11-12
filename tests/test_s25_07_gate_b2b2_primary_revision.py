@@ -307,3 +307,12 @@ def test_host_denies_mutated_non_step_payload_without_unhandled_exception():
     decision = host(forged)
     assert (decision.disposition, decision.reason) == (
         "deny", "dependency_revision_host_denied")
+
+
+def test_revision_payload_rejects_unbounded_suffix():
+    payload = signal_payload()
+    payload["dependency_revision_steps"] = [
+        copy.deepcopy(payload["dependency_revision_steps"][1])
+        for _ in range(9)]
+    with pytest.raises(ValidationError):
+        RouteSignal.model_validate(payload)
