@@ -268,7 +268,7 @@ def test_http_default_off_forged_revision_cannot_change_plan(tmp_path, monkeypat
         assert result.status_code == 200
         body = result.json()
         assert body["status"] == "partial"
-        assert body["termination_reason"] == "dependency_control_not_supported"
+        assert body["termination_reason"] == "dependency_revision_host_denied"
         with Session() as db:
             assert db.get(ConversationPlan, cid).snapshot == raw
             assert db.get(PrimaryRouteEvidence, body["turn_id"]).disposition == "deny"
