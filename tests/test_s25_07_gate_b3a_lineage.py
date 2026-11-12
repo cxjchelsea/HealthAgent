@@ -225,7 +225,8 @@ def test_authenticated_revision_lineage_proves_physical_prefix(store, completed)
     "task_projection", "lineage_origin", "origin_dispatch",
     "extra_dispatch", "snapshot", "attempt_projection", "origin_host",
     "revision_user_role", "revision_message_id", "revision_schema",
-    "revision_assistant", "origin_schema",
+    "revision_assistant", "origin_schema", "revision_transition_state",
+    "revision_transition_attempt",
 ])
 def test_forged_or_stale_revision_lineage_rejected(store, tamper):
     Session, cid = store
@@ -260,6 +261,14 @@ def test_forged_or_stale_revision_lineage_rejected(store, tamper):
             db.get(Turn, tid).user_message_id = None
         elif tamper == "revision_assistant":
             db.get(Message, db.get(Turn, tid).assistant_message_id).status = "pending"
+        elif tamper == "revision_transition_state":
+            db.query(AgentStateTransition).filter_by(
+                conversation_id=cid,
+                reason_code="dependency_plan_revision_saved").one().to_state = "completed"
+        elif tamper == "revision_transition_attempt":
+            db.query(AgentStateTransition).filter_by(
+                conversation_id=cid,
+                reason_code="dependency_plan_revision_saved").one().attempt_id = _id()
         elif tamper == "extra_dispatch":
             db.add(PlanToolDispatch(
                 id=_id(), conversation_id=cid, turn_id=tid, step_id=2,
