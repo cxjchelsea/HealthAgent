@@ -13,7 +13,9 @@ from services.db import (
     ConversationPlan, PlanExecutionClaim, PlanToolDispatch,
     PrimaryRouteEvidence, Turn, database,
 )
-from services.dependency_recovery import inspect_dependency_orphan
+from services.dependency_recovery import (
+    inspect_dependency_orphan, reconcile_dependency_orphan,
+)
 from services.migrate import migrate
 from services.primary_route_evidence import snapshot_digest
 
@@ -209,3 +211,29 @@ def test_second_step_negative_receipt_preserves_verified_prefix(seeded, monkeypa
         _execute(Session, raw)
     with Session() as db:
         assert db.query(PlanToolDispatch).count() == 2
+
+
+def test_operator_recovery_preserves_failed_attempt_without_retry(seeded, monkeypatch):
+    Session, raw = seeded
+    monkeypatch.setattr(READ_REGISTRY, "invoke",
+                        lambda *a, **k: {"ok": False, "error": "adapter_failed"})
+    _execute(Session, raw)
+    evidence = inspect_dependency_orphan(
+        Session, owner_id="owner", conversation_id="cid", turn_id="tid")
+    assert evidence.classification == "verified_failure_no_replay"
+    # These stubs are test-only external trust verifiers, not real operator IAM.
+    reconcile_dependency_orphan(
+        Session, owner_id="owner", conversation_id="cid", turn_id="tid",
+        operator_id="test-operator",
+        expected_plan_sha256=evidence.plan_sha256,
+        expected_evidence_sha256=evidence.evidence_sha256,
+        worker_terminated_confirmed=True, operator_authorized=True,
+        operator_access_verifier=lambda *_: True,
+        worker_termination_verifier=lambda *_: True)
+    with Session() as db:
+        assert db.get(Turn, "tid").failure_code == "dependency_verified_failure"
+        assert db.get(PlanExecutionClaim, "cid") is None
+        dispatch = db.query(PlanToolDispatch).one()
+        assert dispatch.status == "failure_finalized"
+        assert db.get(AgentAttempt, dispatch.id).status == "failed"
+        assert db.get(ConversationPlan, "cid").snapshot == raw
