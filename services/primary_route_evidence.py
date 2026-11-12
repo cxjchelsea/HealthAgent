@@ -98,6 +98,7 @@ def read_primary_evidence(db, *, conversation_id: str, turn_id: str):
         "schema_version": row.schema_version, "route_kind": row.route_kind,
         "semantic_attempts": row.semantic_attempts,
         "preturn_snapshot_digest": row.preturn_snapshot_digest,
+        "approved_revision_digest": row.approved_revision_digest,
         "disposition": row.disposition,
         "admission_reason": row.admission_reason,
     }
