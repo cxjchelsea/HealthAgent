@@ -125,6 +125,8 @@ def test_revision_cas_commits_once_and_old_executor_is_not_enabled(seeded):
 
 def test_second_writer_loses_cas_under_real_postgres_lock(seeded):
     Session, cid, tid, mid, raw, proposal_for, commit = seeded
+    if Session.kw["bind"].dialect.name != "postgresql":
+        pytest.skip("SQLite has database-wide writer locks; concurrency oracle requires PG")
     proposal = proposal_for()
     def run():
         try:
