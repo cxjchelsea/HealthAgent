@@ -18,7 +18,7 @@ from agent.dependency_plan_schema import (
 from agent.dependency_revision_candidate import REVISED_EXECUTOR_VERSION
 from services.db import (
     AgentAttempt, AgentStateTransition, AgentTaskState, Conversation,
-    ConversationPlan, PlanToolDispatch, PrimaryRouteEvidence, Turn,
+    ConversationPlan, Message, PlanToolDispatch, PrimaryRouteEvidence, Turn,
 )
 from services.dependency_revision_fingerprint import revision_fingerprint
 from services.evidence_store import arguments_digest, bounded_projection
@@ -156,10 +156,27 @@ def verify_revised_lineage(session_factory, *, owner_id: str,
             _deny()
         approval = approval[0]
         revision_turn = db.get(Turn, approval.turn_id)
-        if (revision_turn is None
+        revision_user = (db.get(Message, revision_turn.user_message_id)
+                         if revision_turn is not None
+                         and revision_turn.user_message_id else None)
+        revision_assistant = (db.get(Message, revision_turn.assistant_message_id)
+                              if revision_turn is not None
+                              and revision_turn.assistant_message_id else None)
+        if (approval.schema_version != "primary-route-v1"
+                or revision_turn is None
                 or revision_turn.conversation_id != conversation_id
+                or not revision_turn.request_id
                 or revision_turn.state != "partial"
-                or revision_turn.failure_code is not None):
+                or revision_turn.failure_code is not None
+                or revision_user is None
+                or revision_user.conversation_id != conversation_id
+                or revision_user.role != "user"
+                or revision_user.status != "completed"
+                or not revision_user.content.strip()
+                or revision_assistant is None
+                or revision_assistant.conversation_id != conversation_id
+                or revision_assistant.role != "assistant"
+                or revision_assistant.status != "partial"):
             _deny()
         task = db.get(AgentTaskState, conversation_id)
         projection = [
@@ -222,6 +239,7 @@ def verify_revised_lineage(session_factory, *, owner_id: str,
                     or source_turn.state not in {"partial", "completed"}
                     or source_admission is None
                     or source_admission.conversation_id != conversation_id
+                    or source_admission.schema_version != "primary-route-v1"
                     or source_admission.disposition != "allow"
                     or source_admission.route_kind
                         not in {"plan_execute_first", "plan_resume"}
