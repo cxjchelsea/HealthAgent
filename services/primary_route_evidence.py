@@ -61,7 +61,10 @@ def record_primary_admission(*, session_factory, conversation_id: str,
                 expected_raw=preturn_plan_raw,
                 replacement_pending=[s.model_dump() for s in proposal.dependency_revision_steps],
                 current_user_message=current_message.content)
-            approved_revision_digest = revision_fingerprint(compiled.candidate)
+            calculated_digest = revision_fingerprint(compiled.candidate)
+            if (decision.approved_revision_digest != calculated_digest):
+                raise ValueError("primary_revision_candidate_changed_after_host")
+            approved_revision_digest = calculated_digest
     values = {
         "turn_id": turn_id,
         "conversation_id": conversation_id,
