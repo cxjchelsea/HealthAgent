@@ -1,0 +1,165 @@
+"""Gate B2b3: exact approved revision digest and official HTTP atomicity."""
+import copy
+import json
+import os
+import uuid
+
+import pytest
+from fastapi.testclient import TestClient
+
+from agent.config import Settings
+from agent.dependency_revision_candidate import compile_revision_candidate
+from agent.dependency_plan_schema import DependencyPlanError
+from apps.api.main import create_app
+from services.db import (
+    AgentStateTransition, AgentTaskState, ConversationPlan, Message,
+    PlanToolDispatch, PrimaryRouteEvidence, Turn, database,
+)
+from services.dependency_revision_fingerprint import revision_fingerprint
+from tests.test_s25_07_gate_b2b2_primary_revision import (
+    MESSAGE, bind, parent, raw_parent,
+)
+
+
+@pytest.fixture(params=["sqlite", "postgres"])
+def sandbox(tmp_path, request):
+    if request.param == "postgres":
+        url = os.getenv("TEST_POSTGRES_URL")
+        if not url:
+            pytest.skip("requires TEST_POSTGRES_URL")
+    else:
+        url = f"sqlite:///{tmp_path / 'revision-http.db'}"
+    cfg = Settings(
+        database_url=url, model_provider="fake", routing_profile="unified",
+        primary_route_v1_canary_enabled=True,
+        s25_06_dependency_plan_enabled=True,
+        s25_07_dependency_revision_proposal_enabled=True)
+    with TestClient(create_app(cfg)) as client:
+        cid = client.post("/conversations").json()["id"]
+        _, Session = database(url)
+        raw = raw_parent()
+        with Session.begin() as db:
+            db.add(ConversationPlan(conversation_id=cid, snapshot=raw))
+        try:
+            yield client, Session, cid, raw
+        finally:
+            # Only this conversation's rows; preserve other parallel PG tests.
+            from sqlalchemy import delete
+            from services.db import (
+                Conversation, AgentAttempt, PlanExecutionClaim,
+                DependencyWorkerFence,
+            )
+            with Session.begin() as db:
+                for model in (
+                    AgentStateTransition, AgentTaskState, AgentAttempt,
+                    PlanToolDispatch, PrimaryRouteEvidence,
+                    PlanExecutionClaim, DependencyWorkerFence,
+                    ConversationPlan, Turn, Message):
+                    db.execute(delete(model).where(model.conversation_id == cid))
+                db.execute(delete(Conversation).where(Conversation.id == cid))
+
+
+def _route(monkeypatch):
+    async def one(*args, **kwargs):
+        return bind(raw=kwargs["saved_plan_raw"])
+    monkeypatch.setattr("apps.api.main.propose_primary_route", one)
+
+
+def _request(client, cid, key=None):
+    return client.post(f"/conversations/{cid}/agent/messages", json={
+        "content": MESSAGE, "client_request_id": key or str(uuid.uuid4())})
+
+
+def test_exact_host_fingerprint_is_committed_and_old_executor_stays_off(
+        sandbox, monkeypatch):
+    client, Session, cid, raw = sandbox
+    _route(monkeypatch)
+    result = _request(client, cid)
+    assert result.status_code == 200, result.text
+    data = result.json()
+    assert data["termination_reason"] == "dependency_revision_saved_pending_execution"
+    assert data["plan_revision"] == 2
+    with Session() as db:
+        evidence = db.get(PrimaryRouteEvidence, data["turn_id"])
+        saved = json.loads(db.get(ConversationPlan, cid).snapshot)
+        assert evidence.approved_revision_digest == revision_fingerprint(saved)
+        assert saved["plan_executor_version"] == "dependency-plan-read-replan-v1"
+        assert db.get(AgentTaskState, cid).plan_revision == 2
+        assert db.query(PlanToolDispatch).filter_by(conversation_id=cid).count() == 0
+        assert db.query(AgentStateTransition).filter_by(
+            conversation_id=cid,
+            reason_code="dependency_plan_revision_saved").count() == 1
+        assert db.get(Turn, data["turn_id"]).state == "partial"
+    replay = _request(client, cid, data["turn_id"])
+    # A different client request can still be refused by Host because the
+    # saved plan is now revision 2, not a reason to grant B3 execution.
+    assert replay.status_code == 200
+    assert replay.json()["termination_reason"] != "dependency_revision_saved_pending_execution"
+
+
+def test_swapped_valid_user_grounded_candidate_denied_atomically(
+        sandbox, monkeypatch):
+    client, Session, cid, raw = sandbox
+    _route(monkeypatch)
+    from services.dependency_revision_commit import (
+        commit_dependency_revision_in_session as real_commit,
+    )
+
+    def swapped(db, **kwargs):
+        different = copy.deepcopy(parent()["steps"])
+        different[1]["goal"] = "第二步的说明"
+        alternate = compile_revision_candidate(
+            expected_raw=kwargs["expected_raw"],
+            replacement_pending=different, current_user_message=MESSAGE)
+        kwargs["proposal"] = alternate
+        return real_commit(db, **kwargs)
+
+    monkeypatch.setattr("apps.api.main.commit_dependency_revision_in_session", swapped)
+    resp = _request(client, cid)
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["termination_reason"] == "dependency_revision_approval_mismatch"
+    with Session() as db:
+        assert db.get(ConversationPlan, cid).snapshot == raw
+        assert db.get(AgentTaskState, cid) is None
+        assert db.query(AgentStateTransition).filter_by(conversation_id=cid).count() == 0
+        evidence = db.get(PrimaryRouteEvidence, data["turn_id"])
+        assert evidence.disposition == "allow"
+        assert evidence.approved_revision_digest is not None
+        assert db.get(Turn, data["turn_id"]).state == "partial"
+
+
+def test_concurrent_plan_change_after_host_admission_refuses_stale_cas(
+        sandbox, monkeypatch):
+    client, Session, cid, raw = sandbox
+    _route(monkeypatch)
+    from services.primary_route_evidence import record_primary_admission as record
+
+    def race(**kwargs):
+        saved_id = record(**kwargs)
+        if kwargs["decision"] is not None and kwargs["decision"].reason == "dependency_revision_candidate":
+            other = json.loads(raw)
+            other["steps"][1]["goal"] = "concurrent writer changed plan"
+            with Session.begin() as db:
+                db.get(ConversationPlan, cid).snapshot = json.dumps(
+                    other, ensure_ascii=False)
+        return saved_id
+
+    monkeypatch.setattr("apps.api.main.record_primary_admission", race)
+    resp = _request(client, cid)
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["termination_reason"] == "dependency_revision_snapshot_conflict"
+    with Session() as db:
+        assert json.loads(db.get(ConversationPlan, cid).snapshot)["steps"][1][
+            "goal"] == "concurrent writer changed plan"
+        assert db.get(AgentTaskState, cid) is None
+        assert db.query(AgentStateTransition).filter_by(conversation_id=cid).count() == 0
+
+
+def test_fingerprint_is_order_stable_but_candidate_sensitive():
+    candidate = {"revision": 2, "steps": [{"goal": "A"}]}
+    same = {"steps": [{"goal": "A"}], "revision": 2}
+    changed = {"revision": 2, "steps": [{"goal": "B"}]}
+    assert revision_fingerprint(candidate) == revision_fingerprint(same)
+    assert revision_fingerprint(candidate) != revision_fingerprint(changed)
