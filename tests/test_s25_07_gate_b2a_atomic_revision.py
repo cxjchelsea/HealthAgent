@@ -384,3 +384,54 @@ def test_completed_prefix_fake_source_refs_are_not_inherited(seeded):
     with Session() as db:
         assert db.get(ConversationPlan, cid).snapshot == corrupted_parent
         assert db.get(AgentTaskState, cid) is None
+
+
+def test_missing_task_projection_blocks_completed_prefix_revision(seeded):
+    Session, cid, tid, mid, raw, proposal_for, commit = seeded
+    parent = json.loads(raw)
+    parent["steps"][0]["status"] = "completed"
+    did = str(uuid.uuid4())
+    args = {"term": "RAG"}
+    receipt = bounded_projection("mcp_reference_lookup", {
+        "ok": True, "definition": "retrieval augmented generation",
+        "source": "trusted-reference"})
+    parent["executions"]["1"] = {
+        "step_id": 1, "plan_revision": 1,
+        "dispatch_id": did, "tool_name": "mcp_reference_lookup",
+        "tool_version": "1.0.0",
+        "resolved_arguments_digest": arguments_digest(args),
+        "source_evidence_refs": [],
+    }
+    completed_raw = json.dumps(parent, ensure_ascii=False)
+    with Session.begin() as db:
+        db.get(ConversationPlan, cid).snapshot = completed_raw
+        db.get(PrimaryRouteEvidence, tid).preturn_snapshot_digest = (
+            snapshot_digest(completed_raw))
+        db.get(Message, mid).content = "调整第二步统计说明"
+        db.add(PlanToolDispatch(
+            id=did, conversation_id=cid, turn_id=tid,
+            step_id=1, tool_name="mcp_reference_lookup",
+            tool_version="1.0.0", status="checkpointed",
+            arguments_json=json.dumps(args),
+            receipt_json=json.dumps(receipt, ensure_ascii=False)))
+        db.add(AgentAttempt(
+            id=did, conversation_id=cid, turn_id=tid, run_id=tid,
+            step_id=1, tool_name="mcp_reference_lookup",
+            tool_version="1.0.0", arguments_digest=arguments_digest(args),
+            status="succeeded",
+            result_projection=json.dumps(receipt, ensure_ascii=False)))
+    pending = [copy.deepcopy(parent["steps"][1])]
+    pending[0]["goal"] = "调整统计说明"
+    proposal = compile_revision_candidate(
+        expected_raw=completed_raw, replacement_pending=pending,
+        current_user_message="调整第二步统计说明")
+    with pytest.raises(DependencyPlanError,
+                       match="dependency_revision_task_conflict"):
+        with Session.begin() as db:
+            commit_dependency_revision_in_session(
+                db, owner_id="owner-b2", conversation_id=cid,
+                turn_id=tid, request_id="req-b2", user_message_id=mid,
+                expected_raw=completed_raw, proposal=proposal)
+    with Session() as db:
+        assert db.get(ConversationPlan, cid).snapshot == completed_raw
+        assert db.get(AgentTaskState, cid) is None
