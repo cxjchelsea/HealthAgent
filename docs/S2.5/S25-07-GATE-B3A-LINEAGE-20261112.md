@@ -13,10 +13,12 @@ S25-06 `_step_for_read`, Observation Resolver, Dispatch and checkpoint are revis
 `verify_revised_lineage(session_factory, owner_id, conversation_id, expected_raw)`:
 
 - Requires an exact persisted revision 2 snapshot with `dependency-plan-read-replan-v1` executor tag and the bounded, prefix-completed DAG. Each step remains a pinned, schema-valid read; text_stats can use only a source observation.
-- Requires **one** approved revision Candidate SHA-256 in immutable `PrimaryRouteEvidence`, a completed/partial revision Turn, owner identity, and `AgentTaskState(plan_revision=2)` with the exact step status projection and saved transition.
+- Requires **one** approved revision Candidate SHA-256 in immutable `PrimaryRouteEvidence`, strict `primary-route-v1` schema, a partial revision Turn bound to a completed user Message and partial assistant Message within the same conversation, owner identity, and `AgentTaskState(plan_revision=2)` with the exact step status projection and saved transition.
 - Checks lineage origin_refs equality to each inherited `executions[*]` record, preserving original `plan_revision=1`. No newly invented v2 execution history is accepted.
 - For **each completed origin**, checks the actual checkpointed `PlanToolDispatch`, successful `AgentAttempt`, original Host-authorized execution Turn, tool/version, argument digest, projection and tool-specific original argument/receipt content. text_stats lineage binds to the exact source MCP definition; no model text is treated as evidence.
-- Rejects additional unknown/failed/pending Dispatch and stale snapshot. Returns only an immutable read-only proof, **not** a Claim or tool permit.
+- Rejects additional unknown/failed/pending Dispatch and stale snapshot. Returns only an immutable read-only proof, **not** a Claim or tool permit. Tests include two inherited completed steps (MCP then text_stats) and falsified statistics in a physical receipt.
+
+The proof currently recognizes the **pristine revision-2 snapshot immediately after B2b3 save**, whose full canonical candidate SHA equals the original Host approval. After B3c introduces genuine revision-2 checkpoints, the mutable plan will have a different SHA; B3b–c must anchor the immutable approved ancestor separately and verify new revision-2 Attempt/Dispatch records without treating this snapshot-only function as a reusable execution permit. Do not simply relax the candidate fingerprint equality check.
 
 This is a best-effort snapshot inspection and is **not** an atomic execution authorization. B3b must repeat lineage validation while holding the proper Plan/Claim/Dispatch locks at dispatch and checkpoint boundaries. The original S25-06 execution routes remain revision-1 only. No fallback is introduced, and `revision=2` remains non-executable.
 
