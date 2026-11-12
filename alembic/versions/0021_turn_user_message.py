@@ -27,5 +27,6 @@ def upgrade():
 
 def downgrade():
     with op.batch_alter_table("turns") as batch:
+        batch.drop_constraint("uq_turn_user_message_id", type_="unique")
         batch.drop_constraint("fk_turn_user_message", type_="foreignkey")
         batch.drop_column("user_message_id")
