@@ -134,7 +134,7 @@ class RouteSignal(StrictRouteModel):
     effect_intent: Effect = "none"
     steps: list[ProposedStep] = Field(default_factory=list, max_length=8)
     dependency_plan: DependencyPlanCreation | None = None  # gated S25-06 E1 proposal only
-    dependency_revision_steps: list[DependencyStep] | None = None
+    dependency_revision_steps: list[DependencyStep] | None = Field(default=None, max_length=8)
     step_number: int | None = Field(default=None, ge=1, le=8)
     clarification_question: str | None = Field(default=None, min_length=1, max_length=500)
     revision_old_argument: str | None = Field(default=None, min_length=1, max_length=400)
@@ -228,7 +228,7 @@ class BoundPrimaryProposal(StrictRouteModel):
     evidence: EvidenceSpan
     steps: list[BoundStep] = Field(default_factory=list)
     dependency_plan: DependencyPlanCreation | None = None
-    dependency_revision_steps: list[DependencyStep] | None = None
+    dependency_revision_steps: list[DependencyStep] | None = Field(default=None, max_length=8)
     step_number: int | None = None
     clarification_question: str | None = None
     revision_old_argument: str | None = None
