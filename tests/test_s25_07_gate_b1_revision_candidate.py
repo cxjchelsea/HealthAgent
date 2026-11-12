@@ -177,3 +177,41 @@ def test_goal_only_change_keeps_previously_grounded_literal():
     assert candidate["steps"][0]["goal"] == "仅修改第一步显示名称"
     assert candidate["steps"][0]["argument_bindings"] == (
         parent["steps"][0]["argument_bindings"])
+
+
+def test_existing_read_tool_substitution_is_not_implicit_equivalence():
+    # Both tools are present in the Registry, but this says nothing about
+    # whether a replacement preserves user intent or source semantics.
+    parent = _parent(completed=False)
+    parent["steps"][1]["depends_on"] = []
+    parent["steps"][1]["expected_tool"] = "mcp_reference_lookup"
+    parent["steps"][1]["argument_bindings"] = {
+        "term": {"kind": "literal", "value": "RAG", "source_quote": "RAG"}}
+    pending = copy.deepcopy(parent["steps"])
+    pending[1]["expected_tool"] = "text_stats"
+    pending[1]["argument_bindings"] = {
+        "text": {"kind": "literal", "value": "新文本",
+                 "source_quote": "新文本"}}
+    with pytest.raises(DependencyPlanError) as exc:
+        compile_revision_candidate(
+            expected_raw=json.dumps(parent, ensure_ascii=False),
+            replacement_pending=pending,
+            current_user_message="把第二步改成统计新文本")
+    assert exc.value.code == "dependency_revision_tool_substitution_denied"
+
+
+def test_output_does_not_alias_parent_or_replacement_input():
+    parent = _parent()
+    replacement = [copy.deepcopy(parent["steps"][1])]
+    replacement[0]["goal"] = "更新统计目标"
+    snapshot = json.dumps(parent, ensure_ascii=False)
+    result = compile_revision_candidate(
+        expected_raw=snapshot, replacement_pending=replacement,
+        current_user_message="更新统计目标")
+    result.candidate["steps"][1]["goal"] = "later mutation"
+    result.candidate["executions"]["1"]["dispatch_id"] = "tampered"
+    assert parent["steps"][1]["goal"] == "统计定义"
+    assert replacement[0]["goal"] == "更新统计目标"
+    assert parent["executions"]["1"]["dispatch_id"] == "verified-d1"
+    # Candidate objects are deliberately not authorization certificates:
+    # B2 MUST recheck the exact raw parent plus every DB evidence record.
