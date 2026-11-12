@@ -10,7 +10,8 @@ from agent.dependency_plan_schema import DependencyPlanError
 from agent.dependency_revision_candidate import compile_revision_candidate
 from services.db import (
     AgentAttempt, AgentStateTransition, AgentTaskState, Conversation,
-    ConversationPlan, Message, PlanToolDispatch, PrimaryRouteEvidence, Turn,
+    ConversationPlan, Message, PlanExecutionClaim, PlanToolDispatch,
+    PrimaryRouteEvidence, Turn,
     database,
 )
 from services.dependency_revision_fingerprint import revision_fingerprint
@@ -74,8 +75,8 @@ def store(tmp_path, request):
         from sqlalchemy import delete
         with Session.begin() as db:
             for model in (AgentStateTransition, AgentTaskState, AgentAttempt,
-                          PlanToolDispatch, PrimaryRouteEvidence, ConversationPlan,
-                          Turn, Message):
+                          PlanExecutionClaim, PlanToolDispatch,
+                          PrimaryRouteEvidence, ConversationPlan, Turn, Message):
                 db.execute(delete(model).where(model.conversation_id == cid))
             db.execute(delete(Conversation).where(Conversation.id == cid))
         engine.dispose()
