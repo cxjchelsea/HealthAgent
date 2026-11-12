@@ -773,6 +773,23 @@ def primary_route_generation_schema(message: str, *,
     schema = RouteSignal.model_json_schema()
     if not dependency_revision_enabled:
         schema["properties"].pop("dependency_revision_steps", None)
+    else:
+        # Generation-only shape guidance: require the nullable key so a
+        # structured-output model cannot silently omit it on plan_revise.
+        # No field here grants Host authority. Normal non-revise routes use
+        # null. A dependency revision does NOT use legacy old/new args.
+        required = list(schema.get("required", []))
+        if "dependency_revision_steps" not in required:
+            required.append("dependency_revision_steps")
+        schema["required"] = required
+        schema["properties"]["dependency_revision_steps"]["description"] = (
+            "For plan_revise of a saved dependency plan ONLY: the exact ordered "
+            "pending steps from saved_dependency_pending_steps, with the "
+            "single chosen step modified. Keep all other pending steps and "
+            "all IDs, tools, versions and dependencies unchanged. For "
+            "all other routes use null; never provide completed steps.")
+        schema["properties"]["revision_old_argument"] = {"type": "null"}
+        schema["properties"]["revision_new_argument"] = {"type": "null"}
     if (not dependency_plan_enabled or saved_plan_present
             or pending_origin_verified or pending_action_present):
         # Only advertise the new payload for a fresh, unencumbered Turn.
