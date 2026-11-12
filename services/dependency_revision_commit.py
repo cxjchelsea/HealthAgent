@@ -111,6 +111,26 @@ def commit_dependency_revision_in_session(
         record = parent["executions"].get(str(d.step_id))
         if record is None or record.get("dispatch_id") != d.id:
             _deny("dependency_revision_dispatch_lineage_conflict")
+        # The completed dispatch must have originated from a different,
+        # Host-admitted execution Turn. A fabricated dispatch attached to
+        # this current revision Turn is not authentic historical progress.
+        origin_turn = db.get(Turn, d.turn_id)
+        origin_admission = db.get(PrimaryRouteEvidence, d.turn_id)
+        if (d.turn_id == turn_id
+                or origin_turn is None
+                or origin_turn.conversation_id != conversation_id
+                or origin_turn.state not in {"partial", "completed"}
+                or origin_admission is None
+                or origin_admission.conversation_id != conversation_id
+                or origin_admission.schema_version != "primary-route-v1"
+                or origin_admission.disposition != "allow"
+                or origin_admission.route_kind not in {
+                    "plan_execute_first", "plan_resume"}
+                or origin_admission.admission_reason
+                   != "primary_v1_plan_execution_candidate"
+                or type(origin_admission.preturn_snapshot_digest) is not str
+                or len(origin_admission.preturn_snapshot_digest) != 64):
+            _deny("dependency_revision_origin_untrusted")
         attempt = db.execute(select(AgentAttempt).where(
             AgentAttempt.id == d.id
         ).with_for_update()).scalar_one_or_none()
