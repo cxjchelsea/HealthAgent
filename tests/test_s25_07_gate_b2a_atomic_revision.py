@@ -532,3 +532,116 @@ def test_current_revision_turn_cannot_impersonate_past_execution(seeded):
     with Session() as db:
         assert db.get(ConversationPlan, cid).snapshot == completed_raw
         assert db.get(AgentTaskState, cid) is None
+
+
+@pytest.mark.parametrize("tamper", ["none", "wrong_text", "wrong_source", "wrong_counts"])
+def test_two_step_checkpointed_source_chain_is_rebound(seeded, tamper):
+    """A revised suffix may inherit verified source chains, not forged ones."""
+    Session, cid, tid, mid, raw, *_ = seeded
+    plan = json.loads(raw)
+    plan["steps"][0]["status"] = "completed"
+    plan["steps"][1]["status"] = "completed"
+    plan["steps"].append({
+        "id": 3, "goal": "整理结果", "depends_on": [1],
+        "status": "pending", "expected_tool": "text_stats",
+        "tool_version": "1.0.0",
+        "argument_bindings": {
+            "text": {"kind": "observation_ref",
+                     "source_step_id": 1, "field": "definition"}}})
+    plan["next_step_id"] = 4
+    first_did, second_did = str(uuid.uuid4()), str(uuid.uuid4())
+    first_tid, second_tid = str(uuid.uuid4()), str(uuid.uuid4())
+    term = {"term": "RAG"}
+    definition = "retrieval augmented generation"
+    source_receipt = bounded_projection("mcp_reference_lookup", {
+        "ok": True, "definition": definition, "source": "trusted-reference"})
+    second_text = "tampered source input" if tamper == "wrong_text" else definition
+    stat_args = {"text": second_text}
+    stats_receipt = bounded_projection("text_stats", {
+        "ok": True,
+        "characters": len(second_text) + (1 if tamper == "wrong_counts" else 0),
+        "words": len(second_text.split())})
+    plan["executions"]["1"] = {
+        "step_id": 1, "plan_revision": 1, "dispatch_id": first_did,
+        "tool_name": "mcp_reference_lookup", "tool_version": "1.0.0",
+        "resolved_arguments_digest": arguments_digest(term),
+        "source_evidence_refs": []}
+    plan["executions"]["2"] = {
+        "step_id": 2, "plan_revision": 1, "dispatch_id": second_did,
+        "tool_name": "text_stats", "tool_version": "1.0.0",
+        "resolved_arguments_digest": arguments_digest(stat_args),
+        "source_evidence_refs": [{
+            "source_dispatch_id": ("forged" if tamper == "wrong_source"
+                                   else first_did)}]}
+    old_raw = json.dumps(plan, ensure_ascii=False)
+    with Session.begin() as db:
+        for old_tid, kind in ((first_tid, "plan_execute_first"),
+                              (second_tid, "plan_resume")):
+            db.add(Turn(
+                id=old_tid, conversation_id=cid,
+                request_id="old-" + old_tid, state="partial"))
+        db.flush()
+        for old_tid, kind in ((first_tid, "plan_execute_first"),
+                              (second_tid, "plan_resume")):
+            db.add(PrimaryRouteEvidence(
+                turn_id=old_tid, conversation_id=cid,
+                proposal_id=str(uuid.uuid4()), schema_version="primary-route-v1",
+                route_kind=kind, semantic_attempts=1,
+                preturn_snapshot_digest=snapshot_digest(raw),
+                disposition="allow",
+                admission_reason="primary_v1_plan_execution_candidate"))
+        db.get(ConversationPlan, cid).snapshot = old_raw
+        db.get(PrimaryRouteEvidence, tid).preturn_snapshot_digest = (
+            snapshot_digest(old_raw))
+        db.get(Message, mid).content = "请调整第三步为整理统计结果"
+        for did, old_tid, sid, tool, args, receipt in (
+            (first_did, first_tid, 1, "mcp_reference_lookup", term, source_receipt),
+            (second_did, second_tid, 2, "text_stats", stat_args, stats_receipt),
+        ):
+            db.add(PlanToolDispatch(
+                id=did, conversation_id=cid, turn_id=old_tid,
+                step_id=sid, tool_name=tool, tool_version="1.0.0",
+                status="checkpointed", arguments_json=json.dumps(args),
+                receipt_json=json.dumps(receipt, ensure_ascii=False)))
+            db.add(AgentAttempt(
+                id=did, conversation_id=cid, turn_id=old_tid,
+                run_id=old_tid, step_id=sid, tool_name=tool,
+                tool_version="1.0.0", arguments_digest=arguments_digest(args),
+                status="succeeded",
+                result_projection=json.dumps(receipt, ensure_ascii=False)))
+        db.add(AgentTaskState(
+            conversation_id=cid, task_id=str(uuid.uuid4()),
+            revision=2, plan_revision=1, state="partial",
+            step_states=json.dumps([
+                {"id": 1, "status": "completed",
+                 "evidence_tool": "mcp_reference_lookup"},
+                {"id": 2, "status": "completed",
+                 "evidence_tool": "text_stats"},
+                {"id": 3, "status": "pending", "evidence_tool": None},
+            ], ensure_ascii=False)))
+    pending = [copy.deepcopy(plan["steps"][2])]
+    pending[0]["goal"] = "整理统计结果"
+    proposal = compile_revision_candidate(
+        expected_raw=old_raw, replacement_pending=pending,
+        current_user_message="请调整第三步为整理统计结果")
+    if tamper == "none":
+        with Session.begin() as db:
+            revised = commit_dependency_revision_in_session(
+                db, owner_id="owner-b2", conversation_id=cid,
+                turn_id=tid, request_id="req-b2", user_message_id=mid,
+                expected_raw=old_raw, proposal=proposal)
+        assert revised["revision"] == 2
+        assert revised["executions"] == plan["executions"]
+        with Session() as db:
+            assert db.get(AgentTaskState, cid).revision == 3
+    else:
+        with pytest.raises(DependencyPlanError,
+                           match="dependency_revision_lineage_untrusted"):
+            with Session.begin() as db:
+                commit_dependency_revision_in_session(
+                    db, owner_id="owner-b2", conversation_id=cid,
+                    turn_id=tid, request_id="req-b2", user_message_id=mid,
+                    expected_raw=old_raw, proposal=proposal)
+        with Session() as db:
+            assert db.get(ConversationPlan, cid).snapshot == old_raw
+            assert db.get(AgentTaskState, cid).revision == 2
