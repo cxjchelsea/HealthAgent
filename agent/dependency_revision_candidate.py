@@ -151,9 +151,18 @@ def compile_revision_candidate(
             _deny("dependency_invalid_schema")
         if any(x not in predecessor_by_id for x in parsed.depends_on):
             _deny("dependency_order_invalid")
-        changed_here = i >= start and raw != steps[i]
-        _validate_binding(parsed, predecessor_by_id,
-                          source_message=current_user_message if changed_here else None)
+        # Only a new or changed literal binding needs a fresh user quote.
+        # Renaming a pending goal does not invalidate an unchanged, previously
+        # grounded argument from the saved plan.
+        prior_bindings = steps[i]["argument_bindings"]
+        param = "term" if parsed.expected_tool == "mcp_reference_lookup" else "text"
+        new_binding = raw["argument_bindings"][param]
+        binding_changed = (i >= start and
+                           (raw["expected_tool"] != steps[i]["expected_tool"]
+                            or new_binding != prior_bindings.get(param)))
+        _validate_binding(
+            parsed, predecessor_by_id,
+            source_message=current_user_message if binding_changed else None)
         predecessor_by_id[parsed.id] = parsed
 
     # These refs are copied verbatim; this is only a tentative candidate.
