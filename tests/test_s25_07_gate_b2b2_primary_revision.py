@@ -103,6 +103,9 @@ def test_generation_schema_advertises_suffix_only_when_requested():
     schema = primary_route_generation_schema(
         MESSAGE, saved_plan_present=True, dependency_revision_enabled=True)
     assert "dependency_revision_steps" in schema["properties"]
+    assert "dependency_revision_steps" in schema["required"]
+    assert schema["properties"]["revision_old_argument"] == {"type": "null"}
+    assert schema["properties"]["revision_new_argument"] == {"type": "null"}
     assert "dependency_plan" not in schema["properties"]
     assert "DependencyStep" in schema["$defs"]
 
