@@ -19,6 +19,10 @@ def upgrade():
         batch.create_foreign_key(
             "fk_turn_user_message", "messages",
             ["user_message_id"], ["id"])
+        # Multiple legacy NULLs are allowed, but a concrete user message
+        # must never be reused by a second Turn.
+        batch.create_unique_constraint(
+            "uq_turn_user_message_id", ["user_message_id"])
 
 
 def downgrade():
