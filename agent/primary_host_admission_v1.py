@@ -41,6 +41,7 @@ class PrimaryHostDecision:
     execution_mode: Literal["none", "respond_only", "read_only"] = "none"
     plan_control: Literal["execute_first", "resume"] | None = None
     approved_revision_digest: str | None = None  # frozen with this Host decision
+    approved_request_digest: str | None = None  # B3b only: bind semantic Host decision to current User Message
 
 
 def admit_primary_route_v1(
@@ -50,9 +51,10 @@ def admit_primary_route_v1(
     kind = proposal.route_kind
 
     def decide(disposition, reason, mode="none", control=None,
-               approved_revision_digest=None):
+               approved_revision_digest=None, approved_request_digest=None):
         return PrimaryHostDecision(
-            disposition, reason, kind, mode, control, approved_revision_digest)
+            disposition, reason, kind, mode, control, approved_revision_digest,
+            approved_request_digest)
 
     if not facts.turn_created or not facts.guarded_mode:
         return decide("deny", "primary_v1_host_precondition_denied")
@@ -235,8 +237,12 @@ def admit_primary_route_v1(
                         return decide("deny", "dependency_revision_resume_not_ready")
                 except (TypeError, ValueError, KeyError, AttributeError):
                     return decide("deny", "dependency_revision_resume_snapshot_invalid")
-                return decide("allow", "dependency_revision_resume_prepare_only",
-                              "read_only", "resume")
+                import hashlib
+                return decide(
+                    "allow", "dependency_revision_resume_prepare_only",
+                    "read_only", "resume",
+                    approved_request_digest=hashlib.sha256(
+                        facts.current_request.encode("utf-8")).hexdigest())
             if kind not in {"plan_execute_first", "plan_resume"}:
                 return decide("deny", "dependency_control_not_supported")
             scope = "execute_first" if kind == "plan_execute_first" else "resume"
