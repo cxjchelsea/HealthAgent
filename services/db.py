@@ -106,7 +106,10 @@ class ConversationGoalState(Base):
 
 class Turn(Base):
     __tablename__="turns"
-    __table_args__=(UniqueConstraint("conversation_id", "request_id"),)
+    __table_args__=(
+        UniqueConstraint("conversation_id", "request_id"),
+        UniqueConstraint("user_message_id", name="uq_turn_user_message_id"),
+    )
     id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: str(uuid.uuid4()))
     conversation_id: Mapped[str] = mapped_column(ForeignKey("conversations.id"), index=True)
     request_id: Mapped[str] = mapped_column(String(120))
