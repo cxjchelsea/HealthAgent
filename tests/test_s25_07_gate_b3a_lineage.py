@@ -93,7 +93,7 @@ def seed(Session, cid, *, completed=False):
     candidate = compile_revision_candidate(
         expected_raw=raw, replacement_pending=pending,
         current_user_message=message).candidate
-    approved_turn, mid, task_id = _id(), _id(), _id()
+    approved_turn, mid, assistant_mid, task_id = _id(), _id(), _id(), _id()
     with Session.begin() as db:
         if completed:
             receipt = bounded_projection("mcp_reference_lookup", {
@@ -122,10 +122,13 @@ def seed(Session, cid, *, completed=False):
                 result_projection=json.dumps(receipt)))
         db.add(Message(id=mid, conversation_id=cid, role="user",
                        content=message, status="completed"))
+        db.add(Message(id=assistant_mid, conversation_id=cid, role="assistant",
+                       content="修订已保存", status="partial"))
         db.flush()
         db.add(Turn(id=approved_turn, conversation_id=cid,
                     request_id="revision-"+approved_turn,
-                    user_message_id=mid, state="partial"))
+                    user_message_id=mid, assistant_message_id=assistant_mid,
+                    state="partial"))
         db.flush()
         db.add(PrimaryRouteEvidence(
             turn_id=approved_turn, conversation_id=cid, proposal_id=_id(),
@@ -170,6 +173,8 @@ def test_authenticated_revision_lineage_proves_physical_prefix(store, completed)
     "approved_digest", "approval_disposition", "task_revision",
     "task_projection", "lineage_origin", "origin_dispatch",
     "extra_dispatch", "snapshot", "attempt_projection", "origin_host",
+    "revision_user_role", "revision_message_id", "revision_schema",
+    "revision_assistant", "origin_schema",
 ])
 def test_forged_or_stale_revision_lineage_rejected(store, tamper):
     Session, cid = store
@@ -193,6 +198,17 @@ def test_forged_or_stale_revision_lineage_rejected(store, tamper):
         elif tamper == "origin_host":
             db.get(PrimaryRouteEvidence,
                    db.get(PlanToolDispatch, did).turn_id).disposition = "deny"
+        elif tamper == "origin_schema":
+            db.get(PrimaryRouteEvidence,
+                   db.get(PlanToolDispatch, did).turn_id).schema_version = "legacy"
+        elif tamper == "revision_schema":
+            evidence.schema_version = "legacy"
+        elif tamper == "revision_user_role":
+            db.get(Message, db.get(Turn, tid).user_message_id).role = "assistant"
+        elif tamper == "revision_message_id":
+            db.get(Turn, tid).user_message_id = None
+        elif tamper == "revision_assistant":
+            db.get(Message, db.get(Turn, tid).assistant_message_id).status = "pending"
         elif tamper == "extra_dispatch":
             db.add(PlanToolDispatch(
                 id=_id(), conversation_id=cid, turn_id=tid, step_id=2,
