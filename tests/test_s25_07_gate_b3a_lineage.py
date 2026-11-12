@@ -436,6 +436,7 @@ def test_b3b_default_off_and_execute_first_never_get_revision2_authority(store):
     "wrong_step", "wrong_owner", "wrong_request", "claim_mismatch",
     "claim_missing", "receipt_changed", "attempt_changed", "host_denied",
     "plan_changed", "inherited_source_changed",
+    "user_message_changed", "host_request_digest_changed",
 ])
 def test_b3b_rejects_forged_lineage_or_claim(store, tamper):
     from agent.dependency_revision_host import bind_revised_plan_read
@@ -466,6 +467,12 @@ def test_b3b_rejects_forged_lineage_or_claim(store, tamper):
             db.get(ConversationPlan, cid).snapshot = "{}"
         elif tamper == "inherited_source_changed":
             db.get(PlanToolDispatch, source_id).arguments_json = '{"term":"MCP"}'
+        elif tamper == "user_message_changed":
+            bound_user = db.get(Turn, tid).user_message_id
+            db.get(Message, bound_user).content = "请完全执行其他内容"
+        elif tamper == "host_request_digest_changed":
+            from dataclasses import replace
+            decision = replace(decision, approved_request_digest="0"*64)
     with pytest.raises(DependencyPlanError):
         bind_revised_plan_read(
             Session, settings=_b3b_settings(), decision=decision,
@@ -493,3 +500,40 @@ def test_b3b_inert_prepared_result_is_rejected_by_v1_dispatch(store):
                 initial_turn_raw=raw)
         assert db.query(PlanToolDispatch).filter_by(
             conversation_id=cid).count() == 0
+
+
+
+def test_b3b_rejects_replaced_preturn_snapshot_even_with_live_claim(store):
+    from agent.dependency_revision_host import bind_revised_plan_read
+    Session, cid = store
+    raw, _, _ = seed(Session, cid, completed=False)
+    tid, text = _seed_revision_resume(Session, cid, raw)
+    with pytest.raises(DependencyPlanError,
+                       match="dependency_revision_resume_not_authorized"):
+        bind_revised_plan_read(
+            Session, settings=_b3b_settings(), decision=_b3b_host(raw, text),
+            owner_id="b3a-owner", conversation_id=cid, turn_id=tid,
+            request_id="b3b-"+tid, expected_raw=raw,
+            initial_turn_raw='{"not":"the-original-plan"}', step_id=1)
+    with Session() as db:
+        assert db.get(ConversationPlan, cid).snapshot == raw
+        assert db.query(PlanToolDispatch).filter_by(
+            conversation_id=cid).count() == 0
+
+
+def test_b3b_forged_host_decision_cannot_replay_different_request(store):
+    from dataclasses import replace
+    from agent.dependency_revision_host import bind_revised_plan_read
+    Session, cid = store
+    raw, _, _ = seed(Session, cid, completed=True)
+    tid, text = _seed_revision_resume(Session, cid, raw)
+    decision = _b3b_host(raw, text)
+    assert decision.approved_request_digest is not None
+    modified = replace(decision, approved_request_digest=None)
+    with pytest.raises(DependencyPlanError,
+                       match="dependency_revision_resume_identity_denied"):
+        bind_revised_plan_read(
+            Session, settings=_b3b_settings(), decision=modified,
+            owner_id="b3a-owner", conversation_id=cid, turn_id=tid,
+            request_id="b3b-"+tid, expected_raw=raw,
+            initial_turn_raw=raw, step_id=2)
