@@ -1774,15 +1774,15 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
             failure_code = ("plan_execution_outcome_unknown"
                             if settings.route_admission_mode == "guarded"
                             and execution_claim_acquired else "agent_exception")
+        revision_terminal_attempted = bool(
+            result is not None and result.get("termination_reason")
+                == "dependency_revision_admitted_not_saved")
         # Atomic local DB commit: never expose a successful message separately
         # from its corresponding plan checkpoint and turn terminal state.
         # External tool effects remain outside this transaction.
         try:
             with Session.begin() as db:
-                is_dependency_revision_result = (
-                    result is not None
-                    and result.get("termination_reason")
-                        == "dependency_revision_admitted_not_saved")
+                is_dependency_revision_result = revision_terminal_attempted
                 if dependency_turn_mode or is_dependency_revision_result:
                     # Recovery and every dependency checkpoint lock Plan ->
                     # Claim before Dispatch/Fence. Do not first lock a Turn
@@ -2029,10 +2029,7 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                 except Exception:
                     log.exception("dependency create Turn failure cleanup failed turn=%s",
                                   turn_id)
-            elif (result is not None
-                  and result.get("termination_reason") in {
-                      "dependency_revision_admitted_not_saved",
-                      "dependency_revision_saved_pending_execution"}):
+            elif revision_terminal_attempted:
                 # Unknown COMMIT result must never be presented as saved.
                 # Close only this still-running Turn; do not attempt to
                 # revert a possibly committed Plan or TaskState.
