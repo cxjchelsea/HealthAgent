@@ -1,6 +1,8 @@
 # S25-07 Gate B3c — revision-2 bounded Dispatch/Checkpoint design contract (DRAFT)
 
-**Baseline:** `main@b9b9ed1481b2ff00f3bce56551b26cc38277c53d` (PR #57 merged).  
+**Baseline:** `main@b9b9ed1481b2ff00f3bce56551b26cc38277c53d` (PR #57 merged).
+
+> **Review supersession:** the initial draft's universal lock order in I04 and open H1–H5 are superseded by `S25-07-GATE-B3C-INDEPENDENT-DESIGN-REVIEW-20261112.md` and the more precise `S25-07-GATE-B3C1-PREIMPLEMENTATION-SPEC-20261112.md`. Do not implement I04's stated lock order literally: actual existing receipt/checkpoint paths differ. The review's R1–R7 must be observed.  
 **Status:** design only, no runtime authorization, no feature enabled, no production readiness. Review and explicit implementation authorization required.
 
 ## 1. Objective and exclusions
