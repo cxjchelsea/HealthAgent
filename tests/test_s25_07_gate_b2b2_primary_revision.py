@@ -147,6 +147,12 @@ def test_model_primary_one_call_and_saved_parent_bound():
             schema = kwargs["response_schema"]
             assert "dependency_revision_steps" in schema["properties"]
             assert "dependency_plan" not in schema["properties"]
+            model_context = json.loads(kwargs["messages"][-1]["content"])
+            assert [item["step_number"]
+                    for item in model_context["saved_dependency_pending_steps"]] == [1, 2]
+            assert model_context["saved_dependency_pending_steps"][1]["step"][
+                "argument_bindings"]["text"]["kind"] == "observation_ref"
+            assert "executions" not in kwargs["messages"][-1]["content"]
             return json.dumps(signal_payload(), ensure_ascii=False)
 
     import asyncio
