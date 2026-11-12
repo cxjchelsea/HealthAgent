@@ -71,6 +71,7 @@ def bind_revised_plan_read(
             or not all(type(x) is str and x.strip() for x in (
                 owner_id, conversation_id, turn_id, request_id,
                 expected_raw, initial_turn_raw))
+            or initial_turn_raw != expected_raw
             or type(step_id) is not int or step_id < 1):
         _deny("dependency_revision_resume_not_authorized")
     try:
@@ -107,6 +108,9 @@ def bind_revised_plan_read(
                 or turn.request_id != request_id or turn.state != "running"
                 or user is None or user.conversation_id != conversation_id
                 or user.role != "user" or user.status != "completed"
+                or decision.approved_request_digest is None
+                or decision.approved_request_digest != hashlib.sha256(
+                    user.content.encode("utf-8")).hexdigest()
                 or saved is None or saved.snapshot != expected_raw
                 or claim is None or claim.turn_id != turn_id
                 or claim.snapshot != expected_raw
