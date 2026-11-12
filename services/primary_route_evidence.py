@@ -8,7 +8,7 @@ import uuid
 
 from sqlalchemy import select
 
-from services.db import PrimaryRouteEvidence, Turn
+from services.db import Message, PrimaryRouteEvidence, Turn
 
 
 def snapshot_digest(raw: str | None) -> str:
