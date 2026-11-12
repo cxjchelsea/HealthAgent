@@ -215,6 +215,11 @@ def commit_dependency_revision_in_session(
     ]
     old_projection_raw = json.dumps(old_projection, ensure_ascii=False)
     new_state = "partial" if completed else "planned"
+    # A completed prefix was checkpointed through S25-06's atomic
+    # AgentTaskState projection. If it is missing, do not silently recreate
+    # task evidence for historical tool calls during a revision.
+    if completed and task is None:
+        _deny("dependency_revision_task_conflict")
     if task is not None:
         if (task.plan_revision != 1
                 or task.step_states != old_projection_raw
