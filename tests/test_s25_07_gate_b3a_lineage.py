@@ -41,6 +41,15 @@ def _parent(completed=False):
                           "field": "definition"}}},
         ], "executions": {},
     }
+    if completed == 2:
+        result["steps"].append({
+            "id": 3, "goal": "查询 MCP", "status": "pending",
+            "depends_on": [], "expected_tool": "mcp_reference_lookup",
+            "tool_version": "1.0.0", "argument_bindings": {
+                "term": {"kind": "literal", "value": "MCP",
+                         "source_quote": "MCP"}}})
+        result["next_step_id"] = 4
+        result["steps"][1]["status"] = "completed"
     if completed:
         result["steps"][0]["status"] = "completed"
     return result
@@ -85,11 +94,25 @@ def seed(Session, cid, *, completed=False):
             "resolved_arguments_digest": arguments_digest(args),
             "source_evidence_refs": [],
         }
+    if completed == 2:
+        origin_stats_turn, stats_dispatch_id = _id(), _id()
+        definition = "retrieval augmented generation"
+        stats_args = {"text": definition}
+        parent["executions"]["2"] = {
+            "step_id": 2, "plan_revision": 1,
+            "dispatch_id": stats_dispatch_id, "tool_name": "text_stats",
+            "tool_version": "1.0.0",
+            "resolved_arguments_digest": arguments_digest(stats_args),
+            "source_evidence_refs": [{"source_dispatch_id": dispatch_id}],
+        }
     raw = json.dumps(parent, ensure_ascii=False)
-    message = "请将第二步说明改为统计定义字符数，不要执行"
+    message = ("请将第三步目标改为查询 MCP 文档，不要执行"
+               if completed == 2 else
+               "请将第二步说明改为统计定义字符数，不要执行")
     pending = copy.deepcopy([
         s for s in parent["steps"] if s["status"] == "pending"])
-    pending[-1]["goal"] = "统计定义字符数"
+    pending[-1]["goal"] = ("查询 MCP 文档" if completed == 2
+                            else "统计定义字符数")
     candidate = compile_revision_candidate(
         expected_raw=raw, replacement_pending=pending,
         current_user_message=message).candidate
@@ -120,6 +143,34 @@ def seed(Session, cid, *, completed=False):
                 tool_version="1.0.0", arguments_digest=arguments_digest(
                     {"term":"RAG"}), status="succeeded",
                 result_projection=json.dumps(receipt)))
+            if completed == 2:
+                stats_receipt = bounded_projection("text_stats", {
+                    "ok": True, "characters": len(definition),
+                    "words": len(definition.split())})
+                db.add(Turn(id=origin_stats_turn, conversation_id=cid,
+                            request_id="origin-"+origin_stats_turn,
+                            state="partial"))
+                db.flush()
+                db.add(PrimaryRouteEvidence(
+                    turn_id=origin_stats_turn, conversation_id=cid,
+                    proposal_id=_id(), schema_version="primary-route-v1",
+                    route_kind="plan_resume", semantic_attempts=1,
+                    preturn_snapshot_digest="c"*64, disposition="allow",
+                    admission_reason="primary_v1_plan_execution_candidate"))
+                db.add(PlanToolDispatch(
+                    id=stats_dispatch_id, conversation_id=cid,
+                    turn_id=origin_stats_turn, step_id=2,
+                    tool_name="text_stats", tool_version="1.0.0",
+                    arguments_json=json.dumps(stats_args),
+                    status="checkpointed",
+                    receipt_json=json.dumps(stats_receipt)))
+                db.add(AgentAttempt(
+                    id=stats_dispatch_id, conversation_id=cid,
+                    turn_id=origin_stats_turn, run_id=origin_stats_turn,
+                    step_id=2, tool_name="text_stats", tool_version="1.0.0",
+                    arguments_digest=arguments_digest(stats_args),
+                    status="succeeded",
+                    result_projection=json.dumps(stats_receipt)))
         db.add(Message(id=mid, conversation_id=cid, role="user",
                        content=message, status="completed"))
         db.add(Message(id=assistant_mid, conversation_id=cid, role="assistant",
