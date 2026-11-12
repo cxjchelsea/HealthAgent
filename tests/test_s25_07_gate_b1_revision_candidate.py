@@ -163,3 +163,17 @@ def test_revised_candidate_never_rewrites_original_source_input():
     assert outcome.candidate["steps"][0]["argument_bindings"] == (
         parent["steps"][0]["argument_bindings"])
     assert outcome.candidate["executions"]["1"]["plan_revision"] == 1
+
+
+def test_goal_only_change_keeps_previously_grounded_literal():
+    parent = _parent(completed=False)
+    pending = copy.deepcopy(parent["steps"])
+    pending[0]["goal"] = "仅修改第一步显示名称"
+    candidate = compile_revision_candidate(
+        expected_raw=json.dumps(parent, ensure_ascii=False),
+        replacement_pending=pending,
+        current_user_message="只修改第一步名称，不修改查询参数",
+    ).candidate
+    assert candidate["steps"][0]["goal"] == "仅修改第一步显示名称"
+    assert candidate["steps"][0]["argument_bindings"] == (
+        parent["steps"][0]["argument_bindings"])
