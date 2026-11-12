@@ -226,3 +226,41 @@ def test_unconfirmed_terminal_failure_never_claims_saved_revision(
         assert turn.failure_code == "dependency_revision_commit_unconfirmed"
         assert response.status == "partial"
         assert "已原子保存" not in response.content
+
+
+def test_host_frozen_digest_prevents_mutation_before_admission_record(
+        sandbox):
+    client, Session, cid, raw = sandbox
+    from services.db import Message, Turn
+    from agent.primary_host_admission_v1 import (
+        PrimaryHostFacts, admit_primary_route_v1,
+    )
+    from services.primary_route_evidence import record_primary_admission
+    proposal = bind(raw=raw)
+    decision = admit_primary_route_v1(proposal, PrimaryHostFacts(
+        checkpoint=parent(), checkpoint_raw=raw,
+        pending_action=None, pending_origin_verified=False,
+        guarded_mode=True, turn_created=True,
+        current_request=MESSAGE, dependency_plan_enabled=True,
+        dependency_revision_enabled=True))
+    assert decision.disposition == "allow"
+    assert decision.approved_revision_digest is not None
+    tid, mid = str(uuid.uuid4()), str(uuid.uuid4())
+    with Session.begin() as db:
+        db.add(Message(id=mid, conversation_id=cid, role="user",
+                       content=MESSAGE, status="completed"))
+        db.flush()
+        db.add(Turn(id=tid, conversation_id=cid, request_id="before-record-1",
+                    state="running", user_message_id=mid))
+    # Both replacement goals are user-grounded; a changed proposal must
+    # still never inherit the first candidate's Host authorization.
+    proposal.dependency_revision_steps[1].goal = "第二步的说明"
+    with pytest.raises(ValueError,
+                       match="primary_revision_candidate_changed_after_host"):
+        record_primary_admission(
+            session_factory=Session, conversation_id=cid, turn_id=tid,
+            preturn_plan_raw=raw, proposal=proposal, decision=decision,
+            semantic_attempts=1)
+    with Session() as db:
+        assert db.get(PrimaryRouteEvidence, tid) is None
+        assert db.get(ConversationPlan, cid).snapshot == raw
