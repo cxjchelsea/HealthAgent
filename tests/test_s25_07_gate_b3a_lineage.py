@@ -471,3 +471,24 @@ def test_b3b_rejects_forged_lineage_or_claim(store, tamper):
             owner_id=owner, conversation_id=cid, turn_id=tid,
             request_id=request, expected_raw=raw, initial_turn_raw=raw,
             step_id=step)
+
+
+def test_b3b_inert_prepared_result_is_rejected_by_v1_dispatch(store):
+    from agent.dependency_revision_host import bind_revised_plan_read
+    from services.dependency_dispatch import begin_dependency_dispatch_in_session
+    Session, cid = store
+    raw, _, _ = seed(Session, cid, completed=False)
+    tid, text = _seed_revision_resume(Session, cid, raw)
+    prepared = bind_revised_plan_read(
+        Session, settings=_b3b_settings(), decision=_b3b_host(raw, text),
+        owner_id="b3a-owner", conversation_id=cid, turn_id=tid,
+        request_id="b3b-"+tid, expected_raw=raw, initial_turn_raw=raw,
+        step_id=1)
+    with Session.begin() as db:
+        with pytest.raises(DependencyPlanError,
+                           match="dependency_execution_binding_invalid"):
+            begin_dependency_dispatch_in_session(
+                db, binding=prepared, expected_raw=raw,
+                initial_turn_raw=raw)
+        assert db.query(PlanToolDispatch).filter_by(
+            conversation_id=cid).count() == 0
