@@ -290,3 +290,24 @@ def test_original_read_executor_still_does_not_accept_revision2(store):
     raw, _, _ = seed(Session, cid)
     with pytest.raises(DependencyPlanError):
         _step_for_read(json.loads(raw), 1)
+
+
+def test_inherited_two_completed_steps_keep_original_revision1_evidence(store):
+    Session, cid = store
+    raw, tid, did = seed(Session, cid, completed=2)
+    proof = verify_revised_lineage(
+        Session, owner_id="b3a-owner", conversation_id=cid,
+        expected_raw=raw)
+    assert proof.preserved_step_ids == (1, 2)
+    assert proof.next_step_id == 3
+    with Session.begin() as db:
+        stats = db.query(PlanToolDispatch).filter_by(
+            conversation_id=cid, step_id=2).one()
+        original = json.loads(stats.receipt_json)
+        original["characters"] += 1
+        stats.receipt_json = json.dumps(original)
+    with pytest.raises(DependencyPlanError,
+                       match="dependency_revision_lineage_untrusted"):
+        verify_revised_lineage(
+            Session, owner_id="b3a-owner", conversation_id=cid,
+            expected_raw=raw)
