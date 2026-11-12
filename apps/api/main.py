@@ -37,7 +37,10 @@ from agent.primary_route_v1 import PrimaryRouteRejected, propose_primary_route
 from agent.primary_route_v1_canary import admit_v1_canary
 from agent.primary_host_admission_v1 import PrimaryHostFacts, admit_primary_route_v1
 from agent.dependency_plan_runner import run_dependency_read_scope
-from agent.dependency_plan_schema import describe_dependency_plan_for_review
+from agent.dependency_plan_schema import (
+    DependencyPlanError, describe_dependency_plan_for_review)
+from agent.dependency_revision_candidate import compile_revision_candidate
+from services.dependency_revision_commit import commit_dependency_revision_in_session
 from services.dependency_fencing import revoke_dependency_fence_in_session
 from agent.tool_registry import ReadToolRuntime
 from agent.host_plan_execution_binding import host_plan_binding_matches
@@ -1776,7 +1779,11 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
         # External tool effects remain outside this transaction.
         try:
             with Session.begin() as db:
-                if dependency_turn_mode:
+                is_dependency_revision_result = (
+                    result is not None
+                    and result.get("termination_reason")
+                        == "dependency_revision_admitted_not_saved")
+                if dependency_turn_mode or is_dependency_revision_result:
                     # Recovery and every dependency checkpoint lock Plan ->
                     # Claim before Dispatch/Fence. Do not first lock a Turn
                     # or Fence here and then wait on the Claim: that would
@@ -1792,6 +1799,54 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                 turn = db.get(Turn, turn_id)
                 if response is None or turn is None or turn.state != "running":
                     raise RuntimeError("turn_finalization_conflict")
+                if is_dependency_revision_result:
+                    # B2b3: the approval receipt has already been committed,
+                    # but it is not a write by itself. B2a re-fetches the
+                    # exact current User Message and rechecks the durable
+                    # SHA of the Host-approved candidate under the Plan lock.
+                    # Savepoint ensures any failed Plan/Task/Transition write
+                    # is rolled back before terminalizing this Turn as denied.
+                    try:
+                        revision_pending = [
+                            step.model_dump()
+                            for step in primary_proposal.dependency_revision_steps]
+                        revision = compile_revision_candidate(
+                            expected_raw=preturn_plan_raw,
+                            replacement_pending=revision_pending,
+                            current_user_message=body.content)
+                        with db.begin_nested():
+                            committed = commit_dependency_revision_in_session(
+                                db, owner_id=str(uid), conversation_id=cid,
+                                turn_id=turn_id,
+                                request_id=body.client_request_id,
+                                user_message_id=user_message.id,
+                                expected_raw=preturn_plan_raw, proposal=revision)
+                    except DependencyPlanError as exc:
+                        reason = exc.code
+                        failure_code = reason
+                        answer = ("修订未保存：原计划可能已变化，或候选未通过"
+                                  "持久化证据与并发校验。未执行工具。")
+                        status = "partial"
+                        result = {
+                            "run_id": turn_id, "status": status,
+                            "termination_reason": reason, "answer": answer,
+                            "trace": [{"step": 0,
+                                       "type": "dependency_revision_denied"}],
+                            "steps": 0}
+                    else:
+                        answer = "计划修订已原子保存；尚未执行任何步骤。"
+                        status = "partial"
+                        failure_code = None
+                        result = {
+                            "run_id": turn_id, "status": status,
+                            "termination_reason": "dependency_revision_saved_pending_execution",
+                            "answer": answer,
+                            "trace": [{"step": 0,
+                                       "type": "dependency_revision_saved"}],
+                            "steps": 0, "plan": committed["steps"],
+                            "plan_revision": committed["revision"],
+                            "plan_events": [{"event": "plan_revised",
+                                             "revision": committed["revision"]}]}
                 if (status == "completed" and result
                         and result.get("plan_cancellation_requested")):
                     try:
