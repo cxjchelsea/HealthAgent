@@ -164,8 +164,16 @@ def admit_primary_route_v1(
                     idx = proposal.step_number - 1
                     if (idx < 0 or idx >= len(steps)
                             or steps[idx]["status"] != "pending"
-                            or steps[idx] == compiled.candidate["steps"][idx]):
+                            or steps[idx] == compiled.candidate["steps"][idx]
+                            or any(before != after for i, (before, after)
+                                   in enumerate(zip(steps, compiled.candidate["steps"]))
+                                   if i != idx)):
                         return decide("deny", "dependency_revision_target_unbound")
+                    proposed_goal = compiled.candidate["steps"][idx]["goal"]
+                    if (proposed_goal != steps[idx]["goal"]
+                            and proposed_goal.casefold()
+                                not in facts.current_request.casefold()):
+                        return decide("deny", "dependency_revision_goal_unbound")
                 except (DependencyPlanError, ValueError, TypeError, KeyError):
                     return decide("deny", "dependency_revision_host_denied")
                 return decide("allow", "dependency_revision_candidate")
