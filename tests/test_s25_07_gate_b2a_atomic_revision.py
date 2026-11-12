@@ -646,3 +646,34 @@ def test_two_step_checkpointed_source_chain_is_rebound(seeded, tamper):
         with Session() as db:
             assert db.get(ConversationPlan, cid).snapshot == old_raw
             assert db.get(AgentTaskState, cid).revision == 2
+
+
+def test_revision_requires_exact_turn_user_message_binding(seeded):
+    Session, cid, tid, mid, raw, proposal_for, commit = seeded
+    with Session.begin() as db:
+        db.get(Turn, tid).user_message_id = None
+    with pytest.raises(DependencyPlanError,
+                       match="dependency_revision_host_denied"):
+        commit()
+    with Session() as db:
+        assert db.get(ConversationPlan, cid).snapshot == raw
+        assert db.get(AgentTaskState, cid) is None
+
+
+def test_old_same_conversation_user_message_is_not_current_turn(seeded):
+    Session, cid, tid, mid, raw, proposal_for, commit = seeded
+    old_mid = str(uuid.uuid4())
+    with Session.begin() as db:
+        db.add(Message(id=old_mid, conversation_id=cid, role="user",
+                       content="请将第一步改为查询 MCP，第二步保持不变"))
+    proposal = proposal_for()
+    with pytest.raises(DependencyPlanError,
+                       match="dependency_revision_host_denied"):
+        with Session.begin() as db:
+            commit_dependency_revision_in_session(
+                db, owner_id="owner-b2", conversation_id=cid,
+                turn_id=tid, request_id="req-b2", user_message_id=old_mid,
+                expected_raw=raw, proposal=proposal)
+    with Session() as db:
+        assert db.get(ConversationPlan, cid).snapshot == raw
+        assert db.get(AgentTaskState, cid) is None
