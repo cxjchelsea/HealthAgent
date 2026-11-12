@@ -186,7 +186,11 @@ def admit_primary_route_v1(
                                 and revised_step["argument_bindings"]["text"]["kind"]
                                     != "observation_ref"):
                             return decide("deny", "dependency_revision_binding_not_executable")
-                except (DependencyPlanError, ValueError, TypeError, KeyError):
+                except (DependencyPlanError, ValueError, TypeError, KeyError,
+                        AttributeError, IndexError):
+                    # A forged/mutated BoundPrimaryProposal may hold the wrong
+                    # Python type despite its originally validated model.
+                    # Host must deny without emitting an unhandled 500.
                     return decide("deny", "dependency_revision_host_denied")
                 return decide("allow", "dependency_revision_candidate")
             if kind not in {"plan_execute_first", "plan_resume"}:
