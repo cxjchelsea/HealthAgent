@@ -8,6 +8,7 @@
 - `record_primary_admission` persists the SHA-256 of the deterministic B1 candidate (canonical sorted JSON) only after a genuine `allow/dependency_revision_candidate` Host outcome. Candidate is rebuilt from the current DB-bound user message and the exact pre-Turn snapshot. The digest is written once with the existing admission evidence.
 - `commit_dependency_revision_in_session` re-checks all existing B2a locks / trusted completed prefix and deterministically recompiles the candidate. It requires the **exact immutable approved digest** before CAS; any NULL or differing candidate is denied.
 - The official HTTP Primary route does not call tools. Its initially staged `dependency_revision_admitted_not_saved` internal result is converted **inside the terminal Turn transaction** to either `dependency_revision_saved_pending_execution` with Plan revision 2 or a fail-closed partial reason. A SAVEPOINT isolates B2a Plan/TaskState/Transition side effects; Turn/assistant response status are committed together, never claiming a saved plan after failure.
+- For unexpected storage failures or an unconfirmed terminal COMMIT, HTTP returns 503 and attempts to mark only the still-running Turn/assistant Message as partial with `dependency_revision_commit_unconfirmed`; it never claims a revision was saved or deletes a potentially committed Plan. The caller must re-read Plan state before retrying.
 - All revision 2 plans keep executor `dependency-plan-read-replan-v1` deliberately non-executable. No B3 resume or Gate C retry.
 
 ## Required tests
