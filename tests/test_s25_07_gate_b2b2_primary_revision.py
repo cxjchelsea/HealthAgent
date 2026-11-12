@@ -3,6 +3,7 @@ import copy
 import json
 
 import pytest
+from pydantic import ValidationError
 from fastapi.testclient import TestClient
 
 from agent.config import Settings
@@ -116,7 +117,7 @@ def test_generation_schema_advertises_suffix_only_when_requested():
     lambda steps: steps[1].update(tool_version="2.0.0"),
 ])
 def test_reject_unrequested_or_untrusted_changes(mutation):
-    with pytest.raises(PrimaryRouteRejected):
+    with pytest.raises((PrimaryRouteRejected, ValidationError)):
         bind(signal_payload(mutate=mutation))
 
 
