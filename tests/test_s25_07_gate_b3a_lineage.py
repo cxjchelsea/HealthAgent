@@ -306,6 +306,10 @@ def test_inherited_two_completed_steps_keep_original_revision1_evidence(store):
         original = json.loads(stats.receipt_json)
         original["characters"] += 1
         stats.receipt_json = json.dumps(original)
+        # Keep Attempt projection consistent with the forged receipt: the
+        # verifier must independently reject the impossible character count.
+        db.get(AgentAttempt, stats.id).result_projection = json.dumps(
+            bounded_projection("text_stats", original))
     with pytest.raises(DependencyPlanError,
                        match="dependency_revision_lineage_untrusted"):
         verify_revised_lineage(
