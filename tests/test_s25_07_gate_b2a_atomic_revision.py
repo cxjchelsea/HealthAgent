@@ -215,3 +215,65 @@ def test_s25_06_text_stats_new_literal_is_not_committable(seeded):
         commit(proposal=proposal)
     with Session() as db:
         assert db.get(ConversationPlan, cid).snapshot == raw
+
+
+def test_verified_completed_prefix_is_preserved_and_tamper_rolls_back(seeded):
+    Session, cid, tid, mid, raw, proposal_for, commit = seeded
+    data = json.loads(raw)
+    data["steps"][0]["status"] = "completed"
+    did = str(uuid.uuid4())
+    args = {"term": "RAG"}
+    receipt = bounded_projection("mcp_reference_lookup", {
+        "ok": True, "definition": "retrieval augmented generation",
+        "source": "trusted-reference"})
+    data["executions"]["1"] = {
+        "step_id": 1, "plan_revision": 1,
+        "dispatch_id": did, "tool_name": "mcp_reference_lookup",
+        "tool_version": "1.0.0",
+        "resolved_arguments_digest": arguments_digest(args),
+        "source_evidence_refs": [],
+    }
+    completed_raw = json.dumps(data, ensure_ascii=False)
+    with Session.begin() as db:
+        db.get(ConversationPlan, cid).snapshot = completed_raw
+        db.get(PrimaryRouteEvidence, tid).preturn_snapshot_digest = (
+            snapshot_digest(completed_raw))
+        db.get(Message, mid).content = "请调整第二步的统计说明"
+        db.add(PlanToolDispatch(
+            id=did, conversation_id=cid, turn_id=tid,
+            step_id=1, tool_name="mcp_reference_lookup",
+            tool_version="1.0.0", status="checkpointed",
+            arguments_json=json.dumps(args),
+            receipt_json=json.dumps(receipt, ensure_ascii=False)))
+        db.add(AgentAttempt(
+            id=did, conversation_id=cid, turn_id=tid, run_id=tid,
+            step_id=1, tool_name="mcp_reference_lookup",
+            tool_version="1.0.0", arguments_digest=arguments_digest(args),
+            status="succeeded",
+            result_projection=json.dumps(receipt, ensure_ascii=False)))
+        projection = [
+            {"id": 1, "status": "completed", "evidence_tool": "mcp_reference_lookup"},
+            {"id": 2, "status": "pending", "evidence_tool": None},
+        ]
+        db.add(AgentTaskState(
+            conversation_id=cid, task_id=str(uuid.uuid4()),
+            revision=1, plan_revision=1, state="partial",
+            step_states=json.dumps(projection, ensure_ascii=False)))
+    pending = [copy.deepcopy(data["steps"][1])]
+    pending[0]["goal"] = "调整统计说明"
+    proposal = compile_revision_candidate(
+        expected_raw=completed_raw, replacement_pending=pending,
+        current_user_message="请调整第二步的统计说明")
+    with Session.begin() as db:
+        saved = commit_dependency_revision_in_session(
+            db, owner_id="owner-b2", conversation_id=cid,
+            turn_id=tid, request_id="req-b2", user_message_id=mid,
+            expected_raw=completed_raw, proposal=proposal)
+    assert saved["steps"][0] == data["steps"][0]
+    assert saved["executions"]["1"] == data["executions"]["1"]
+    assert saved["lineage"]["origin_refs"][0]["dispatch_id"] == did
+    with Session() as db:
+        assert db.get(AgentTaskState, cid).state == "partial"
+        assert db.get(AgentTaskState, cid).plan_revision == 2
+        assert db.get(AgentAttempt, did).status == "succeeded"
+        assert db.get(PlanToolDispatch, did).status == "checkpointed"
