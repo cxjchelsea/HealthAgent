@@ -112,6 +112,9 @@ class Turn(Base):
     request_id: Mapped[str] = mapped_column(String(120))
     state: Mapped[str] = mapped_column(String(20), default="running")
     assistant_message_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    # B2b1: immutable binding for new Turns. Legacy Turns remain NULL.
+    user_message_id: Mapped[str | None] = mapped_column(
+        ForeignKey("messages.id"), nullable=True)
     input_chars: Mapped[int] = mapped_column(Integer, default=0)
     output_chars: Mapped[int] = mapped_column(Integer, default=0)
     duration_ms: Mapped[int] = mapped_column(Integer, default=0)
