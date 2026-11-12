@@ -209,3 +209,30 @@ def test_http_revision_admission_durable_but_parent_unchanged(tmp_path, monkeypa
 def test_host_refuses_fake_proposal_even_when_primary_flag_on(tmp_path):
     forged = bind()
     assert host(forged, raw=json.dumps({**parent(), "revision": 2})).disposition == "deny"
+
+
+def test_host_denies_text_stats_literal_even_if_user_quoted():
+    request = MESSAGE
+    payload = signal_payload()
+    payload["dependency_revision_steps"][1]["argument_bindings"]["text"] = {
+        "kind": "literal", "value": "字符数", "source_quote": "字符数"}
+    proposed = bind_route_signal(
+        RouteSignal.model_validate(payload), request,
+        saved_plan_present=True, pending_action=None,
+        saved_step_count=2, dependency_revision_enabled=True,
+        saved_plan_raw=raw_parent())
+    result = host(proposed)
+    assert (result.disposition, result.reason) == (
+        "deny", "dependency_revision_binding_not_executable")
+
+
+def test_host_denies_unbound_revision_under_disabled_flag_even_if_forged():
+    forged = bind()
+    result = admit_primary_route_v1(forged, PrimaryHostFacts(
+        checkpoint=parent(), checkpoint_raw=raw_parent(),
+        pending_action=None, pending_origin_verified=False,
+        guarded_mode=True, turn_created=True,
+        current_request=MESSAGE, dependency_plan_enabled=True,
+        dependency_revision_enabled=False))
+    assert (result.disposition, result.reason) == (
+        "deny", "dependency_revision_host_denied")
