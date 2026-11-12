@@ -482,6 +482,9 @@ def test_missing_task_projection_blocks_completed_prefix_revision(seeded):
     proposal = compile_revision_candidate(
         expected_raw=completed_raw, replacement_pending=pending,
         current_user_message="调整第二步统计说明")
+    with Session.begin() as db:
+        db.get(PrimaryRouteEvidence, tid).approved_revision_digest = (
+            revision_fingerprint(proposal.candidate))
     with pytest.raises(DependencyPlanError,
                        match="dependency_revision_task_conflict"):
         with Session.begin() as db:
