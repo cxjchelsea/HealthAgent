@@ -70,6 +70,7 @@ def record_primary_admission(*, session_factory, conversation_id: str,
         "route_kind": proposal.route_kind if proposal else None,
         "semantic_attempts": semantic_attempts,
         "preturn_snapshot_digest": snapshot_digest(preturn_plan_raw),
+        "approved_revision_digest": approved_revision_digest,
         "disposition": decision.disposition if decision else "refused",
         "admission_reason": (decision.reason if decision else refusal_reason),
     }
