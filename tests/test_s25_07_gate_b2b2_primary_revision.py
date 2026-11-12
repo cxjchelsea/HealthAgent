@@ -297,3 +297,13 @@ def test_host_rejects_forged_source_span_offsets():
     assert (result.disposition, result.reason) == (
         "deny", "dependency_revision_evidence_mismatch")
     assert host(proposal).disposition == "allow"
+
+
+def test_host_denies_mutated_non_step_payload_without_unhandled_exception():
+    """Even post-validation Python mutation cannot bypass independent Host."""
+    forged = bind()
+    forged.dependency_revision_steps[1] = {
+        "id": 2, "status": "pending", "goal": GOAL}
+    decision = host(forged)
+    assert (decision.disposition, decision.reason) == (
+        "deny", "dependency_revision_host_denied")
