@@ -7,8 +7,9 @@ def test_fresh_migration(tmp_path):
     assert migrate(url) == "fresh"
     engine, _ = database(url)
     with engine.connect() as connection:
-        assert connection.execute(text("select version_num from alembic_version")).scalar() == "0020_dependency_fence"
+        assert connection.execute(text("select version_num from alembic_version")).scalar() == "0021_turn_user_message"
         inspector = inspect(engine)
+        assert "user_message_id" in {col["name"] for col in inspector.get_columns("turns")}
         assert set(Base.metadata.tables).issubset(set(inspector.get_table_names()))
         assert "tool_version" in {c["name"] for c in inspector.get_columns("agent_attempts")}
         assert "tool_version" in {c["name"] for c in inspector.get_columns("plan_tool_dispatches")}
