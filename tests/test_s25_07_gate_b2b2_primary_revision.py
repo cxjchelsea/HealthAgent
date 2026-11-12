@@ -237,3 +237,42 @@ def test_host_denies_unbound_revision_under_disabled_flag_even_if_forged():
         dependency_revision_enabled=False))
     assert (result.disposition, result.reason) == (
         "deny", "dependency_revision_host_denied")
+
+
+def test_http_default_off_forged_revision_cannot_change_plan(tmp_path, monkeypatch):
+    cfg = Settings(
+        database_url=f"sqlite:///{tmp_path / 'b2b2-disabled.db'}",
+        model_provider="fake", routing_profile="unified",
+        primary_route_v1_canary_enabled=True,
+        s25_06_dependency_plan_enabled=True,
+        s25_07_dependency_revision_proposal_enabled=False)
+    async def forged_model(*args, **kwargs):
+        assert kwargs["dependency_revision_enabled"] is False
+        return bind()
+
+    monkeypatch.setattr("apps.api.main.propose_primary_route", forged_model)
+    with TestClient(create_app(cfg)) as client:
+        cid = client.post("/conversations").json()["id"]
+        _, Session = database(cfg.database_url)
+        raw = raw_parent()
+        with Session.begin() as db:
+            db.add(ConversationPlan(conversation_id=cid, snapshot=raw))
+        result = client.post(f"/conversations/{cid}/agent/messages", json={
+            "content": MESSAGE, "client_request_id": "b2b2-denied-001"})
+        assert result.status_code == 200
+        body = result.json()
+        assert body["status"] == "partial"
+        assert body["termination_reason"] == "dependency_control_not_supported"
+        with Session() as db:
+            assert db.get(ConversationPlan, cid).snapshot == raw
+            assert db.get(PrimaryRouteEvidence, body["turn_id"]).disposition == "deny"
+            assert db.query(PlanToolDispatch).filter_by(conversation_id=cid).count() == 0
+
+
+def test_host_denies_forged_mutation_after_primary_quote_binding():
+    original = bind()
+    forged = original.model_copy(deep=True)
+    forged.dependency_revision_steps[1].goal = "没有用户原文依据的任意目标"
+    decision = host(forged)
+    assert decision.disposition == "deny"
+    assert decision.reason == "dependency_revision_goal_unbound"
