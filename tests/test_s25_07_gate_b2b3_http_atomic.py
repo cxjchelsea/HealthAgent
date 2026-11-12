@@ -201,3 +201,28 @@ def test_fingerprint_is_order_stable_but_candidate_sensitive():
     changed = {"revision": 2, "steps": [{"goal": "B"}]}
     assert revision_fingerprint(candidate) == revision_fingerprint(same)
     assert revision_fingerprint(candidate) != revision_fingerprint(changed)
+
+
+def test_unconfirmed_terminal_failure_never_claims_saved_revision(
+        sandbox, monkeypatch):
+    client, Session, cid, raw = sandbox
+    _route(monkeypatch)
+
+    def fail_before_cas(*args, **kwargs):
+        raise RuntimeError("synthetic terminal storage fault")
+
+    monkeypatch.setattr(
+        "apps.api.main.commit_dependency_revision_in_session", fail_before_cas)
+    result = _request(client, cid)
+    assert result.status_code == 503, result.text
+    with Session() as db:
+        assert db.get(ConversationPlan, cid).snapshot == raw
+        assert db.get(AgentTaskState, cid) is None
+        assert db.query(AgentStateTransition).filter_by(
+            conversation_id=cid).count() == 0
+        turn = db.query(Turn).filter_by(conversation_id=cid).one()
+        response = db.get(Message, turn.assistant_message_id)
+        assert turn.state == "partial"
+        assert turn.failure_code == "dependency_revision_commit_unconfirmed"
+        assert response.status == "partial"
+        assert "已原子保存" not in response.content
