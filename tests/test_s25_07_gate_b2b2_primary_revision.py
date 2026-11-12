@@ -285,3 +285,15 @@ def test_host_denies_forged_mutation_after_primary_quote_binding():
     decision = host(forged)
     assert decision.disposition == "deny"
     assert decision.reason == "dependency_revision_goal_unbound"
+
+
+def test_host_rejects_forged_source_span_offsets():
+    """Host must validate actual source position, not only quoted text."""
+    proposal = bind()
+    forged = proposal.model_copy(deep=True)
+    forged.evidence.start += 1
+    forged.evidence.end += 1
+    result = host(forged)
+    assert (result.disposition, result.reason) == (
+        "deny", "dependency_revision_evidence_mismatch")
+    assert host(proposal).disposition == "allow"
