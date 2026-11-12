@@ -63,7 +63,8 @@ def seeded(tmp_path, request):
         db.add(Conversation(id=cid, owner_id="owner-b2"))
         db.flush()
         db.add(Turn(id=tid, conversation_id=cid,
-                    request_id="req-b2", state="running"))
+                    request_id="req-b2", state="running",
+                    user_message_id=mid))
         db.add(Message(id=mid, conversation_id=cid, role="user",
                        content=message_text))
         db.add(ConversationPlan(conversation_id=cid, snapshot=raw))
