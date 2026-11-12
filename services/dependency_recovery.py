@@ -280,6 +280,8 @@ def reconcile_dependency_orphan(
         turn.state = "partial"
         turn.failure_code = ("dependency_reconciliation_required"
                              if inspection.classification == "uncertain_no_replay"
+                             else "dependency_verified_failure"
+                             if inspection.classification == "verified_failure_no_replay"
                              else "dependency_turn_recovered")
         if turn.assistant_message_id is not None:
             message = db.get(Message, turn.assistant_message_id)
@@ -288,6 +290,8 @@ def reconcile_dependency_orphan(
             message.status = "partial"
             message.content = ("执行状态待人工核对，系统不会自动重试。"
                                if inspection.classification == "uncertain_no_replay"
+                               else "工具失败证据已核验并保留；原任务未完成，不会自动重试。"
+                               if inspection.classification == "verified_failure_no_replay"
                                else "已保留已验证步骤；原执行进程中断。")
         # Invalidate the previous generation in this SAME transaction before
         # releasing the Claim. An old runner carrying its token cannot commit
