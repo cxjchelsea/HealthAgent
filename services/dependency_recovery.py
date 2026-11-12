@@ -72,7 +72,8 @@ def _inspect_locked(db, *, owner_id, conversation_id, turn_id):
         PlanToolDispatch.conversation_id == conversation_id,
         PlanToolDispatch.turn_id == turn_id
     ).order_by(PlanToolDispatch.step_id, PlanToolDispatch.id).with_for_update()).all()
-    allowed = {"dispatch_unknown", "observed", "observed_failure", "checkpointed"}
+    allowed = {"dispatch_unknown", "observed", "observed_failure",
+               "checkpointed", "failure_finalized"}
     if any(item.status not in allowed for item in dispatches):
         _deny("dependency_recovery_unrecognized_dispatch")
     # A single Turn may have a committed prefix followed by one uncertain step.
@@ -117,7 +118,32 @@ def _inspect_locked(db, *, owner_id, conversation_id, turn_id):
             _deny("dependency_recovery_untrusted_dispatch")
         record = executions.get(str(item.step_id))
         attempt = locked_attempts[item.id]
-        if item.status == "checkpointed":
+        if item.status == "failure_finalized":
+            # Verified negative Receipt is terminal evidence, NOT a successful
+            # checkpoint or a grant to retry an executed logical step.
+            try:
+                args = json.loads(item.arguments_json)
+                receipt = json.loads(item.receipt_json)
+                projection = json.loads(attempt.result_projection) if attempt else None
+            except (TypeError, ValueError):
+                _deny("dependency_recovery_untrusted_dispatch")
+            if (step.get("status") != "pending" or record is not None
+                    or type(args) is not dict or type(receipt) is not dict
+                    or set(receipt) != {"ok", "error"}
+                    or receipt.get("ok") is not False
+                    or type(receipt.get("error")) is not str
+                    or len(receipt["error"]) > 80
+                    or attempt is None or attempt.status != "failed"
+                    or attempt.error_code != "dependency_tool_reported_failure"
+                    or attempt.conversation_id != conversation_id
+                    or attempt.turn_id != item.turn_id
+                    or attempt.step_id != item.step_id
+                    or attempt.tool_name != item.tool_name
+                    or attempt.tool_version != item.tool_version
+                    or attempt.arguments_digest != arguments_digest(args)
+                    or projection != bounded_projection(item.tool_name, receipt)):
+                _deny("dependency_recovery_untrusted_dispatch")
+        elif item.status == "checkpointed":
             if (step.get("status") != "completed" or type(record) is not dict
                     or record.get("dispatch_id") != item.id
                     or record.get("tool_version") != item.tool_version
@@ -183,6 +209,8 @@ def _inspect_locked(db, *, owner_id, conversation_id, turn_id):
     uncertain = any(s in {"dispatch_unknown", "observed", "observed_failure"}
                     for _, s in states)
     classification = ("uncertain_no_replay" if uncertain
+                      else "verified_failure_no_replay" if any(
+                          status == "failure_finalized" for _, status in states)
                       else "checkpointed_unfinalized" if states
                       else "no_dispatch")
     inspection = DependencyRecoveryInspection(
@@ -252,6 +280,8 @@ def reconcile_dependency_orphan(
         turn.state = "partial"
         turn.failure_code = ("dependency_reconciliation_required"
                              if inspection.classification == "uncertain_no_replay"
+                             else "dependency_verified_failure"
+                             if inspection.classification == "verified_failure_no_replay"
                              else "dependency_turn_recovered")
         if turn.assistant_message_id is not None:
             message = db.get(Message, turn.assistant_message_id)
@@ -260,6 +290,8 @@ def reconcile_dependency_orphan(
             message.status = "partial"
             message.content = ("执行状态待人工核对，系统不会自动重试。"
                                if inspection.classification == "uncertain_no_replay"
+                               else "工具失败证据已核验并保留；原任务未完成，不会自动重试。"
+                               if inspection.classification == "verified_failure_no_replay"
                                else "已保留已验证步骤；原执行进程中断。")
         # Invalidate the previous generation in this SAME transaction before
         # releasing the Claim. An old runner carrying its token cannot commit
