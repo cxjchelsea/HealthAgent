@@ -174,6 +174,15 @@ def admit_primary_route_v1(
                             and proposed_goal.casefold()
                                 not in facts.current_request.casefold()):
                         return decide("deny", "dependency_revision_goal_unbound")
+                    # S25-06 dispatch does not support text_stats literals.
+                    # A syntactically valid B1 proposal cannot be admitted
+                    # as a future runnable revision until B3 supports it.
+                    for revised_step in compiled.candidate["steps"]:
+                        if (revised_step["status"] == "pending"
+                                and revised_step["expected_tool"] == "text_stats"
+                                and revised_step["argument_bindings"]["text"]["kind"]
+                                    != "observation_ref"):
+                            return decide("deny", "dependency_revision_binding_not_executable")
                 except (DependencyPlanError, ValueError, TypeError, KeyError):
                     return decide("deny", "dependency_revision_host_denied")
                 return decide("allow", "dependency_revision_candidate")
