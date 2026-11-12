@@ -324,3 +324,149 @@ def test_inherited_two_completed_steps_keep_original_revision1_evidence(store):
         verify_revised_lineage(
             Session, owner_id="b3a-owner", conversation_id=cid,
             expected_raw=raw)
+
+
+# S25-07 B3b -- internal Host/Observation preparation. This deliberately uses
+# the physically seeded B3a revision-2 history, not a mock lineage object.
+
+def _seed_revision_resume(Session, cid, raw):
+    from services.db import PlanExecutionClaim
+    from services.primary_route_evidence import snapshot_digest
+    message_text = "请继续执行修订后的已保存计划"
+    mid, tid = _id(), _id()
+    with Session.begin() as db:
+        db.add(Message(id=mid, conversation_id=cid, role="user",
+                       content=message_text, status="completed"))
+        db.flush()
+        db.add(Turn(id=tid, conversation_id=cid,
+                    request_id="b3b-"+tid, user_message_id=mid,
+                    state="running"))
+        db.flush()
+        db.add(PrimaryRouteEvidence(
+            turn_id=tid, conversation_id=cid, proposal_id=_id(),
+            schema_version="primary-route-v1", route_kind="plan_resume",
+            semantic_attempts=1, preturn_snapshot_digest=snapshot_digest(raw),
+            disposition="allow",
+            admission_reason="dependency_revision_resume_prepare_only"))
+        db.add(PlanExecutionClaim(
+            conversation_id=cid, turn_id=tid, snapshot=raw))
+    return tid, message_text
+
+
+def _b3b_settings(enabled=True):
+    from agent.config import Settings
+    return Settings(
+        model_provider="fake", routing_profile="unified",
+        primary_route_v1_canary_enabled=True,
+        s25_06_dependency_plan_enabled=True,
+        s25_07_revision_resume_prepare_enabled=enabled)
+
+
+def _b3b_host(raw, message_text, enabled=True, *,
+              kind="plan_resume", scope="remaining_steps"):
+    from agent.primary_route_v1 import RouteSignal, bind_route_signal
+    from agent.primary_host_admission_v1 import (
+        PrimaryHostFacts, admit_primary_route_v1)
+    proposal = bind_route_signal(
+        RouteSignal.model_validate({
+            "schema_version": "primary-route-v1", "route_kind": kind,
+            "quote": message_text, "effect_intent": "read_only",
+            "execution_scope": scope,
+        }), message_text, saved_plan_present=True)
+    decision = admit_primary_route_v1(proposal, PrimaryHostFacts(
+        checkpoint=json.loads(raw), checkpoint_raw=raw,
+        pending_action=None, pending_origin_verified=False,
+        guarded_mode=True, turn_created=True, current_request=message_text,
+        dependency_plan_enabled=True,
+        revision_resume_prepare_enabled=enabled))
+    return decision
+
+
+@pytest.mark.parametrize("completed", [False, True])
+def test_b3b_internal_host_binds_first_pending_without_dispatch(store, completed):
+    from agent.dependency_revision_host import bind_revised_plan_read
+    from services.db import PlanExecutionClaim
+    Session, cid = store
+    raw, revision_tid, historical_dispatch_id = seed(
+        Session, cid, completed=completed)
+    tid, message_text = _seed_revision_resume(Session, cid, raw)
+    decision = _b3b_host(raw, message_text)
+    assert decision.disposition == "allow"
+    assert decision.reason == "dependency_revision_resume_prepare_only"
+    prepared = bind_revised_plan_read(
+        Session, settings=_b3b_settings(), decision=decision,
+        owner_id="b3a-owner", conversation_id=cid, turn_id=tid,
+        request_id="b3b-"+tid, expected_raw=raw, initial_turn_raw=raw,
+        step_id=2 if completed else 1)
+    assert prepared.plan_revision == 2
+    assert prepared.approved_revision_turn_id == revision_tid
+    assert prepared.arguments == (
+        {"text": "retrieval augmented generation"}
+        if completed else {"term": "RAG"})
+    assert prepared.inherited_source_dispatch_id == (
+        historical_dispatch_id if completed else None)
+    with Session() as db:
+        assert db.get(ConversationPlan, cid).snapshot == raw
+        assert db.get(PlanExecutionClaim, cid).snapshot == raw
+        assert db.query(PlanToolDispatch).filter_by(
+            conversation_id=cid).count() == (1 if completed else 0)
+        assert db.query(AgentAttempt).filter_by(
+            conversation_id=cid).count() == (1 if completed else 0)
+
+
+def test_b3b_default_off_and_execute_first_never_get_revision2_authority(store):
+    from agent.dependency_revision_host import bind_revised_plan_read
+    Session, cid = store
+    raw, _, _ = seed(Session, cid, completed=True)
+    tid, text = _seed_revision_resume(Session, cid, raw)
+    assert _b3b_host(raw, text, enabled=False).disposition == "deny"
+    assert _b3b_host(raw, text, kind="plan_execute_first",
+                     scope="first_step").disposition == "deny"
+    with pytest.raises(DependencyPlanError):
+        bind_revised_plan_read(
+            Session, settings=_b3b_settings(False),
+            decision=_b3b_host(raw, text), owner_id="b3a-owner",
+            conversation_id=cid, turn_id=tid, request_id="b3b-"+tid,
+            expected_raw=raw, initial_turn_raw=raw, step_id=2)
+
+
+@pytest.mark.parametrize("tamper", [
+    "wrong_step", "wrong_owner", "wrong_request", "claim_mismatch",
+    "claim_missing", "receipt_changed", "attempt_changed", "host_denied",
+    "plan_changed", "inherited_source_changed",
+])
+def test_b3b_rejects_forged_lineage_or_claim(store, tamper):
+    from agent.dependency_revision_host import bind_revised_plan_read
+    from services.db import PlanExecutionClaim
+    Session, cid = store
+    raw, _, source_id = seed(Session, cid, completed=True)
+    tid, message_text = _seed_revision_resume(Session, cid, raw)
+    decision = _b3b_host(raw, message_text)
+    step, owner, request = 2, "b3a-owner", "b3b-"+tid
+    with Session.begin() as db:
+        if tamper == "wrong_step":
+            step = 1
+        elif tamper == "wrong_owner":
+            owner = "attacker"
+        elif tamper == "wrong_request":
+            request = "replayed-other-request"
+        elif tamper == "claim_mismatch":
+            db.get(PlanExecutionClaim, cid).snapshot = "{}"
+        elif tamper == "claim_missing":
+            db.delete(db.get(PlanExecutionClaim, cid))
+        elif tamper == "receipt_changed":
+            db.get(PlanToolDispatch, source_id).receipt_json = '{"ok":true,"definition":"forged"}'
+        elif tamper == "attempt_changed":
+            db.get(AgentAttempt, source_id).result_projection = "{}"
+        elif tamper == "host_denied":
+            db.get(PrimaryRouteEvidence, tid).disposition = "deny"
+        elif tamper == "plan_changed":
+            db.get(ConversationPlan, cid).snapshot = "{}"
+        elif tamper == "inherited_source_changed":
+            db.get(PlanToolDispatch, source_id).arguments_json = '{"term":"MCP"}'
+    with pytest.raises(DependencyPlanError):
+        bind_revised_plan_read(
+            Session, settings=_b3b_settings(), decision=decision,
+            owner_id=owner, conversation_id=cid, turn_id=tid,
+            request_id=request, expected_raw=raw, initial_turn_raw=raw,
+            step_id=step)
