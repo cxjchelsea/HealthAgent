@@ -134,6 +134,11 @@ def compile_revision_candidate(
                 or proposed.depends_on != old["depends_on"]
                 or proposed.status != "pending"):
             _deny("dependency_revision_suffix_mismatch")
+        # A tool-name change is a capability-substitution decision, not a
+        # harmless suffix edit. Existing Registry membership alone does not
+        # establish semantic equivalence or Host authorization.
+        if proposed.expected_tool != old["expected_tool"]:
+            _deny("dependency_revision_tool_substitution_denied")
         proposed_dict = proposed.model_dump()
         if proposed_dict != old:
             changed = True
