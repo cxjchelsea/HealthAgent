@@ -264,3 +264,35 @@ def test_host_frozen_digest_prevents_mutation_before_admission_record(
     with Session() as db:
         assert db.get(PrimaryRouteEvidence, tid) is None
         assert db.get(ConversationPlan, cid).snapshot == raw
+
+
+def test_revision_denied_then_terminal_failure_still_closes_turn(
+        sandbox, monkeypatch):
+    """Do not select cleanup by the mutable post-CAS termination_reason."""
+    client, Session, cid, raw = sandbox
+    _route(monkeypatch)
+
+    def deny_revision(*args, **kwargs):
+        raise DependencyPlanError("dependency_revision_approval_mismatch")
+
+    def fail_later(*args, **kwargs):
+        raise RuntimeError("synthetic failure after revision denial")
+
+    monkeypatch.setattr(
+        "apps.api.main.commit_dependency_revision_in_session", deny_revision)
+    monkeypatch.setattr(
+        "services.plan_store.ConversationPlanStore.release_execution_claim_in_session",
+        fail_later)
+    response = _request(client, cid)
+    assert response.status_code == 503, response.text
+    with Session() as db:
+        assert db.get(ConversationPlan, cid).snapshot == raw
+        assert db.get(AgentTaskState, cid) is None
+        assert db.query(AgentStateTransition).filter_by(
+            conversation_id=cid).count() == 0
+        turn = db.query(Turn).filter_by(conversation_id=cid).one()
+        assistant = db.get(Message, turn.assistant_message_id)
+        assert turn.state == "partial"
+        assert turn.failure_code == "dependency_revision_commit_unconfirmed"
+        assert assistant.status == "partial"
+        assert "已原子保存" not in assistant.content
