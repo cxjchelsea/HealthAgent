@@ -2029,6 +2029,35 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                 except Exception:
                     log.exception("dependency create Turn failure cleanup failed turn=%s",
                                   turn_id)
+            elif (result is not None
+                  and result.get("termination_reason") in {
+                      "dependency_revision_admitted_not_saved",
+                      "dependency_revision_saved_pending_execution"}):
+                # Unknown COMMIT result must never be presented as saved.
+                # Close only this still-running Turn; do not attempt to
+                # revert a possibly committed Plan or TaskState.
+                try:
+                    with Session.begin() as cleanup_db:
+                        failed_turn = cleanup_db.get(Turn, turn_id)
+                        failed_response = cleanup_db.get(Message, assistant_id)
+                        if (failed_turn is not None
+                                and failed_turn.conversation_id == cid
+                                and failed_turn.state == "running"
+                                and failed_response is not None
+                                and failed_response.conversation_id == cid
+                                and failed_response.status == "pending"):
+                            failure_answer = (
+                                "修订事务未能确认完成。请重新查询当前计划状态，"
+                                "确认后再操作；本轮未执行工具。")
+                            failed_turn.state = "partial"
+                            failed_turn.failure_code = (
+                                "dependency_revision_commit_unconfirmed")
+                            failed_turn.output_chars = len(failure_answer)
+                            failed_response.content = failure_answer
+                            failed_response.status = "partial"
+                except Exception:
+                    log.exception("dependency revision failure cleanup failed turn=%s",
+                                  turn_id)
             raise HTTPException(503, "turn_finalization_failed")
         if status not in {"completed", "partial"}:
             # Only allowlisted metadata; never log messages, arguments or responses.
