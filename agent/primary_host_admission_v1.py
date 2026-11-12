@@ -154,7 +154,10 @@ def admit_primary_route_v1(
                     import json
                     if json.loads(facts.checkpoint_raw) != facts.checkpoint:
                         return decide("deny", "dependency_revision_snapshot_mismatch")
-                    bind_unique_quote(facts.current_request, proposal.evidence.exact_text)
+                    canonical_evidence = bind_unique_quote(
+                        facts.current_request, proposal.evidence.exact_text)
+                    if proposal.evidence != canonical_evidence:
+                        return decide("deny", "dependency_revision_evidence_mismatch")
                     compiled = compile_revision_candidate(
                         expected_raw=facts.checkpoint_raw,
                         replacement_pending=[
