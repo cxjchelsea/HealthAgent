@@ -328,6 +328,7 @@ def create_app(settings: Settings | None=None, provider=None, agent_decider=None
                 db.flush()
                 turn = Turn(conversation_id=cid, request_id=body.client_request_id,
                             assistant_message_id=response_message.id,
+                            user_message_id=user_message.id,
                             input_chars=len(body.content))
                 db.add(turn)
                 db.flush()

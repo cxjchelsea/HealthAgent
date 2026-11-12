@@ -106,12 +106,18 @@ class ConversationGoalState(Base):
 
 class Turn(Base):
     __tablename__="turns"
-    __table_args__=(UniqueConstraint("conversation_id", "request_id"),)
+    __table_args__=(
+        UniqueConstraint("conversation_id", "request_id"),
+        UniqueConstraint("user_message_id", name="uq_turn_user_message_id"),
+    )
     id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: str(uuid.uuid4()))
     conversation_id: Mapped[str] = mapped_column(ForeignKey("conversations.id"), index=True)
     request_id: Mapped[str] = mapped_column(String(120))
     state: Mapped[str] = mapped_column(String(20), default="running")
     assistant_message_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    # B2b1: immutable binding for new Turns. Legacy Turns remain NULL.
+    user_message_id: Mapped[str | None] = mapped_column(
+        ForeignKey("messages.id"), nullable=True)
     input_chars: Mapped[int] = mapped_column(Integer, default=0)
     output_chars: Mapped[int] = mapped_column(Integer, default=0)
     duration_ms: Mapped[int] = mapped_column(Integer, default=0)
