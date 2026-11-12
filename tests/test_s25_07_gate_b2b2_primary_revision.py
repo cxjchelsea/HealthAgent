@@ -168,7 +168,7 @@ def test_http_revision_admission_durable_but_parent_unchanged(tmp_path, monkeypa
     calls = []
     async def model(*args, **kwargs):
         calls.append(kwargs)
-        return bind(saved_plan_raw=kwargs["saved_plan_raw"])
+        return bind(raw=kwargs["saved_plan_raw"])
 
     def no_tool(*args, **kwargs):
         raise AssertionError("revision admission cannot dispatch tools")
