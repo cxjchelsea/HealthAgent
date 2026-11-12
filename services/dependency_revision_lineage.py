@@ -198,7 +198,13 @@ def verify_revised_lineage(session_factory, *, owner_id: str,
             AgentStateTransition.reason_code == "dependency_plan_revision_saved"
         )).all()
         if (len(revisions) != 1 or revisions[0].task_id != task.task_id
-                or revisions[0].revision != task.revision):
+                or revisions[0].revision != task.revision
+                or revisions[0].entity_type != "task"
+                or revisions[0].step_id is not None
+                or revisions[0].attempt_id is not None
+                or revisions[0].to_state != task.state
+                or revisions[0].from_state
+                    not in {None, "planned", "partial", "blocked"}):
             _deny()
         dispatches = db.scalars(select(PlanToolDispatch).where(
             PlanToolDispatch.conversation_id == conversation_id)).all()
