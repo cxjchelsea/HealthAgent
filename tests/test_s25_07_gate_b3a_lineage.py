@@ -169,11 +169,12 @@ def test_authenticated_revision_lineage_proves_physical_prefix(store, completed)
 @pytest.mark.parametrize("tamper", [
     "approved_digest", "approval_disposition", "task_revision",
     "task_projection", "lineage_origin", "origin_dispatch",
-    "extra_dispatch", "snapshot",
+    "extra_dispatch", "snapshot", "attempt_projection", "origin_host",
 ])
 def test_forged_or_stale_revision_lineage_rejected(store, tamper):
     Session, cid = store
     raw, tid, did = seed(Session, cid, completed=True)
+    expected = raw
     with Session.begin() as db:
         evidence = db.get(PrimaryRouteEvidence, tid)
         task = db.get(AgentTaskState, cid)
@@ -187,6 +188,11 @@ def test_forged_or_stale_revision_lineage_rejected(store, tamper):
             task.step_states = "[]"
         elif tamper == "origin_dispatch":
             db.get(PlanToolDispatch, did).arguments_json = '{"term":"other"}'
+        elif tamper == "attempt_projection":
+            db.get(AgentAttempt, did).result_projection = '{}'
+        elif tamper == "origin_host":
+            db.get(PrimaryRouteEvidence,
+                   db.get(PlanToolDispatch, did).turn_id).disposition = "deny"
         elif tamper == "extra_dispatch":
             db.add(PlanToolDispatch(
                 id=_id(), conversation_id=cid, turn_id=tid, step_id=2,
@@ -198,13 +204,17 @@ def test_forged_or_stale_revision_lineage_rejected(store, tamper):
                 altered["lineage"]["origin_refs"][0]["dispatch_id"] = _id()
             else:
                 altered["steps"][1]["goal"] = "forged new goal"
-            db.get(ConversationPlan, cid).snapshot = json.dumps(
-                altered, ensure_ascii=False)
+            expected = json.dumps(altered, ensure_ascii=False)
+            db.get(ConversationPlan, cid).snapshot = expected
+            if tamper == "lineage_origin":
+                # Even if a compromised DB row supplies a matching candidate
+                # hash, the physical Dispatch/Attempt origin remains binding.
+                evidence.approved_revision_digest = revision_fingerprint(altered)
     with pytest.raises(DependencyPlanError,
                        match="dependency_revision_lineage_untrusted"):
         verify_revised_lineage(
             Session, owner_id="b3a-owner", conversation_id=cid,
-            expected_raw=raw)
+            expected_raw=expected)
 
 
 def test_original_read_executor_still_does_not_accept_revision2(store):
