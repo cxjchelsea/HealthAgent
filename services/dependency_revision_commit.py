@@ -64,6 +64,7 @@ def commit_dependency_revision_in_session(
     if (owner is None or owner.owner_id != owner_id
             or turn is None or turn.conversation_id != conversation_id
             or turn.request_id != request_id or turn.state != "running"
+            or turn.user_message_id != user_message_id
             or message is None or message.conversation_id != conversation_id
             or message.role != "user" or not message.content.strip()
             or admission is None or admission.conversation_id != conversation_id
