@@ -896,6 +896,28 @@ async def propose_primary_route(provider, model: str, message: str, *,
         dependency_revision_enabled and saved_plan_present
         and saved_plan_raw is not None and pending_action is None
         and not pending_origin_verified)
+    if effective_dependency_revision:
+        # Present only pending-step data, not historical Attempt/Dispatch/
+        # Receipt or completed-prefix details. This is prompt context,
+        # never evidence or a Host grant; B1+Host revalidate the exact raw DB
+        # snapshot independently after the model proposes a suffix.
+        try:
+            revision_parent = json.loads(saved_plan_raw)
+            if (type(revision_parent) is not dict
+                    or revision_parent.get("plan_schema_version")
+                        != "dependency-plan-v1"
+                    or revision_parent.get("plan_executor_version")
+                        != "dependency-plan-read-v1"
+                    or revision_parent.get("revision") != 1
+                    or type(revision_parent.get("steps")) is not list):
+                effective_dependency_revision = False
+            else:
+                payload["saved_dependency_pending_steps"] = [
+                    {"step_number": index + 1, "step": step}
+                    for index, step in enumerate(revision_parent["steps"])
+                    if type(step) is dict and step.get("status") == "pending"]
+        except (TypeError, ValueError):
+            effective_dependency_revision = False
     effective_dependency_creation = (
         dependency_plan_enabled and not saved_plan_present
         and pending_action is None and not pending_origin_verified)
