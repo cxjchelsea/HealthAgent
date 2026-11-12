@@ -132,6 +132,64 @@ def commit_dependency_revision_in_session(
                 or record["resolved_arguments_digest"] != arguments_digest(args)
                 or projection != bounded_projection(d.tool_name, receipt)):
             _deny("dependency_revision_lineage_untrusted")
+    # Existing S25-06 _verify_completed_records checks correspondence of
+    # dispatch, attempt and digests, but does not rebind them to the exact
+    # saved input template. A revised snapshot must not inherit internally
+    # consistent evidence for the wrong query or an invented source reference.
+    steps_by_id = {s["id"]: s for s in old_steps}
+    dispatch_by_id = {d.id: d for d in dispatches}
+    for step in completed:
+        record = parent["executions"][str(step["id"])]
+        d = dispatch_by_id[record["dispatch_id"]]
+        try:
+            args = json.loads(d.arguments_json)
+            receipt = json.loads(d.receipt_json)
+        except (TypeError, ValueError):
+            _deny("dependency_revision_lineage_untrusted")
+        if step["expected_tool"] == "mcp_reference_lookup":
+            binding = step["argument_bindings"]["term"]
+            if (binding["kind"] != "literal"
+                    or args != {"term": binding["value"]}
+                    or record.get("source_evidence_refs") != []
+                    or type(receipt.get("definition")) is not str
+                    or not receipt["definition"]
+                    or bounded_projection(d.tool_name, receipt).get("definition")
+                       != receipt["definition"]
+                    or receipt.get("definition_availability") == "truncated"):
+                _deny("dependency_revision_lineage_untrusted")
+        elif step["expected_tool"] == "text_stats":
+            bound = step["argument_bindings"]["text"]
+            source_id = bound.get("source_step_id")
+            source_step = steps_by_id.get(source_id)
+            source_record = parent["executions"].get(str(source_id))
+            source = (dispatch_by_id.get(source_record.get("dispatch_id"))
+                      if type(source_record) is dict else None)
+            if (bound.get("kind") != "observation_ref"
+                    or bound.get("field") != "definition"
+                    or source_step is None
+                    or source_step["status"] != "completed"
+                    or source_step["expected_tool"] != "mcp_reference_lookup"
+                    or source is None
+                    or source.status != "checkpointed"
+                    or record.get("source_evidence_refs")
+                       != [{"source_dispatch_id": source.id}]
+                    or type(receipt.get("characters")) is not int
+                    or type(receipt.get("words")) is not int):
+                _deny("dependency_revision_lineage_untrusted")
+            try:
+                source_receipt = json.loads(source.receipt_json)
+            except (TypeError, ValueError):
+                _deny("dependency_revision_lineage_untrusted")
+            source_text = source_receipt.get("definition")
+            if (type(source_text) is not str or not source_text
+                    or bounded_projection(source.tool_name, source_receipt).get(
+                        "definition") != source_text
+                    or args != {"text": source_text}
+                    or receipt["characters"] != len(source_text)
+                    or receipt["words"] != len(source_text.split())):
+                _deny("dependency_revision_lineage_untrusted")
+        else:
+            _deny("dependency_revision_lineage_untrusted")
     _verify_completed_records(
         db, checkpoint=parent, conversation_id=conversation_id)
     # S25-06's text_stats dispatcher only accepts observed text from an
