@@ -695,3 +695,19 @@ def test_old_same_conversation_user_message_is_not_current_turn(seeded):
     with Session() as db:
         assert db.get(ConversationPlan, cid).snapshot == raw
         assert db.get(AgentTaskState, cid) is None
+
+
+def test_pre_b2b3_admission_without_frozen_digest_cannot_commit(seeded):
+    """Historical B2b2 proposal-only admissions must never gain write rights."""
+    Session, cid, tid, mid, raw, proposal_for, commit = seeded
+    with Session.begin() as db:
+        db.get(PrimaryRouteEvidence, tid).approved_revision_digest = None
+    with pytest.raises(DependencyPlanError,
+                       match="dependency_revision_approval_mismatch"):
+        commit()
+    with Session() as db:
+        assert db.get(ConversationPlan, cid).snapshot == raw
+        assert db.get(AgentTaskState, cid) is None
+        assert db.query(AgentStateTransition).filter_by(
+            conversation_id=cid).count() == 0
+        assert db.get(Turn, tid).state == "running"
