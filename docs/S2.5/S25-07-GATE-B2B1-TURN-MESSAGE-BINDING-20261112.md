@@ -4,7 +4,7 @@
 
 ## Implemented in this slice
 
-- A nullable `Turn.user_message_id` FK is introduced by Alembic migration `0021_turn_user_message`. Historical turns remain NULL; no chronology-based guesswork/backfill.
+- A nullable `Turn.user_message_id` FK **and unique constraint** are introduced by Alembic migration `0021_turn_user_message`. Historical turns remain NULL; no chronology-based guesswork/backfill. A concrete user Message can be bound to at most one Turn at the database level. This is a write-once API ownership convention, not a cryptographic proof that privileged DB writers cannot change rows.
 - The existing `/conversations/{cid}/agent/messages` Turn creation writes the **new user Message ID** in the same initial transaction before any Primary/Host decision. The normal route behavior, model and tool capabilities remain unchanged.
 - The B2a revision commit now requires `Turn.user_message_id == user_message_id` (in addition to owner, conversation, request ID, immutable PrimaryRouteEvidence and persisted message content). An older user message from the same conversation or an unbound legacy Turn cannot authorize a revision. The commit method remains unexposed to HTTP.
 - Existing B2a SQLite and PostgreSQL tests bind the current message to the Turn and add specific negative cases for absent linkage and old same-conversation messages. Migration head assertion and new column assertion are updated.
