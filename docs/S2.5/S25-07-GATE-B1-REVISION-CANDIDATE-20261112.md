@@ -7,7 +7,7 @@
 Adds a pure `compile_revision_candidate(expected_raw, replacement_pending, current_user_message)` function, returning `RevisionCandidate`. It does **not** write the DB, grant Host permissions, change Primary routing, call the LLM, or dispatch tools. The revision candidate's `dependency-plan-read-replan-v1` executor version is **deliberately unsupported** by S25-06; attempts to treat it as an executable saved plan must fail closed.
 
 - Strictly validate the exact S25-06 parent `dependency-plan-v1 / dependency-plan-read-v1 / revision=1` with the unchanged runtime validator.
-- Complete prefix is copied from the parent; model can propose only an equal-length, fixed-ID/order/dependency pending suffix. No new tool permissions or version.
+- Complete prefix is copied from the parent; model can propose only an equal-length, fixed-ID/order/dependency **and fixed expected-tool** pending suffix. Switching even between the two registered read tools is denied until a separate Host equivalence/substitution contract is implemented. No new tool permissions or version.
 - Strict Pydantic validation of every step, plus topological and observation-binding contract revalidation.
 - When a *changed* step introduces a literal input, its `source_quote` and literal value must be grounded in the current user message. Upstream observation text cannot substitute for new consent.
 - No-op revision is rejected.
