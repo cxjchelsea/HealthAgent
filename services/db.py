@@ -141,6 +141,7 @@ class PrimaryRouteEvidence(Base):
     route_kind: Mapped[str | None] = mapped_column(String(40), nullable=True)
     semantic_attempts: Mapped[int] = mapped_column(Integer, nullable=False)
     preturn_snapshot_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    approved_revision_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
     disposition: Mapped[str] = mapped_column(String(20))
     admission_reason: Mapped[str] = mapped_column(String(80))
     created_at: Mapped[datetime] = mapped_column(
