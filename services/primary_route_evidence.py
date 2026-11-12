@@ -38,6 +38,30 @@ def record_primary_admission(*, session_factory, conversation_id: str,
             decision.route_kind != proposal.route_kind
             or decision.disposition not in {"allow", "deny", "restrict", "clarify"}):
         raise ValueError("primary_evidence_host_mismatch")
+    approved_revision_digest = None
+    if (proposal is not None and decision is not None
+            and decision.disposition == "allow"
+            and decision.reason == "dependency_revision_candidate"):
+        if (preturn_plan_raw is None or proposal.dependency_revision_steps is None):
+            raise ValueError("primary_revision_evidence_incomplete")
+        from agent.dependency_revision_candidate import compile_revision_candidate
+        from services.dependency_revision_fingerprint import revision_fingerprint
+        with session_factory() as evidence_db:
+            current_turn = evidence_db.get(Turn, turn_id)
+            current_message = (evidence_db.get(Message, current_turn.user_message_id)
+                               if current_turn is not None and current_turn.user_message_id
+                               else None)
+            if (current_turn is None or current_turn.conversation_id != conversation_id
+                    or current_turn.state != "running"
+                    or current_message is None
+                    or current_message.conversation_id != conversation_id
+                    or current_message.role != "user"):
+                raise ValueError("primary_revision_evidence_unbound")
+            compiled = compile_revision_candidate(
+                expected_raw=preturn_plan_raw,
+                replacement_pending=[s.model_dump() for s in proposal.dependency_revision_steps],
+                current_user_message=current_message.content)
+            approved_revision_digest = revision_fingerprint(compiled.candidate)
     values = {
         "turn_id": turn_id,
         "conversation_id": conversation_id,
