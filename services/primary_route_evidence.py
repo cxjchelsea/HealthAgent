@@ -4,11 +4,15 @@ This audit record grants no tool permission. Only a deterministic Host decision
 can allow effects. No raw messages, quotes, arguments or model output are saved.
 """
 import hashlib
+import json
+import re
 import uuid
 
 from sqlalchemy import select
 
-from services.db import Message, PrimaryRouteEvidence, Turn
+from services.db import (
+    ConversationPlan, DependencyRevisionAnchor, Message, PrimaryRouteEvidence, Turn,
+)
 
 
 def snapshot_digest(raw: str | None) -> str:
@@ -65,6 +69,63 @@ def record_primary_admission(*, session_factory, conversation_id: str,
             if (decision.approved_revision_digest != calculated_digest):
                 raise ValueError("primary_revision_candidate_changed_after_host")
             approved_revision_digest = calculated_digest
+    # B3c-1: a resume admission must preserve the EXACT Host-reviewed request
+    # in the write-once Turn evidence. A mutable message cannot be used later
+    # to reconstruct a missing authorization digest.
+    approved_request_digest = None
+    if proposal is not None and decision is not None and (
+            decision.reason == "dependency_revision_resume_prepare_only"):
+        if (decision.disposition != "allow"
+                or proposal.route_kind != "plan_resume"
+                or proposal.execution_scope != "remaining_steps"
+                or proposal.effect_intent != "read_only"
+                or preturn_plan_raw is None
+                or not isinstance(decision.approved_request_digest, str)
+                or re.fullmatch(r"[0-9a-f]{64}", decision.approved_request_digest) is None):
+            raise ValueError("primary_resume_evidence_incomplete")
+        from agent.primary_route_v1 import bind_unique_quote
+        from services.dependency_revision_fingerprint import revision_fingerprint
+        with session_factory() as evidence_db:
+            current_turn = evidence_db.get(Turn, turn_id)
+            user = (evidence_db.get(Message, current_turn.user_message_id)
+                    if current_turn is not None and current_turn.user_message_id else None)
+            plan = evidence_db.get(ConversationPlan, conversation_id)
+            anchor = evidence_db.get(DependencyRevisionAnchor, conversation_id)
+            if (current_turn is None or current_turn.conversation_id != conversation_id
+                    or current_turn.state != "running"
+                    or user is None or user.conversation_id != conversation_id
+                    or user.role != "user" or user.status != "completed"
+                    or not user.content.strip()
+                    or plan is None or plan.snapshot != preturn_plan_raw
+                    or anchor is None):
+                raise ValueError("primary_resume_evidence_unbound")
+            try:
+                exact = bind_unique_quote(user.content, proposal.evidence.exact_text)
+                candidate = json.loads(anchor.approved_candidate_json)
+                current = json.loads(preturn_plan_raw)
+                origin = json.loads(anchor.origin_refs_json)
+                parent = current["lineage"]["parent_snapshot_sha256"]
+            except (TypeError, ValueError, KeyError, AttributeError):
+                raise ValueError("primary_resume_evidence_unbound") from None
+            if (proposal.evidence != exact
+                    or hashlib.sha256(user.content.encode("utf-8")).hexdigest()
+                        != decision.approved_request_digest
+                    or current != candidate  # pristine-only; progressed v2 is B3c-3
+                    or current.get("revision") != 2
+                    or current.get("plan_executor_version")
+                        != "dependency-plan-read-replan-v1"
+                    or revision_fingerprint(candidate) != anchor.approved_digest
+                    or anchor.parent_snapshot_sha256 != parent
+                    or candidate["lineage"]["origin_refs"] != origin):
+                raise ValueError("primary_resume_evidence_unbound")
+            original = evidence_db.get(PrimaryRouteEvidence, anchor.revision_turn_id)
+            if (original is None or original.conversation_id != conversation_id
+                    or original.route_kind != "plan_revise"
+                    or original.disposition != "allow"
+                    or original.admission_reason != "dependency_revision_candidate"
+                    or original.approved_revision_digest != anchor.approved_digest):
+                raise ValueError("primary_resume_evidence_unbound")
+        approved_request_digest = decision.approved_request_digest
     values = {
         "turn_id": turn_id,
         "conversation_id": conversation_id,
@@ -74,12 +135,61 @@ def record_primary_admission(*, session_factory, conversation_id: str,
         "semantic_attempts": semantic_attempts,
         "preturn_snapshot_digest": snapshot_digest(preturn_plan_raw),
         "approved_revision_digest": approved_revision_digest,
+        "approved_request_digest": approved_request_digest,
         "disposition": decision.disposition if decision else "refused",
         "admission_reason": (decision.reason if decision else refusal_reason),
     }
     if len(values["admission_reason"]) > 80:
         raise ValueError("primary_evidence_reason_not_bounded")
     with session_factory.begin() as db:
+        # Independent review P1: the earlier proof runs in a read session.
+        # Persisting an allow row MUST revalidate the user/plan under locks in
+        # the SAME transaction; otherwise a concurrent edit may be authorized.
+        if approved_request_digest is not None:
+            from agent.primary_route_v1 import bind_unique_quote
+            from services.dependency_revision_fingerprint import revision_fingerprint
+            plan = db.execute(select(ConversationPlan).where(
+                ConversationPlan.conversation_id == conversation_id
+            ).with_for_update()).scalar_one_or_none()
+            current_turn = db.execute(select(Turn).where(
+                Turn.id == turn_id
+            ).with_for_update()).scalar_one_or_none()
+            user = (db.execute(select(Message).where(
+                Message.id == current_turn.user_message_id
+            ).with_for_update()).scalar_one_or_none()
+                    if current_turn is not None and current_turn.user_message_id else None)
+            anchor = db.get(DependencyRevisionAnchor, conversation_id)
+            original = (db.get(PrimaryRouteEvidence, anchor.revision_turn_id)
+                        if anchor is not None else None)
+            if (plan is None or plan.snapshot != preturn_plan_raw
+                    or current_turn is None
+                    or current_turn.conversation_id != conversation_id
+                    or current_turn.state != "running"
+                    or user is None or user.conversation_id != conversation_id
+                    or user.role != "user" or user.status != "completed"
+                    or hashlib.sha256(user.content.encode("utf-8")).hexdigest()
+                        != approved_request_digest
+                    or anchor is None
+                    or original is None or original.conversation_id != conversation_id
+                    or original.route_kind != "plan_revise"
+                    or original.disposition != "allow"
+                    or original.admission_reason != "dependency_revision_candidate"
+                    or original.approved_revision_digest != anchor.approved_digest):
+                raise ValueError("primary_resume_evidence_changed_before_commit")
+            try:
+                current = json.loads(plan.snapshot)
+                candidate = json.loads(anchor.approved_candidate_json)
+                refs = json.loads(anchor.origin_refs_json)
+                exact = bind_unique_quote(user.content, proposal.evidence.exact_text)
+            except (TypeError, ValueError, KeyError, AttributeError):
+                raise ValueError("primary_resume_evidence_changed_before_commit") from None
+            if (proposal.evidence != exact
+                    or current != candidate
+                    or revision_fingerprint(candidate) != anchor.approved_digest
+                    or anchor.parent_snapshot_sha256
+                        != candidate["lineage"]["parent_snapshot_sha256"]
+                    or candidate["lineage"]["origin_refs"] != refs):
+                raise ValueError("primary_resume_evidence_changed_before_commit")
         turn = db.get(Turn, turn_id)
         if (turn is None or turn.conversation_id != conversation_id
                 or turn.state != "running"):
@@ -102,6 +212,7 @@ def read_primary_evidence(db, *, conversation_id: str, turn_id: str):
         "semantic_attempts": row.semantic_attempts,
         "preturn_snapshot_digest": row.preturn_snapshot_digest,
         "approved_revision_digest": row.approved_revision_digest,
+        "approved_request_digest": row.approved_request_digest,
         "disposition": row.disposition,
         "admission_reason": row.admission_reason,
     }

@@ -142,6 +142,8 @@ class PrimaryRouteEvidence(Base):
     semantic_attempts: Mapped[int] = mapped_column(Integer, nullable=False)
     preturn_snapshot_digest: Mapped[str] = mapped_column(String(64), nullable=False)
     approved_revision_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # S25-07 B3c-1: approval of the exact resume request, never backfilled.
+    approved_request_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
     disposition: Mapped[str] = mapped_column(String(20))
     admission_reason: Mapped[str] = mapped_column(String(80))
     created_at: Mapped[datetime] = mapped_column(
@@ -158,6 +160,8 @@ class PlanToolDispatch(Base):
     tool_name: Mapped[str] = mapped_column(String(80))
     arguments_json: Mapped[str] = mapped_column(Text)
     tool_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # Legacy Dispatch rows remain NULL; v2 inserts must explicitly set 2.
+    plan_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # Null for legacy M4, immutable generation binding for S25-06.
     worker_generation: Mapped[int | None] = mapped_column(Integer, nullable=True)
     worker_token_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -166,6 +170,36 @@ class PlanToolDispatch(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     __table_args__ = (UniqueConstraint("turn_id", "step_id", name="uq_plan_dispatch_turn_step"),)
 
+
+
+class DependencyRevisionAnchor(Base):
+    """Immutable original revision-2 candidate saved with the B2b3 transaction.
+
+    An anchor proves plan origin, never grants execution permission by itself.
+    Historic unanchored revisions remain non-executable.
+    """
+    __tablename__ = "dependency_revision_anchors"
+    conversation_id: Mapped[str] = mapped_column(
+        ForeignKey("conversations.id"), primary_key=True)
+    revision_turn_id: Mapped[str] = mapped_column(
+        ForeignKey("turns.id"), nullable=False, unique=True)
+    approved_candidate_json: Mapped[str] = mapped_column(Text, nullable=False)
+    approved_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    parent_snapshot_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    origin_refs_json: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class DependencyV2StepReservation(Base):
+    """DB-enforced single v2 dispatch intent per logical conversation step."""
+    __tablename__ = "dependency_v2_step_reservations"
+    conversation_id: Mapped[str] = mapped_column(
+        ForeignKey("conversations.id"), primary_key=True)
+    step_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    dispatch_id: Mapped[str] = mapped_column(
+        ForeignKey("plan_tool_dispatches.id"), nullable=False, unique=True)
+    turn_id: Mapped[str] = mapped_column(ForeignKey("turns.id"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 class PlanRecoveryAudit(Base):
     """Immutable recovery operator attestations (no credentials)."""
