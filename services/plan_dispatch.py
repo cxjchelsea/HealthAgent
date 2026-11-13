@@ -103,6 +103,10 @@ class PlanDispatchJournal:
         for entry in db.scalars(select(PlanToolDispatch).where(
                 PlanToolDispatch.turn_id == self.turn_id,
                 PlanToolDispatch.status == "observed")):
+            # The legacy finalizer cannot authorize revision-2 execution.
+            # B3c-3 alone owns its Attempt/Plan/Claim/Task atomic checkpoint.
+            if entry.plan_revision == 2:
+                raise DispatchConflict("revision2_checkpoint_not_wired")
             step = next((s for s in steps if s.get("id") == entry.step_id), None)
             if (step is None or step.get("status") != "completed"
                     or step.get("evidence_tool") != entry.tool_name
