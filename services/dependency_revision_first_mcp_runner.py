@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import json
 
+from sqlalchemy import update
+
 from agent.config import Settings
 from agent.dependency_plan_schema import DependencyPlanError, PINNED_TOOL_VERSION
 from agent.dependency_revision_host import PreparedRevisedRead
@@ -57,7 +59,16 @@ def invoke_first_revised_mcp_reference(
                 or step.get("depends_on") != []
                 or binding.arguments != json.loads(entry.arguments_json)):
             _deny("dependency_v2_mcp_invocation_replayed")
-        entry.status = "invoking"
+        # SELECT FOR UPDATE is ignored by SQLite. A durable conditional UPDATE
+        # elects one invoker even when another worker read the same intent.
+        elected = db.execute(update(type(entry)).where(
+            type(entry).id == dispatch_id,
+            type(entry).status == "dispatch_unknown",
+            type(entry).receipt_json.is_(None),
+            type(entry).worker_generation == fence.generation,
+        ).values(status="invoking"))
+        if elected.rowcount != 1:
+            _deny("dependency_v2_invocation_race_lost")
         db.flush()
 
     # Do not hold Plan/Claim/Fence locks while a trusted subprocess is running.
