@@ -5,7 +5,7 @@ Additive only. Legacy NULL request/dispatch version means no v2 execution author
 from alembic import op
 import sqlalchemy as sa
 
-revision = "0023_b3c1_durable_revision_evidence"
+revision = "0023_b3c1_evidence"
 down_revision = "0022_revision_approval_digest"
 branch_labels = None
 depends_on = None
