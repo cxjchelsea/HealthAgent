@@ -62,235 +62,329 @@ def verify_revised_checkpoint_progress(
     if not all(type(x) is str and x for x in
                (owner_id, conversation_id, expected_raw)):
         _deny()
-    plan = _obj(expected_raw)
     with session_factory.begin() as db:
-        owner = db.get(Conversation, conversation_id)
-        saved = db.execute(select(ConversationPlan).where(
-            ConversationPlan.conversation_id == conversation_id
-        ).with_for_update()).scalar_one_or_none()
-        claim = db.execute(select(PlanExecutionClaim).where(
-            PlanExecutionClaim.conversation_id == conversation_id
-        ).with_for_update()).scalar_one_or_none()
-        fence = db.execute(select(DependencyWorkerFence).where(
-            DependencyWorkerFence.conversation_id == conversation_id
-        ).with_for_update()).scalar_one_or_none()
-        if (owner is None or owner.owner_id != owner_id
-                or saved is None or saved.snapshot != expected_raw
-                or claim is None or claim.snapshot != expected_raw
-                or fence is None or fence.turn_id != claim.turn_id
+        return _verify_revised_checkpoint_in_session(
+            db, owner_id=owner_id, conversation_id=conversation_id,
+            expected_raw=expected_raw)
+
+
+def _verify_revised_checkpoint_in_session(db, *, owner_id: str,
+                                           conversation_id: str,
+                                           expected_raw: str,
+                                           terminal_history: bool = False,
+                                           continuation_turn_id: str | None = None,
+                                           pending_dispatch_id: str | None = None
+                                           ) -> VerifiedRevisedCheckpoint:
+    """Locked proof of the first v2 step in running or just-closed state.
+
+    Terminal-history evidence may only be consumed before a new Fence token
+    is minted; it is not itself a future dispatch or execution permit.
+    """
+    if not all(type(x) is str and x for x in (
+            owner_id, conversation_id, expected_raw)):
+        _deny()
+    plan = _obj(expected_raw)
+    owner = db.get(Conversation, conversation_id)
+    saved = db.execute(select(ConversationPlan).where(
+        ConversationPlan.conversation_id == conversation_id
+    ).with_for_update()).scalar_one_or_none()
+    claim = db.execute(select(PlanExecutionClaim).where(
+        PlanExecutionClaim.conversation_id == conversation_id
+    ).with_for_update()).scalar_one_or_none()
+    fence = db.execute(select(DependencyWorkerFence).where(
+        DependencyWorkerFence.conversation_id == conversation_id
+    ).with_for_update()).scalar_one_or_none()
+    if (owner is None or owner.owner_id != owner_id
+            or saved is None or saved.snapshot != expected_raw
+            or fence is None):
+        _deny()
+    if terminal_history and continuation_turn_id is not None:
+        _deny()
+    if terminal_history:
+        if claim is not None or fence.state != "fenced":
+            _deny()
+        original_execution_turn_id = fence.turn_id
+    elif continuation_turn_id is not None:
+        if (claim is None or claim.snapshot != expected_raw
+                or claim.turn_id != continuation_turn_id
+                or fence.turn_id != continuation_turn_id
                 or fence.state != "active"):
             _deny()
-        turn = db.get(Turn, claim.turn_id)
-        host = db.get(PrimaryRouteEvidence, claim.turn_id)
-        user = (db.get(Message, turn.user_message_id)
-                if turn is not None and turn.user_message_id else None)
-        if (turn is None or turn.conversation_id != conversation_id
-                or turn.state != "running" or not turn.request_id
-                or host is None or host.conversation_id != conversation_id
-                or host.route_kind != "plan_resume"
-                or host.disposition != "allow"
-                or host.schema_version != "primary-route-v1"
-                or host.admission_reason != "dependency_revision_resume_prepare_only"
-                or user is None or user.conversation_id != conversation_id
-                or user.role != "user" or user.status != "completed"
-                or host.approved_request_digest is None
-                or host.approved_request_digest
-                    != hashlib.sha256(user.content.encode("utf-8")).hexdigest()):
+        prior_anchor = db.get(DependencyRevisionAnchor, conversation_id)
+        if prior_anchor is None:
             _deny()
-        anchor = db.get(DependencyRevisionAnchor, conversation_id)
-        if anchor is None:
+        prior_candidate = _obj(prior_anchor.approved_candidate_json)
+        prior_steps = prior_candidate.get("steps")
+        if type(prior_steps) is not list:
             _deny()
-        pristine = _obj(anchor.approved_candidate_json)
-        original_approval = db.get(PrimaryRouteEvidence, anchor.revision_turn_id)
-        original_turn = db.get(Turn, anchor.revision_turn_id)
-        revision_user = (db.get(Message, original_turn.user_message_id)
-                         if original_turn and original_turn.user_message_id else None)
-        revision_assistant = (db.get(Message, original_turn.assistant_message_id)
-                              if original_turn and original_turn.assistant_message_id else None)
-        try:
-            refs = json.loads(anchor.origin_refs_json)
-        except (TypeError, ValueError):
+        first_step = next((step.get("id") for step in prior_steps
+                           if type(step) is dict
+                           and step.get("status") == "pending"), None)
+        if type(first_step) is not int:
             _deny()
-        if (original_approval is None or original_approval.conversation_id != conversation_id
-                or original_approval.route_kind != "plan_revise"
-                or original_approval.schema_version != "primary-route-v1"
-                or original_approval.disposition != "allow"
-                or original_approval.admission_reason != "dependency_revision_candidate"
-                or original_approval.approved_revision_digest != anchor.approved_digest
-                or original_turn is None or original_turn.conversation_id != conversation_id
-                or original_turn.state != "partial" or original_turn.failure_code is not None
-                or revision_user is None or revision_user.role != "user"
-                or revision_user.conversation_id != conversation_id
-                or revision_user.status != "completed"
-                or not revision_user.content.strip()
-                or revision_assistant is None or revision_assistant.role != "assistant"
-                or revision_assistant.conversation_id != conversation_id
-                or revision_assistant.status != "partial"
-                or revision_fingerprint(pristine) != anchor.approved_digest
-                or type(pristine.get("lineage")) is not dict
-                or pristine["lineage"].get("origin_refs") != refs
-                or pristine["lineage"].get("parent_snapshot_sha256")
-                   != anchor.parent_snapshot_sha256
-                or pristine.get("revision") != 2
-                or pristine.get("plan_executor_version") != "dependency-plan-read-replan-v1"
-                or type(pristine.get("steps")) is not list
-                or type(pristine.get("executions")) is not dict):
+        first_reservation = db.get(
+            DependencyV2StepReservation, (conversation_id, first_step))
+        if first_reservation is None:
             _deny()
+        original_execution_turn_id = first_reservation.turn_id
+        if original_execution_turn_id == continuation_turn_id:
+            _deny()
+    else:
+        if (claim is None or claim.snapshot != expected_raw
+                or fence.turn_id != claim.turn_id
+                or fence.state != "active"):
+            _deny()
+        original_execution_turn_id = claim.turn_id
+    turn = db.get(Turn, original_execution_turn_id)
+    host = db.get(PrimaryRouteEvidence, original_execution_turn_id)
+    user = (db.get(Message, turn.user_message_id)
+            if turn is not None and turn.user_message_id else None)
+    if (turn is None or turn.conversation_id != conversation_id
+            or (turn.state not in ("partial", "completed")
+                if terminal_history or continuation_turn_id is not None
+                else turn.state != "running")
+            or ((terminal_history or continuation_turn_id is not None)
+                and turn.failure_code is not None)
+            or not turn.request_id
+            or host is None or host.conversation_id != conversation_id
+            or host.route_kind != "plan_resume"
+            or host.disposition != "allow"
+            or host.schema_version != "primary-route-v1"
+            or host.admission_reason != "dependency_revision_resume_prepare_only"
+            or user is None or user.conversation_id != conversation_id
+            or user.role != "user" or user.status != "completed"
+            or host.approved_request_digest is None
+            or host.approved_request_digest
+                != hashlib.sha256(user.content.encode("utf-8")).hexdigest()):
+        _deny()
+    anchor = db.get(DependencyRevisionAnchor, conversation_id)
+    if anchor is None:
+        _deny()
+    pristine = _obj(anchor.approved_candidate_json)
+    original_approval = db.get(PrimaryRouteEvidence, anchor.revision_turn_id)
+    original_turn = db.get(Turn, anchor.revision_turn_id)
+    revision_user = (db.get(Message, original_turn.user_message_id)
+                     if original_turn and original_turn.user_message_id else None)
+    revision_assistant = (db.get(Message, original_turn.assistant_message_id)
+                          if original_turn and original_turn.assistant_message_id else None)
+    try:
+        refs = json.loads(anchor.origin_refs_json)
+    except (TypeError, ValueError):
+        _deny()
+    if (original_approval is None or original_approval.conversation_id != conversation_id
+            or original_approval.route_kind != "plan_revise"
+            or original_approval.schema_version != "primary-route-v1"
+            or original_approval.disposition != "allow"
+            or original_approval.admission_reason != "dependency_revision_candidate"
+            or original_approval.approved_revision_digest != anchor.approved_digest
+            or original_turn is None or original_turn.conversation_id != conversation_id
+            or original_turn.state != "partial" or original_turn.failure_code is not None
+            or revision_user is None or revision_user.role != "user"
+            or revision_user.conversation_id != conversation_id
+            or revision_user.status != "completed"
+            or not revision_user.content.strip()
+            or revision_assistant is None or revision_assistant.role != "assistant"
+            or revision_assistant.conversation_id != conversation_id
+            or revision_assistant.status != "partial"
+            or revision_fingerprint(pristine) != anchor.approved_digest
+            or type(pristine.get("lineage")) is not dict
+            or pristine["lineage"].get("origin_refs") != refs
+            or pristine["lineage"].get("parent_snapshot_sha256")
+               != anchor.parent_snapshot_sha256
+            or pristine.get("revision") != 2
+            or pristine.get("plan_executor_version") != "dependency-plan-read-replan-v1"
+            or type(pristine.get("steps")) is not list
+            or type(pristine.get("executions")) is not dict):
+        _deny()
 
-        base_steps = pristine["steps"]
-        pending = [s for s in base_steps
-                   if type(s) is dict and s.get("status") == "pending"]
-        if not pending:
+    base_steps = pristine["steps"]
+    pending = [s for s in base_steps
+               if type(s) is dict and s.get("status") == "pending"]
+    if not pending:
+        _deny()
+    first = pending[0]
+    step_id = first.get("id")
+    if type(step_id) is not int or step_id < 1:
+        _deny()
+    dispatches = db.scalars(select(PlanToolDispatch).where(
+        PlanToolDispatch.conversation_id == conversation_id
+    ).order_by(PlanToolDispatch.step_id, PlanToolDispatch.id)
+        .with_for_update()).all()
+    actual_v2 = [d for d in dispatches if d.plan_revision == 2]
+    prior_v2 = [d for d in actual_v2 if d.step_id == step_id]
+    later_v2 = [d for d in actual_v2 if d.step_id != step_id]
+    if (len(prior_v2) != 1
+            or len(later_v2) != (1 if pending_dispatch_id is not None else 0)
+            or (later_v2 and later_v2[0].id != pending_dispatch_id)
+            or (pending_dispatch_id is not None and continuation_turn_id is None)):
+        _deny()
+    item = prior_v2[0]
+    original = [d for d in dispatches if d.id not in (
+        {item.id} | ({pending_dispatch_id} if pending_dispatch_id else set()))]
+    _verify_inherited(db, conversation_id=conversation_id,
+                      checkpoint=pristine, dispatches=original)
+    reservation = db.get(DependencyV2StepReservation,
+                         (conversation_id, step_id))
+    reservations = db.scalars(select(DependencyV2StepReservation).where(
+        DependencyV2StepReservation.conversation_id == conversation_id
+    ).order_by(DependencyV2StepReservation.step_id).with_for_update()).all()
+    if pending_dispatch_id is not None:
+        pending_entry = later_v2[0]
+        pending_reservation = next(
+            (r for r in reservations if r.dispatch_id == pending_dispatch_id),
+            None)
+        if (pending_reservation is None
+                or pending_reservation.step_id != pending_entry.step_id
+                or pending_reservation.turn_id != continuation_turn_id
+                or pending_entry.turn_id != continuation_turn_id
+                or pending_entry.plan_revision != 2):
             _deny()
-        first = pending[0]
-        step_id = first.get("id")
-        if type(step_id) is not int or step_id < 1:
+    attempt = db.execute(select(AgentAttempt).where(
+        AgentAttempt.id == item.id
+    ).with_for_update()).scalar_one_or_none()
+    if (len(reservations) != (2 if pending_dispatch_id is not None else 1)
+            or reservation is None
+            or reservation.dispatch_id != item.id
+            or reservation.turn_id != item.turn_id
+            or item.turn_id != original_execution_turn_id
+            or item.worker_generation != (
+                fence.generation - 1 if continuation_turn_id is not None
+                else fence.generation)
+            or (continuation_turn_id is None
+                and item.worker_token_digest != fence.token_digest)
+            or item.status != "checkpointed"
+            or item.tool_name != first.get("expected_tool")
+            or item.tool_version != first.get("tool_version")
+            or attempt is None or attempt.id != item.id
+            or attempt.conversation_id != conversation_id
+            or attempt.turn_id != item.turn_id
+            or attempt.run_id != item.turn_id
+            or attempt.step_id != step_id
+            or attempt.status != "succeeded"
+            or attempt.tool_name != item.tool_name
+            or attempt.tool_version != item.tool_version):
+        _deny()
+    args = _obj(item.arguments_json)
+    receipt = _obj(item.receipt_json)
+    projection = _obj(attempt.result_projection)
+    digest = arguments_digest(args)
+    if (receipt.get("ok") is not True
+            or bounded_projection(item.tool_name, receipt) != receipt
+            or projection != receipt
+            or attempt.arguments_digest != digest):
+        _deny()
+    if item.tool_name == "mcp_reference_lookup":
+        binding = first.get("argument_bindings", {}).get("term")
+        if (type(binding) is not dict or binding.get("kind") != "literal"
+                or first.get("depends_on") != []
+                or args != {"term": binding.get("value")}
+                or type(receipt.get("definition")) is not str
+                or not receipt["definition"]
+                or receipt.get("definition_availability") == "truncated"):
             _deny()
-        dispatches = db.scalars(select(PlanToolDispatch).where(
-            PlanToolDispatch.conversation_id == conversation_id
-        ).order_by(PlanToolDispatch.step_id, PlanToolDispatch.id)
-            .with_for_update()).all()
-        actual_v2 = [d for d in dispatches if d.plan_revision == 2]
-        if len(actual_v2) != 1 or actual_v2[0].step_id != step_id:
+        refs_of_step = []
+    elif item.tool_name == "text_stats":
+        binding = first.get("argument_bindings", {}).get("text")
+        if type(binding) is not dict:
             _deny()
-        item = actual_v2[0]
-        original = [d for d in dispatches if d.id != item.id]
-        _verify_inherited(db, conversation_id=conversation_id,
-                          checkpoint=pristine, dispatches=original)
-        reservation = db.get(DependencyV2StepReservation,
-                             (conversation_id, step_id))
-        reservations = db.scalars(select(DependencyV2StepReservation).where(
-            DependencyV2StepReservation.conversation_id == conversation_id)).all()
-        attempt = db.execute(select(AgentAttempt).where(
-            AgentAttempt.id == item.id
-        ).with_for_update()).scalar_one_or_none()
-        if (len(reservations) != 1 or reservation is None
-                or reservation.dispatch_id != item.id
-                or reservation.turn_id != item.turn_id
-                or item.turn_id != claim.turn_id
-                or item.worker_generation != fence.generation
-                or item.worker_token_digest != fence.token_digest
-                or item.status != "checkpointed"
-                or item.tool_name != first.get("expected_tool")
-                or item.tool_version != first.get("tool_version")
-                or attempt is None or attempt.id != item.id
-                or attempt.conversation_id != conversation_id
-                or attempt.turn_id != item.turn_id
-                or attempt.run_id != item.turn_id
-                or attempt.step_id != step_id
-                or attempt.status != "succeeded"
-                or attempt.tool_name != item.tool_name
-                or attempt.tool_version != item.tool_version):
+        source_step_id = binding.get("source_step_id")
+        record = pristine["executions"].get(str(source_step_id))
+        if (binding.get("kind") != "observation_ref"
+                or binding.get("field") != "definition"
+                or source_step_id not in first.get("depends_on", [])
+                or type(record) is not dict
+                or record.get("plan_revision") != 1):
             _deny()
-        args = _obj(item.arguments_json)
-        receipt = _obj(item.receipt_json)
-        projection = _obj(attempt.result_projection)
-        digest = arguments_digest(args)
-        if (receipt.get("ok") is not True
-                or bounded_projection(item.tool_name, receipt) != receipt
-                or projection != receipt
-                or attempt.arguments_digest != digest):
+        source = next((d for d in original
+                       if d.id == record.get("dispatch_id")), None)
+        if source is None or source.tool_name != "mcp_reference_lookup":
             _deny()
-        if item.tool_name == "mcp_reference_lookup":
-            binding = first.get("argument_bindings", {}).get("term")
-            if (type(binding) is not dict or binding.get("kind") != "literal"
-                    or first.get("depends_on") != []
-                    or args != {"term": binding.get("value")}
-                    or type(receipt.get("definition")) is not str
-                    or not receipt["definition"]
-                    or receipt.get("definition_availability") == "truncated"):
-                _deny()
-            refs_of_step = []
-        elif item.tool_name == "text_stats":
-            binding = first.get("argument_bindings", {}).get("text")
-            if type(binding) is not dict:
-                _deny()
-            source_step_id = binding.get("source_step_id")
-            record = pristine["executions"].get(str(source_step_id))
-            if (binding.get("kind") != "observation_ref"
-                    or binding.get("field") != "definition"
-                    or source_step_id not in first.get("depends_on", [])
-                    or type(record) is not dict
-                    or record.get("plan_revision") != 1):
-                _deny()
-            source = next((d for d in original
-                           if d.id == record.get("dispatch_id")), None)
-            if source is None or source.tool_name != "mcp_reference_lookup":
-                _deny()
-            inherited_receipt = _obj(source.receipt_json)
-            definition = inherited_receipt.get("definition")
-            if (type(definition) is not str or not definition
-                    or args != {"text": definition}
-                    or type(receipt.get("characters")) is not int
-                    or receipt["characters"] != len(definition)
-                    or type(receipt.get("words")) is not int
-                    or receipt["words"] != len(definition.split())):
-                _deny()
-            refs_of_step = [{"source_dispatch_id": source.id}]
-        else:
+        inherited_receipt = _obj(source.receipt_json)
+        definition = inherited_receipt.get("definition")
+        if (type(definition) is not str or not definition
+                or args != {"text": definition}
+                or type(receipt.get("characters")) is not int
+                or receipt["characters"] != len(definition)
+                or type(receipt.get("words")) is not int
+                or receipt["words"] != len(definition.split())):
             _deny()
+        refs_of_step = [{"source_dispatch_id": source.id}]
+    else:
+        _deny()
 
-        expected = copy.deepcopy(pristine)
-        changed_step = next(s for s in expected["steps"] if s["id"] == step_id)
-        changed_step["status"] = "completed"
-        expected["executions"][str(step_id)] = {
-            "step_id": step_id,
-            "dispatch_id": item.id,
-            "plan_revision": 2,
-            "tool_name": item.tool_name,
-            "tool_version": item.tool_version,
-            "resolved_arguments_digest": digest,
-            "source_evidence_refs": refs_of_step,
-        }
-        if plan != expected or set(plan) != set(pristine):
+    expected = copy.deepcopy(pristine)
+    changed_step = next(s for s in expected["steps"] if s["id"] == step_id)
+    changed_step["status"] = "completed"
+    expected["executions"][str(step_id)] = {
+        "step_id": step_id,
+        "dispatch_id": item.id,
+        "plan_revision": 2,
+        "tool_name": item.tool_name,
+        "tool_version": item.tool_version,
+        "resolved_arguments_digest": digest,
+        "worker_generation": item.worker_generation,
+        "worker_token_digest": item.worker_token_digest,
+        "source_evidence_refs": refs_of_step,
+    }
+    if plan != expected or set(plan) != set(pristine):
+        _deny()
+    task = db.execute(select(AgentTaskState).where(
+        AgentTaskState.conversation_id == conversation_id
+    ).with_for_update()).scalar_one_or_none()
+    if task is None or task.plan_revision != 2:
+        _deny()
+    projection_expected = [{
+        "id": s["id"], "status": s["status"],
+        "evidence_tool": s["expected_tool"] if s["status"] == "completed"
+                         else None,
+    } for s in expected["steps"]]
+    try:
+        task_steps = json.loads(task.step_states)
+    except (ValueError, TypeError):
+        _deny()
+    state = "completed" if all(s["status"] == "completed"
+                               for s in expected["steps"]) else "partial"
+    if task_steps != projection_expected or task.state != state:
+        _deny()
+    if terminal_history or continuation_turn_id is not None:
+        terminal_message = (db.get(Message, turn.assistant_message_id)
+                            if turn.assistant_message_id else None)
+        if (turn.state != state or terminal_message is None
+                or terminal_message.conversation_id != conversation_id
+                or terminal_message.role != "assistant"
+                or terminal_message.status != state
+                or not terminal_message.content
+                or turn.output_chars != len(terminal_message.content)):
             _deny()
-        task = db.execute(select(AgentTaskState).where(
-            AgentTaskState.conversation_id == conversation_id
-        ).with_for_update()).scalar_one_or_none()
-        if task is None or task.plan_revision != 2:
-            _deny()
-        projection_expected = [{
-            "id": s["id"], "status": s["status"],
-            "evidence_tool": s["expected_tool"] if s["status"] == "completed"
-                             else None,
-        } for s in expected["steps"]]
-        try:
-            task_steps = json.loads(task.step_states)
-        except (ValueError, TypeError):
-            _deny()
-        state = "completed" if all(s["status"] == "completed"
-                                   for s in expected["steps"]) else "partial"
-        if task_steps != projection_expected or task.state != state:
-            _deny()
-        origin = db.scalars(select(AgentStateTransition).where(
-            AgentStateTransition.conversation_id == conversation_id,
-            AgentStateTransition.reason_code == "dependency_plan_revision_saved")).all()
-        verified = db.scalars(select(AgentStateTransition).where(
-            AgentStateTransition.conversation_id == conversation_id,
-            AgentStateTransition.reason_code == "verified_step_completed",
-            AgentStateTransition.step_id == step_id)).all()
-        expected_prior_state = ("partial" if any(
-            s["status"] == "completed" for s in pristine["steps"]) else "planned")
-        if (len(origin) != 1 or len(verified) != 1
-                or origin[0].entity_type != "task"
-                or origin[0].step_id is not None or origin[0].attempt_id is not None
-                or origin[0].from_state not in (None, "planned", "partial", "blocked")
-                or origin[0].to_state != expected_prior_state
-                or origin[0].revision + 1 != task.revision
-                or origin[0].task_id != task.task_id
-                or verified[0].entity_type != "step"
-                or verified[0].task_id != task.task_id
-                or verified[0].revision != task.revision
-                or verified[0].attempt_id != item.id
-                or verified[0].from_state != "pending"
-                or verified[0].to_state != "completed"):
-            _deny()
-        return VerifiedRevisedCheckpoint(
-            conversation_id=conversation_id,
-            revision_turn_id=anchor.revision_turn_id,
-            completed_v2_step_id=step_id,
-            dispatch_id=item.id,
-            snapshot_sha256=hashlib.sha256(expected_raw.encode("utf-8")).hexdigest(),
-            remaining_step_ids=tuple(s["id"] for s in expected["steps"]
-                                     if s["status"] == "pending"),
-        )
+    origin = db.scalars(select(AgentStateTransition).where(
+        AgentStateTransition.conversation_id == conversation_id,
+        AgentStateTransition.reason_code == "dependency_plan_revision_saved")).all()
+    verified = db.scalars(select(AgentStateTransition).where(
+        AgentStateTransition.conversation_id == conversation_id,
+        AgentStateTransition.reason_code == "verified_step_completed",
+        AgentStateTransition.step_id == step_id)).all()
+    expected_prior_state = ("partial" if any(
+        s["status"] == "completed" for s in pristine["steps"]) else "planned")
+    if (len(origin) != 1 or len(verified) != 1
+            or origin[0].entity_type != "task"
+            or origin[0].step_id is not None or origin[0].attempt_id is not None
+            or origin[0].from_state not in (None, "planned", "partial", "blocked")
+            or origin[0].to_state != expected_prior_state
+            or origin[0].revision + 1 != task.revision
+            or origin[0].task_id != task.task_id
+            or verified[0].entity_type != "step"
+            or verified[0].task_id != task.task_id
+            or verified[0].revision != task.revision
+            or verified[0].attempt_id != item.id
+            or verified[0].from_state != "pending"
+            or verified[0].to_state != "completed"):
+        _deny()
+    return VerifiedRevisedCheckpoint(
+        conversation_id=conversation_id,
+        revision_turn_id=anchor.revision_turn_id,
+        completed_v2_step_id=step_id,
+        dispatch_id=item.id,
+        snapshot_sha256=hashlib.sha256(expected_raw.encode("utf-8")).hexdigest(),
+        remaining_step_ids=tuple(s["id"] for s in expected["steps"]
+                                 if s["status"] == "pending"),
+    )
