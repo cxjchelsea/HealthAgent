@@ -7,12 +7,16 @@ def test_fresh_migration(tmp_path):
     assert migrate(url) == "fresh"
     engine, _ = database(url)
     with engine.connect() as connection:
-        assert connection.execute(text("select version_num from alembic_version")).scalar() == "0022_revision_approval_digest"
+        assert connection.execute(text("select version_num from alembic_version")).scalar() == "0023_b3c1_durable_revision_evidence"
         inspector = inspect(engine)
         assert "user_message_id" in {col["name"] for col in inspector.get_columns("turns")}
         assert set(Base.metadata.tables).issubset(set(inspector.get_table_names()))
         assert "tool_version" in {c["name"] for c in inspector.get_columns("agent_attempts")}
         assert "tool_version" in {c["name"] for c in inspector.get_columns("plan_tool_dispatches")}
+        assert "plan_revision" in {c["name"] for c in inspector.get_columns("plan_tool_dispatches")}
+        assert "approved_request_digest" in {c["name"] for c in inspector.get_columns("primary_route_evidence")}
+        assert "dependency_revision_anchors" in inspector.get_table_names()
+        assert "dependency_v2_step_reservations" in inspector.get_table_names()
     engine.dispose()
 
 def test_existing_database_stamped_without_losing_data(tmp_path):
