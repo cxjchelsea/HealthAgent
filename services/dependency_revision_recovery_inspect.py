@@ -98,6 +98,9 @@ def _inspect_revised_second_in_session(
     ).with_for_update()).all()
     if (len(pending) != 1 or pending[0].plan_revision != 2
             or pending[0].tool_name != "text_stats"
+            or pending[0].tool_version != "1.0.0"
+            or pending[0].worker_generation != fence.generation
+            or pending[0].worker_token_digest != fence.token_digest
             or pending[0].status not in (
                 "dispatch_unknown", "invoking", "observed",
                 "observed_failure")):
@@ -150,6 +153,9 @@ def _inspect_revised_second_in_session(
             entry.arguments_json.encode("utf-8")).hexdigest(),
         "worker_generation": fence.generation,
         "worker_token_digest": fence.token_digest,
+        "dispatch_generation": entry.worker_generation,
+        "dispatch_token_digest": entry.worker_token_digest,
+        "tool_version": entry.tool_version,
         "snapshot_sha256": hashlib.sha256(
             expected_raw.encode("utf-8")).hexdigest(),
         "claim_turn_id": claim.turn_id,
