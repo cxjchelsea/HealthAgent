@@ -101,10 +101,12 @@ def test_b3c2_atomic_intent_binds_authorized_first_pending(store, completed):
     "disabled", "wrong_digest", "message", "claim",
     "host", "original_approval", "anchor", "old_fence",
     "plan", "task", "tool", "source_attempt",
+    "anchor_malformed_origin_json", "transition_attempt", "transition_step",
+    "transition_entity", "transition_from",
 ])
 def test_b3c2_tampered_prepared_authority_never_dispatches(store, tamper):
     from dataclasses import replace
-    from services.db import AgentTaskState, PlanExecutionClaim, DependencyWorkerFence
+    from services.db import AgentTaskState, AgentStateTransition, PlanExecutionClaim, DependencyWorkerFence
     Session, cid = store
     raw, binding, fence, cfg, historical = _start(
         Session, cid, completed=True)
@@ -134,6 +136,20 @@ def test_b3c2_tampered_prepared_authority_never_dispatches(store, tamper):
                 db.get(AgentTaskState, cid).step_states = "[]"
             elif tamper == "source_attempt":
                 db.get(AgentAttempt, historical).result_projection = "{}"
+            elif tamper == "anchor_malformed_origin_json":
+                db.get(DependencyRevisionAnchor, cid).origin_refs_json = "not-json"
+            elif tamper.startswith("transition_"):
+                transition = db.query(AgentStateTransition).filter_by(
+                    conversation_id=cid,
+                    reason_code="dependency_plan_revision_saved").one()
+                if tamper == "transition_attempt":
+                    transition.attempt_id = str(uuid.uuid4())
+                elif tamper == "transition_step":
+                    transition.step_id = binding.step_id
+                elif tamper == "transition_entity":
+                    transition.entity_type = "attempt"
+                elif tamper == "transition_from":
+                    transition.from_state = "completed"
     with pytest.raises(DependencyPlanError):
         _begin(Session, raw, binding, fence, cfg)
     with Session() as db:
