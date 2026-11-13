@@ -750,6 +750,10 @@ def test_b3c1_persist_exact_resume_request_sha_and_reject_mutated_message(seeded
     import hashlib
     Session, cid, revision_tid, _, _, _, commit = seeded
     commit()
+    # The direct B2a fixture does not terminalize the revision Turn like HTTP.
+    # End it before opening a new running Turn under the DB unique guard.
+    with Session.begin() as db:
+        db.get(Turn, revision_tid).state = "partial"
     current = "请继续执行修订后的计划"
     with Session() as db:
         raw = db.get(ConversationPlan, cid).snapshot
@@ -783,6 +787,8 @@ def test_b3c1_persist_exact_resume_request_sha_and_reject_mutated_message(seeded
         assert row.approved_request_digest == hashlib.sha256(
             current.encode("utf-8")).hexdigest()
         assert db.get(DependencyRevisionAnchor, cid) is not None
+    with Session.begin() as db:
+        db.get(Turn, tid).state = "partial"
 
     # A Host decision tied to the original request may not authorize a
     # different DB-bound message at the time evidence is recorded.
