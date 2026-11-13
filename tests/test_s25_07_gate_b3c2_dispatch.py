@@ -190,3 +190,35 @@ def test_b3c2_concurrent_logical_step_reservation_allows_one_winner(store):
             conversation_id=cid, plan_revision=2).count() == 1
         assert db.query(DependencyV2StepReservation).filter_by(
             conversation_id=cid).count() == 1
+
+
+def test_b3c2_reservation_flush_failure_rolls_back_dispatch_and_slot(store):
+    """A failure AFTER the Dispatch INSERT must not persist intent alone."""
+    from sqlalchemy import event
+    Session, cid = store
+    raw, binding, fence, cfg, _ = _start(Session, cid)
+    target_session = Session()
+    try:
+        def inject_failure(session, flush_context, instances):
+            if any(isinstance(x, DependencyV2StepReservation)
+                   for x in session.new):
+                raise RuntimeError("injected_reservation_failure")
+
+        event.listen(target_session, "before_flush", inject_failure)
+        with pytest.raises(RuntimeError, match="injected_reservation_failure"):
+            with target_session.begin():
+                begin_revised_dependency_dispatch_in_session(
+                    target_session, settings=cfg, binding=binding,
+                    expected_raw=raw, initial_turn_raw=raw, fence=fence)
+    finally:
+        target_session.close()
+    with Session() as db:
+        assert db.query(PlanToolDispatch).filter_by(
+            conversation_id=cid, plan_revision=2).count() == 0
+        assert db.query(DependencyV2StepReservation).filter_by(
+            conversation_id=cid).count() == 0
+    # The rolled-back intent did not consume the logical step.
+    committed_id = _begin(Session, raw, binding, fence, cfg)
+    with Session() as db:
+        assert db.get(PlanToolDispatch, committed_id).status == "dispatch_unknown"
+        assert db.get(DependencyV2StepReservation, (cid, binding.step_id)).dispatch_id == committed_id
