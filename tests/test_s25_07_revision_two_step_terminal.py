@@ -83,7 +83,8 @@ def test_v2_second_turn_completed_releases_claim_and_fences_worker(store):
     "first_receipt", "second_receipt", "first_attempt", "second_attempt",
     "first_reservation", "second_reservation", "first_turn",
     "second_host", "task_state", "step_transition", "task_transition",
-    "extra_dispatch", "wrong_owner",
+    "extra_dispatch", "wrong_owner", "first_worker_digest",
+    "first_worker_generation", "second_worker_digest",
 ])
 def test_two_step_terminal_denies_corruption_without_releasing_claim(store, tamper):
     Session, cid = store
@@ -108,6 +109,12 @@ def test_two_step_terminal_denies_corruption_without_releasing_claim(store, tamp
                 first.receipt_json = '{"ok":true,"definition":"forged"}'
             elif tamper == "second_receipt":
                 db.get(PlanToolDispatch, did).receipt_json = '{"ok":true}'
+            elif tamper == "first_worker_digest":
+                first.worker_token_digest = "a"*64
+            elif tamper == "first_worker_generation":
+                first.worker_generation += 1
+            elif tamper == "second_worker_digest":
+                db.get(PlanToolDispatch, did).worker_token_digest = "a"*64
             elif tamper == "first_attempt":
                 db.get(AgentAttempt, first.id).run_id = "tampered"
             elif tamper == "second_attempt":
