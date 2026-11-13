@@ -210,3 +210,31 @@ def test_b3c3_legacy_journal_cannot_checkpoint_observed_v2(store):
         assert db.get(PlanToolDispatch, did).status == "observed"
         assert db.get(AgentAttempt, did) is None
         assert db.get(ConversationPlan, cid).snapshot == raw
+
+
+@pytest.mark.parametrize("completed,observation", [
+    (False, {"ok": True}),
+    (False, {"ok": True, "definition": "x" * 1300}),
+    (False, {"ok": True, "definition": ["not a string"]}),
+    (True, {"ok": True, "characters": 99, "words": 1}),
+    (True, {"ok": True, "characters": True, "words": 1}),
+])
+def test_b3c3_unusable_success_never_consumes_write_once_receipt(
+        store, completed, observation):
+    """Malformed successes cannot poison an immutable observed v2 slot."""
+    Session, cid = store
+    raw, binding, fence, cfg, did, _ = _prepared(
+        Session, cid, completed=completed)
+    with pytest.raises(DependencyPlanError,
+                       match="dependency_v2_receipt_unusable_success"):
+        _receipt(Session, raw, binding, fence, cfg, did, observation)
+    with Session() as db:
+        dispatch = db.get(PlanToolDispatch, did)
+        assert dispatch.status == "dispatch_unknown"
+        assert dispatch.receipt_json is None
+        assert db.get(ConversationPlan, cid).snapshot == raw
+    good = ({"ok": True, "characters": len(binding.arguments["text"]),
+             "words": len(binding.arguments["text"].split())}
+            if completed else {"ok": True, "definition": "valid", "source": "test"})
+    _receipt(Session, raw, binding, fence, cfg, did, good)
+    assert _checkpoint(Session, raw, binding, fence, cfg, did)
