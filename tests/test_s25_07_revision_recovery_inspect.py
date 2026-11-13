@@ -91,7 +91,8 @@ def test_second_turn_orphan_inspector_classifies_observation(store, success):
 
 @pytest.mark.parametrize("tamper", [
     "wrong_owner", "old_fence", "claim", "receipt", "host",
-    "dispatch_extra", "snapshot",
+    "dispatch_extra", "snapshot", "dispatch_generation", "dispatch_digest",
+    "dispatch_version",
 ])
 def test_second_turn_inspector_denies_corruption(store, tamper):
     from services.db import PrimaryRouteEvidence
@@ -113,6 +114,12 @@ def test_second_turn_inspector_denies_corruption(store, tamper):
                 db.get(PrimaryRouteEvidence, tid).approved_request_digest = "0"*64
             elif tamper == "snapshot":
                 db.get(ConversationPlan, cid).snapshot = "{}"
+            elif tamper == "dispatch_generation":
+                db.get(PlanToolDispatch, did).worker_generation += 1
+            elif tamper == "dispatch_digest":
+                db.get(PlanToolDispatch, did).worker_token_digest = "e" * 64
+            elif tamper == "dispatch_version":
+                db.get(PlanToolDispatch, did).tool_version = "9.9.9"
             elif tamper == "dispatch_extra":
                 db.add(PlanToolDispatch(
                     id=str(uuid.uuid4()), conversation_id=cid, turn_id=tid,
