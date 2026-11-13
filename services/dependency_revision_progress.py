@@ -226,11 +226,24 @@ def _verify_revised_checkpoint_in_session(db, *, owner_id: str,
     reservation = db.get(DependencyV2StepReservation,
                          (conversation_id, step_id))
     reservations = db.scalars(select(DependencyV2StepReservation).where(
-        DependencyV2StepReservation.conversation_id == conversation_id)).all()
+        DependencyV2StepReservation.conversation_id == conversation_id
+    ).order_by(DependencyV2StepReservation.step_id).with_for_update()).all()
+    if pending_dispatch_id is not None:
+        pending_entry = later_v2[0]
+        pending_reservation = next(
+            (r for r in reservations if r.dispatch_id == pending_dispatch_id),
+            None)
+        if (pending_reservation is None
+                or pending_reservation.step_id != pending_entry.step_id
+                or pending_reservation.turn_id != continuation_turn_id
+                or pending_entry.turn_id != continuation_turn_id
+                or pending_entry.plan_revision != 2):
+            _deny()
     attempt = db.execute(select(AgentAttempt).where(
         AgentAttempt.id == item.id
     ).with_for_update()).scalar_one_or_none()
-    if (len(reservations) != 1 or reservation is None
+    if (len(reservations) != (2 if pending_dispatch_id is not None else 1)
+            or reservation is None
             or reservation.dispatch_id != item.id
             or reservation.turn_id != item.turn_id
             or item.turn_id != original_execution_turn_id
