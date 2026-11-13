@@ -184,3 +184,29 @@ def test_b3c3_checkpoint_rollback_is_atomic(store):
         task = verify.get(AgentTaskState, cid)
         assert (task.revision, task.step_states) == task_before
     assert _checkpoint(Session, raw, binding, fence, cfg, did)
+
+
+def test_b3c3_legacy_journal_cannot_checkpoint_observed_v2(store):
+    """Legacy journal must NOT checkpoint v2 even with v1-shaped user data."""
+    from services.plan_dispatch import PlanDispatchJournal, DispatchConflict
+    Session, cid = store
+    raw, binding, fence, cfg, did, _ = _prepared(Session, cid)
+    _receipt(Session, raw, binding, fence, cfg, did, {
+        "ok": True, "definition": "bounded", "source": "test"})
+    # This deliberately satisfies the legacy journal's field-level checks:
+    # before the guard it would have changed the v2 status to checkpointed.
+    forged_legacy_step = {
+        "id": binding.step_id, "status": "completed",
+        "evidence_tool": binding.tool_name,
+        "expected_arguments": binding.arguments,
+        "tool_version": binding.tool_version,
+    }
+    journal = PlanDispatchJournal(Session, cid, binding.turn_id)
+    with pytest.raises(DispatchConflict, match="revision2_checkpoint_not_wired"):
+        with Session.begin() as db:
+            journal.checkpoint_in_session(
+                db, {"steps": [forged_legacy_step]})
+    with Session() as db:
+        assert db.get(PlanToolDispatch, did).status == "observed"
+        assert db.get(AgentAttempt, did) is None
+        assert db.get(ConversationPlan, cid).snapshot == raw
