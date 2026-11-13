@@ -255,6 +255,8 @@ def _verify_two_step_chain_in_session(
             "plan_revision": 2, "tool_name": d.tool_name,
             "tool_version": d.tool_version,
             "resolved_arguments_digest": arguments_digest(args),
+            "worker_generation": d.worker_generation,
+            "worker_token_digest": d.worker_token_digest,
             "source_evidence_refs": refs,
         }
     if evolved != expected:
