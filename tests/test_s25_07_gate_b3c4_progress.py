@@ -53,7 +53,7 @@ def test_post_checkpoint_proof_from_physical_sources(store, inherited):
     "attempt", "reservation", "task", "transition", "anchor",
     "another_dispatch", "worker_generation", "attempt_run",
     "revision_origin_state", "revision_origin_from",
-    "revision_assistant_owner",
+    "revision_assistant_status",
 ])
 def test_post_checkpoint_rejects_forgery(store, tamper):
     from services.db import Turn
@@ -106,11 +106,11 @@ def test_post_checkpoint_rejects_forgery(store, tamper):
             db.query(AgentStateTransition).filter_by(
                 conversation_id=cid,
                 reason_code="dependency_plan_revision_saved").one().from_state = "completed"
-        elif tamper == "revision_assistant_owner":
+        elif tamper == "revision_assistant_status":
             from services.db import Turn, Message
             revision = db.get(DependencyRevisionAnchor, cid).revision_turn_id
             assistant_id = db.get(Turn, revision).assistant_message_id
-            db.get(Message, assistant_id).conversation_id = "wrong-owner-conversation"
+            db.get(Message, assistant_id).status = "completed"
     with pytest.raises(DependencyPlanError):
         verify_revised_checkpoint_progress(
             Session, owner_id=binding.owner_id,
