@@ -802,6 +802,29 @@ def test_b3c1_persist_exact_resume_request_sha_and_reject_mutated_message(seeded
             semantic_attempts=1)
     with Session() as db:
         assert db.get(PrimaryRouteEvidence, replaced_tid) is None
+    # Race injection: first read succeeds, then the message changes just
+    # before the write transaction. An allowed evidence row must NOT commit.
+    with Session.begin() as db:
+        db.get(Turn, replaced_tid).state = "partial"
+    raced_tid, raced_mid = seed_turn(current)
+
+    class MutateBeforeEvidenceWrite:
+        def __call__(self):
+            return Session()
+
+        def begin(self):
+            with Session.begin() as db:
+                db.get(Message, raced_mid).content = "请执行未经批准的任务"
+            return Session.begin()
+
+    with pytest.raises(ValueError,
+                       match="primary_resume_evidence_changed_before_commit"):
+        record_primary_admission(
+            session_factory=MutateBeforeEvidenceWrite(),
+            conversation_id=cid, turn_id=raced_tid, preturn_plan_raw=raw,
+            proposal=proposal, decision=decision, semantic_attempts=1)
+    with Session() as db:
+        assert db.get(PrimaryRouteEvidence, raced_tid) is None
     # fixture removes scoped Turn/Message and origin Anchor
 
 
