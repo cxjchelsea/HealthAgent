@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import json
 
+from sqlalchemy import update
+
 from agent.config import Settings
 from agent.dependency_plan_schema import DependencyPlanError
 from agent.tool_registry import READ_REGISTRY
@@ -52,7 +54,16 @@ def invoke_second_revised_registry_read(
                 or entry.receipt_json is not None
                 or READ_REGISTRY.version_for("text_stats") != "1.0.0"):
             _deny("dependency_v2_registry_invocation_replayed")
-        entry.status = "invoking"
+        # SELECT FOR UPDATE is ignored by SQLite. A durable conditional UPDATE
+        # elects one invoker even when another worker read the same intent.
+        elected = db.execute(update(type(entry)).where(
+            type(entry).id == dispatch_id,
+            type(entry).status == "dispatch_unknown",
+            type(entry).receipt_json.is_(None),
+            type(entry).worker_generation == fence.generation,
+        ).values(status="invoking"))
+        if elected.rowcount != 1:
+            _deny("dependency_v2_invocation_race_lost")
         db.flush()
 
     # Actual registered adapter execution. No lock is held over tool code.
