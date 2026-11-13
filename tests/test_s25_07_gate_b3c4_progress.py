@@ -51,7 +51,9 @@ def test_post_checkpoint_proof_from_physical_sources(store, inherited):
 @pytest.mark.parametrize("tamper", [
     "unverified_snapshot", "dispatch_status", "dispatch_args", "receipt",
     "attempt", "reservation", "task", "transition", "anchor",
-    "another_dispatch", "worker_generation",
+    "another_dispatch", "worker_generation", "attempt_run",
+    "revision_origin_state", "revision_origin_from",
+    "revision_assistant_owner",
 ])
 def test_post_checkpoint_rejects_forgery(store, tamper):
     from services.db import Turn
@@ -94,6 +96,21 @@ def test_post_checkpoint_rejects_forgery(store, tamper):
                 status="dispatch_unknown"))
         elif tamper == "worker_generation":
             db.get(PlanToolDispatch, did).worker_generation += 1
+        elif tamper == "attempt_run":
+            db.get(AgentAttempt, did).run_id = "wrong-run-id"
+        elif tamper == "revision_origin_state":
+            db.query(AgentStateTransition).filter_by(
+                conversation_id=cid,
+                reason_code="dependency_plan_revision_saved").one().to_state = "blocked"
+        elif tamper == "revision_origin_from":
+            db.query(AgentStateTransition).filter_by(
+                conversation_id=cid,
+                reason_code="dependency_plan_revision_saved").one().from_state = "completed"
+        elif tamper == "revision_assistant_owner":
+            from services.db import Turn, Message
+            revision = db.get(DependencyRevisionAnchor, cid).revision_turn_id
+            assistant_id = db.get(Turn, revision).assistant_message_id
+            db.get(Message, assistant_id).conversation_id = "wrong-owner-conversation"
     with pytest.raises(DependencyPlanError):
         verify_revised_checkpoint_progress(
             Session, owner_id=binding.owner_id,
