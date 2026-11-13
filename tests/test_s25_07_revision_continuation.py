@@ -92,6 +92,7 @@ def test_new_turn_reclaims_after_verified_v2_terminal(store):
     "gate", "wrong_owner", "request", "host_sha",
     "stale_snapshot", "prior_terminal_message",
     "old_dispatch", "wrong_route", "previous_fence",
+    "old_worker_digest", "old_worker_generation",
 ])
 def test_next_turn_claim_rejects_unverified_authority(store, tamper):
     Session, cid = store
@@ -121,6 +122,14 @@ def test_next_turn_claim_rejects_unverified_authority(store, tamper):
             old = db.query(PlanToolDispatch).filter_by(
                 conversation_id=cid, plan_revision=2).one()
             old.receipt_json = '{"ok":true}'
+    elif tamper in ("old_worker_digest", "old_worker_generation"):
+        with Session.begin() as db:
+            old = db.query(PlanToolDispatch).filter_by(
+                conversation_id=cid, plan_revision=2).one()
+            if tamper == "old_worker_digest":
+                old.worker_token_digest = "a"*64
+            else:
+                old.worker_generation += 1
     elif tamper == "previous_fence":
         with Session.begin() as db:
             db.get(DependencyWorkerFence, cid).state = "active"
