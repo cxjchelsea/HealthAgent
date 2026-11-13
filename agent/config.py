@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     s25_07_revision_dispatch_intent_enabled: bool = False  # B3c-2 internal DB intent only; no tool/HTTP
     s25_07_revision_receipt_checkpoint_enabled: bool = False  # B3c-3 internal only; no API/invoker/retry
     s25_07_revision_turn_terminal_enabled: bool = False  # v2 internal atomic Turn/Claim/Fence terminalization only
+    s25_07_revision_continuation_enabled: bool = False  # internal subsequent Turn Claim only, no dispatch
     s25_05_text_stats_enabled: bool = False  # opt-in; Host read-only grant, not registry authorization
     s25_05_calculate_registry_enabled: bool = False  # opt-in legacy read migration; ordinary only
     s25_05_utc_time_registry_enabled: bool = False
