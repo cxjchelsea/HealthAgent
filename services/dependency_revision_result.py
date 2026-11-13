@@ -129,6 +129,12 @@ def _bound_rows(db, *, settings, binding, expected_raw, fence, dispatch_id,
 
     original_approval = db.get(PrimaryRouteEvidence, anchor.revision_turn_id)
     revision_turn = db.get(Turn, anchor.revision_turn_id)
+    revision_user = (db.get(Message, revision_turn.user_message_id)
+                     if revision_turn is not None and revision_turn.user_message_id
+                     else None)
+    revision_assistant = (db.get(Message, revision_turn.assistant_message_id)
+                          if revision_turn is not None and revision_turn.assistant_message_id
+                          else None)
     if (original_approval is None
             or original_approval.conversation_id != binding.conversation_id
             or original_approval.schema_version != "primary-route-v1"
@@ -139,7 +145,16 @@ def _bound_rows(db, *, settings, binding, expected_raw, fence, dispatch_id,
             or revision_turn is None
             or revision_turn.conversation_id != binding.conversation_id
             or revision_turn.state != "partial"
-            or revision_turn.failure_code is not None):
+            or revision_turn.failure_code is not None
+            or revision_user is None
+            or revision_user.conversation_id != binding.conversation_id
+            or revision_user.role != "user"
+            or revision_user.status != "completed"
+            or not revision_user.content.strip()
+            or revision_assistant is None
+            or revision_assistant.conversation_id != binding.conversation_id
+            or revision_assistant.role != "assistant"
+            or revision_assistant.status != "partial"):
         _deny("dependency_v2_result_origin_denied")
     checkpoint = _parse(expected_raw, "dependency_v2_result_invalid_plan")
     original = _parse(anchor.approved_candidate_json, "dependency_v2_result_origin_denied")
@@ -202,9 +217,22 @@ def _bound_rows(db, *, settings, binding, expected_raw, fence, dispatch_id,
         actual_projection = json.loads(task.step_states)
     except (ValueError, TypeError):
         _deny("dependency_v2_result_task_conflict")
+    origin_transitions = db.scalars(select(AgentStateTransition).where(
+        AgentStateTransition.conversation_id == binding.conversation_id,
+        AgentStateTransition.reason_code == "dependency_plan_revision_saved",
+    )).all()
     if (actual_projection != expected_projection
             or task.state != ("partial" if any(
-                s["status"] == "completed" for s in steps) else "planned")):
+                s["status"] == "completed" for s in steps) else "planned")
+            or len(origin_transitions) != 1
+            or origin_transitions[0].task_id != task.task_id
+            or origin_transitions[0].revision != task.revision
+            or origin_transitions[0].entity_type != "task"
+            or origin_transitions[0].step_id is not None
+            or origin_transitions[0].attempt_id is not None
+            or origin_transitions[0].from_state
+                not in (None, "planned", "partial", "blocked")
+            or origin_transitions[0].to_state != task.state):
         _deny("dependency_v2_result_task_conflict")
     return checkpoint, dispatch, task, step
 
