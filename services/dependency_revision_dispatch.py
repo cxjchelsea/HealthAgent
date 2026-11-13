@@ -353,6 +353,10 @@ def begin_revised_dependency_dispatch_in_session(
         arguments_json=json.dumps(checked, ensure_ascii=False, sort_keys=True),
         status="dispatch_unknown",
     ))
+    # Flush the referenced Dispatch first: without an ORM relationship,
+    # SQLAlchemy may INSERT the Reservation first on PostgreSQL. Both flushes
+    # remain in the SAME caller-owned transaction and roll back together.
+    db.flush()
     db.add(DependencyV2StepReservation(
         conversation_id=binding.conversation_id,
         step_id=binding.step_id, dispatch_id=entry_id,
