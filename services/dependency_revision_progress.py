@@ -70,10 +70,13 @@ def verify_revised_checkpoint_progress(
 
 def _verify_revised_checkpoint_in_session(db, *, owner_id: str,
                                            conversation_id: str,
-                                           expected_raw: str) -> VerifiedRevisedCheckpoint:
-    """Same physical proof with caller-held transaction for atomic finalization.
+                                           expected_raw: str,
+                                           terminal_history: bool = False
+                                           ) -> VerifiedRevisedCheckpoint:
+    """Locked proof of the first v2 step in running or just-closed state.
 
-    Internal only. Do not turn the immutable proof into a future dispatch permit.
+    Terminal-history evidence may only be consumed before a new Fence token
+    is minted; it is not itself a future dispatch or execution permit.
     """
     if not all(type(x) is str and x for x in (
             owner_id, conversation_id, expected_raw)):
@@ -91,16 +94,27 @@ def _verify_revised_checkpoint_in_session(db, *, owner_id: str,
     ).with_for_update()).scalar_one_or_none()
     if (owner is None or owner.owner_id != owner_id
             or saved is None or saved.snapshot != expected_raw
-            or claim is None or claim.snapshot != expected_raw
-            or fence is None or fence.turn_id != claim.turn_id
-            or fence.state != "active"):
+            or fence is None):
         _deny()
-    turn = db.get(Turn, claim.turn_id)
-    host = db.get(PrimaryRouteEvidence, claim.turn_id)
+    if terminal_history:
+        if claim is not None or fence.state != "fenced":
+            _deny()
+        original_execution_turn_id = fence.turn_id
+    else:
+        if (claim is None or claim.snapshot != expected_raw
+                or fence.turn_id != claim.turn_id
+                or fence.state != "active"):
+            _deny()
+        original_execution_turn_id = claim.turn_id
+    turn = db.get(Turn, original_execution_turn_id)
+    host = db.get(PrimaryRouteEvidence, original_execution_turn_id)
     user = (db.get(Message, turn.user_message_id)
             if turn is not None and turn.user_message_id else None)
     if (turn is None or turn.conversation_id != conversation_id
-            or turn.state != "running" or not turn.request_id
+            or (turn.state not in ("partial", "completed")
+                if terminal_history else turn.state != "running")
+            or (terminal_history and turn.failure_code is not None)
+            or not turn.request_id
             or host is None or host.conversation_id != conversation_id
             or host.route_kind != "plan_resume"
             or host.disposition != "allow"
@@ -182,7 +196,7 @@ def _verify_revised_checkpoint_in_session(db, *, owner_id: str,
     if (len(reservations) != 1 or reservation is None
             or reservation.dispatch_id != item.id
             or reservation.turn_id != item.turn_id
-            or item.turn_id != claim.turn_id
+            or item.turn_id != original_execution_turn_id
             or item.worker_generation != fence.generation
             or item.worker_token_digest != fence.token_digest
             or item.status != "checkpointed"
@@ -277,6 +291,16 @@ def _verify_revised_checkpoint_in_session(db, *, owner_id: str,
                                for s in expected["steps"]) else "partial"
     if task_steps != projection_expected or task.state != state:
         _deny()
+    if terminal_history:
+        terminal_message = (db.get(Message, turn.assistant_message_id)
+                            if turn.assistant_message_id else None)
+        if (turn.state != state or terminal_message is None
+                or terminal_message.conversation_id != conversation_id
+                or terminal_message.role != "assistant"
+                or terminal_message.status != state
+                or not terminal_message.content
+                or turn.output_chars != len(terminal_message.content)):
+            _deny()
     origin = db.scalars(select(AgentStateTransition).where(
         AgentStateTransition.conversation_id == conversation_id,
         AgentStateTransition.reason_code == "dependency_plan_revision_saved")).all()
