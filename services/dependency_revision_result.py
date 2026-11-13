@@ -349,6 +349,8 @@ def checkpoint_revised_step_in_session(
         "plan_revision": 2,
         "tool_name": binding.tool_name, "tool_version": binding.tool_version,
         "resolved_arguments_digest": binding.arguments_digest,
+        "worker_generation": dispatch.worker_generation,
+        "worker_token_digest": dispatch.worker_token_digest,
         "source_evidence_refs": (
             [{"source_dispatch_id": binding.inherited_source_dispatch_id}]
             if binding.inherited_source_dispatch_id else []),
