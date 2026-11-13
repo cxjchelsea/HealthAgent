@@ -322,6 +322,8 @@ def _verify_revised_checkpoint_in_session(db, *, owner_id: str,
         "tool_name": item.tool_name,
         "tool_version": item.tool_version,
         "resolved_arguments_digest": digest,
+        "worker_generation": item.worker_generation,
+        "worker_token_digest": item.worker_token_digest,
         "source_evidence_refs": refs_of_step,
     }
     if plan != expected or set(plan) != set(pristine):
