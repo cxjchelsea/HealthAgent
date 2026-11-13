@@ -10,8 +10,9 @@ from sqlalchemy import event
 
 from agent.dependency_plan_schema import DependencyPlanError
 from services.db import (
-    AgentAttempt, AgentTaskState, ConversationPlan, DependencyV2StepReservation,
-    PlanExecutionClaim, PlanToolDispatch, PrimaryRouteEvidence, Message, Turn,
+    AgentAttempt, AgentTaskState, AgentStateTransition, ConversationPlan,
+    DependencyV2StepReservation, PlanExecutionClaim, PlanToolDispatch,
+    PrimaryRouteEvidence, Message, Turn, DependencyRevisionAnchor,
 )
 from services.dependency_revision_result import (
     record_revised_receipt_in_session, checkpoint_revised_step_in_session,
@@ -100,6 +101,7 @@ def test_b3c3_negative_receipt_never_advances_or_retries(store):
 @pytest.mark.parametrize("tamper", [
     "gate", "claim", "plan", "host", "message", "fence",
     "reservation", "worker", "arguments", "receipt", "step",
+    "origin_assistant", "origin_user", "origin_transition",
 ])
 def test_b3c3_checkpoint_guards_fail_closed(store, tamper):
     Session, cid = store
@@ -133,6 +135,18 @@ def test_b3c3_checkpoint_guards_fail_closed(store, tamper):
                 db.get(PlanToolDispatch, did).receipt_json = '{"ok":true,"definition_availability":"truncated"}'
             elif tamper == "step":
                 binding = replace(binding, step_id=binding.step_id + 1)
+            elif tamper in ("origin_assistant", "origin_user"):
+                original = db.get(DependencyRevisionAnchor, cid)
+                saved_turn = db.get(Turn, original.revision_turn_id)
+                mid = (saved_turn.assistant_message_id
+                       if tamper == "origin_assistant"
+                       else saved_turn.user_message_id)
+                db.get(Message, mid).status = "pending"
+            elif tamper == "origin_transition":
+                original = db.query(AgentStateTransition).filter_by(
+                    conversation_id=cid,
+                    reason_code="dependency_plan_revision_saved").one()
+                original.entity_type = "attempt"
     with pytest.raises(DependencyPlanError):
         _checkpoint(Session, raw, binding, fence, cfg, did)
     with Session() as db:
