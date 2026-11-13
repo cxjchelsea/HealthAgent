@@ -246,15 +246,21 @@ def begin_revised_dependency_dispatch_in_session(
 
     checkpoint = _decode(expected_raw)
     approved = _decode(anchor.approved_candidate_json)
-    if (checkpoint != approved
+    lineage = checkpoint.get("lineage")
+    try:
+        origin_refs = json.loads(anchor.origin_refs_json)
+    except (ValueError, TypeError):
+        _deny("dependency_revision_dispatch_origin_denied")
+    if (type(lineage) is not dict
+            or type(origin_refs) is not list
+            or checkpoint != approved
             or checkpoint.get("revision") != 2
             or checkpoint.get("plan_executor_version") != REVISED_EXECUTOR_VERSION
             or revision_fingerprint(approved) != anchor.approved_digest
             or checkpoint.get("lineage") != approved.get("lineage")
             or anchor.parent_snapshot_sha256
-                != checkpoint["lineage"]["parent_snapshot_sha256"]
-            or json.loads(anchor.origin_refs_json)
-                != checkpoint["lineage"]["origin_refs"]):
+                != lineage.get("parent_snapshot_sha256")
+            or origin_refs != lineage.get("origin_refs")):
         _deny("dependency_revision_dispatch_origin_denied")
     steps = checkpoint.get("steps")
     if (type(steps) is not list or len(steps) < 2
@@ -304,6 +310,11 @@ def begin_revised_dependency_dispatch_in_session(
             or len(transition) != 1
             or transition[0].task_id != task.task_id
             or transition[0].revision != task.revision
+            or transition[0].entity_type != "task"
+            or transition[0].step_id is not None
+            or transition[0].attempt_id is not None
+            or transition[0].from_state
+                not in (None, "planned", "partial", "blocked")
             or transition[0].to_state != task.state):
         _deny("dependency_revision_dispatch_projection_denied")
 
