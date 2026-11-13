@@ -12,7 +12,7 @@ from agent.dependency_revision_candidate import compile_revision_candidate
 from agent.dependency_plan_schema import DependencyPlanError
 from apps.api.main import create_app
 from services.db import (
-    AgentStateTransition, AgentTaskState, ConversationPlan, Message,
+    AgentStateTransition, AgentTaskState, ConversationPlan, DependencyRevisionAnchor, Message,
     PlanToolDispatch, PrimaryRouteEvidence, Turn, database,
 )
 from services.dependency_revision_fingerprint import revision_fingerprint
@@ -121,6 +121,7 @@ def test_exact_host_fingerprint_is_committed_and_old_executor_stays_off(
         evidence = db.get(PrimaryRouteEvidence, data["turn_id"])
         saved = json.loads(db.get(ConversationPlan, cid).snapshot)
         assert evidence.approved_revision_digest == revision_fingerprint(saved)
+        assert db.get(DependencyRevisionAnchor, cid).approved_digest == evidence.approved_revision_digest
         assert saved["plan_executor_version"] == "dependency-plan-read-replan-v1"
         assert db.get(AgentTaskState, cid).plan_revision == 2
         assert db.query(PlanToolDispatch).filter_by(conversation_id=cid).count() == 0
