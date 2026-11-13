@@ -115,7 +115,7 @@ def test_two_step_terminal_denies_corruption_without_releasing_claim(store, tamp
             elif tamper == "first_reservation":
                 db.get(DependencyV2StepReservation, (cid, first.step_id)).turn_id = tid
             elif tamper == "second_reservation":
-                db.get(DependencyV2StepReservation, (cid, 2)).dispatch_id = first.id
+                db.get(DependencyV2StepReservation, (cid, 2)).turn_id = first.turn_id
             elif tamper == "first_turn":
                 db.get(Turn, first.turn_id).state = "completed"
             elif tamper == "second_host":
