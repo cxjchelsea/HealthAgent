@@ -730,15 +730,15 @@ def test_b3c1_revision_anchor_is_consistent_and_unique(seeded):
         assert json.loads(anchor.approved_candidate_json) == result
         assert db.get(PrimaryRouteEvidence, tid).approved_revision_digest == anchor.approved_digest
     # A second origin may not be forged from a saved candidate.
-    with Session.begin() as db:
-        db.add(DependencyRevisionAnchor(
-            conversation_id=cid, revision_turn_id=tid,
-            approved_candidate_json=json.dumps(result, ensure_ascii=False),
-            approved_digest=revision_fingerprint(result),
-            parent_snapshot_sha256=anchor.parent_snapshot_sha256,
-            origin_refs_json="[]"))
-        from sqlalchemy.exc import IntegrityError
-        with pytest.raises(IntegrityError):
+    from sqlalchemy.exc import IntegrityError
+    with pytest.raises(IntegrityError):
+        with Session.begin() as db:
+            db.add(DependencyRevisionAnchor(
+                conversation_id=cid, revision_turn_id=tid,
+                approved_candidate_json=json.dumps(result, ensure_ascii=False),
+                approved_digest=revision_fingerprint(result),
+                parent_snapshot_sha256=anchor.parent_snapshot_sha256,
+                origin_refs_json="[]"))
             db.flush()
 
 
