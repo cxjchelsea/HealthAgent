@@ -120,8 +120,11 @@ def verify_revised_checkpoint_progress(
                 or original_turn is None or original_turn.conversation_id != conversation_id
                 or original_turn.state != "partial" or original_turn.failure_code is not None
                 or revision_user is None or revision_user.role != "user"
+                or revision_user.conversation_id != conversation_id
                 or revision_user.status != "completed"
+                or not revision_user.content.strip()
                 or revision_assistant is None or revision_assistant.role != "assistant"
+                or revision_assistant.conversation_id != conversation_id
                 or revision_assistant.status != "partial"
                 or revision_fingerprint(pristine) != anchor.approved_digest
                 or type(pristine.get("lineage")) is not dict
@@ -173,6 +176,7 @@ def verify_revised_checkpoint_progress(
                 or attempt is None or attempt.id != item.id
                 or attempt.conversation_id != conversation_id
                 or attempt.turn_id != item.turn_id
+                or attempt.run_id != item.turn_id
                 or attempt.step_id != step_id
                 or attempt.status != "succeeded"
                 or attempt.tool_name != item.tool_name
@@ -265,10 +269,13 @@ def verify_revised_checkpoint_progress(
             AgentStateTransition.conversation_id == conversation_id,
             AgentStateTransition.reason_code == "verified_step_completed",
             AgentStateTransition.step_id == step_id)).all()
+        expected_prior_state = ("partial" if any(
+            s["status"] == "completed" for s in pristine["steps"]) else "planned")
         if (len(origin) != 1 or len(verified) != 1
                 or origin[0].entity_type != "task"
                 or origin[0].step_id is not None or origin[0].attempt_id is not None
-                or origin[0].to_state not in ("planned", "partial")
+                or origin[0].from_state not in (None, "planned", "partial", "blocked")
+                or origin[0].to_state != expected_prior_state
                 or origin[0].revision + 1 != task.revision
                 or origin[0].task_id != task.task_id
                 or verified[0].entity_type != "step"
