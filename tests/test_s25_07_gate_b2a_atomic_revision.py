@@ -712,3 +712,94 @@ def test_pre_b2b3_admission_without_frozen_digest_cannot_commit(seeded):
         assert db.query(AgentStateTransition).filter_by(
             conversation_id=cid).count() == 0
         assert db.get(Turn, tid).state == "running"
+
+
+
+def test_b3c1_revision_anchor_is_consistent_and_unique(seeded):
+    Session, cid, tid, mid, raw, proposal_for, commit = seeded
+    from services.dependency_revision_fingerprint import revision_fingerprint
+    from services.db import DependencyRevisionAnchor
+    import hashlib
+    result = commit()
+    with Session() as db:
+        anchor = db.get(DependencyRevisionAnchor, cid)
+        assert anchor.revision_turn_id == tid
+        assert anchor.approved_digest == revision_fingerprint(result)
+        assert anchor.parent_snapshot_sha256 == hashlib.sha256(raw.encode("utf-8")).hexdigest()
+        assert json.loads(anchor.origin_refs_json) == result["lineage"]["origin_refs"]
+        assert json.loads(anchor.approved_candidate_json) == result
+        assert db.get(PrimaryRouteEvidence, tid).approved_revision_digest == anchor.approved_digest
+    # A second origin may not be forged from a saved candidate.
+    with Session.begin() as db:
+        db.add(DependencyRevisionAnchor(
+            conversation_id=cid, revision_turn_id=tid,
+            approved_candidate_json=json.dumps(result, ensure_ascii=False),
+            approved_digest=revision_fingerprint(result),
+            parent_snapshot_sha256=anchor.parent_snapshot_sha256,
+            origin_refs_json="[]"))
+        from sqlalchemy.exc import IntegrityError
+        with pytest.raises(IntegrityError):
+            db.flush()
+
+
+def test_b3c1_persist_exact_resume_request_sha_and_reject_mutated_message(seeded):
+    from agent.primary_route_v1 import RouteSignal, bind_route_signal
+    from agent.primary_host_admission_v1 import PrimaryHostFacts, admit_primary_route_v1
+    from services.primary_route_evidence import record_primary_admission
+    from services.db import DependencyRevisionAnchor
+    import hashlib
+    Session, cid, revision_tid, _, _, _, commit = seeded
+    commit()
+    current = "请继续执行修订后的计划"
+    with Session() as db:
+        raw = db.get(ConversationPlan, cid).snapshot
+    def seed_turn(text):
+        t, m = str(uuid.uuid4()), str(uuid.uuid4())
+        with Session.begin() as db:
+            db.add(Message(id=m, conversation_id=cid, role="user",
+                           content=text, status="completed"))
+            db.flush()
+            db.add(Turn(id=t, conversation_id=cid, request_id="b3c1-"+t,
+                        user_message_id=m, state="running"))
+        return t, m
+    proposal = bind_route_signal(RouteSignal.model_validate({
+        "schema_version": "primary-route-v1",
+        "route_kind": "plan_resume", "quote": current,
+        "execution_scope": "remaining_steps", "effect_intent": "read_only",
+    }), current, saved_plan_present=True, pending_action=None)
+    decision = admit_primary_route_v1(proposal, PrimaryHostFacts(
+        checkpoint=json.loads(raw), checkpoint_raw=raw,
+        current_request=current, guarded_mode=True, turn_created=True,
+        pending_action=None, pending_origin_verified=False,
+        dependency_plan_enabled=True, revision_resume_prepare_enabled=True))
+    assert decision.disposition == "allow"
+    tid, mid = seed_turn(current)
+    record_primary_admission(
+        session_factory=Session, conversation_id=cid, turn_id=tid,
+        preturn_plan_raw=raw, proposal=proposal, decision=decision,
+        semantic_attempts=1)
+    with Session() as db:
+        row = db.get(PrimaryRouteEvidence, tid)
+        assert row.approved_request_digest == hashlib.sha256(
+            current.encode("utf-8")).hexdigest()
+        assert db.get(DependencyRevisionAnchor, cid) is not None
+
+    # A Host decision tied to the original request may not authorize a
+    # different DB-bound message at the time evidence is recorded.
+    replaced_tid, replaced_mid = seed_turn(current)
+    with Session.begin() as db:
+        db.get(Message, replaced_mid).content = "请执行完全不同的计划"
+    with pytest.raises(ValueError, match="primary_resume_evidence_unbound"):
+        record_primary_admission(
+            session_factory=Session, conversation_id=cid, turn_id=replaced_tid,
+            preturn_plan_raw=raw, proposal=proposal, decision=decision,
+            semantic_attempts=1)
+    with Session() as db:
+        assert db.get(PrimaryRouteEvidence, replaced_tid) is None
+    # fixture removes scoped Turn/Message and origin Anchor
+
+
+def test_b3c1_other_primary_routes_keep_request_digest_null(seeded):
+    Session, cid, tid, *_ = seeded
+    with Session() as db:
+        assert db.get(PrimaryRouteEvidence, tid).approved_request_digest is None
