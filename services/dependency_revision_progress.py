@@ -71,7 +71,9 @@ def verify_revised_checkpoint_progress(
 def _verify_revised_checkpoint_in_session(db, *, owner_id: str,
                                            conversation_id: str,
                                            expected_raw: str,
-                                           terminal_history: bool = False
+                                           terminal_history: bool = False,
+                                           continuation_turn_id: str | None = None,
+                                           pending_dispatch_id: str | None = None
                                            ) -> VerifiedRevisedCheckpoint:
     """Locked proof of the first v2 step in running or just-closed state.
 
@@ -96,10 +98,27 @@ def _verify_revised_checkpoint_in_session(db, *, owner_id: str,
             or saved is None or saved.snapshot != expected_raw
             or fence is None):
         _deny()
+    if terminal_history and continuation_turn_id is not None:
+        _deny()
     if terminal_history:
         if claim is not None or fence.state != "fenced":
             _deny()
         original_execution_turn_id = fence.turn_id
+    elif continuation_turn_id is not None:
+        if (claim is None or claim.snapshot != expected_raw
+                or claim.turn_id != continuation_turn_id
+                or fence.turn_id != continuation_turn_id
+                or fence.state != "active"):
+            _deny()
+        first_reservation = db.get(DependencyV2StepReservation, (
+            conversation_id, next((s.get("id") for s in
+                _obj(db.get(DependencyRevisionAnchor, conversation_id).approved_candidate_json)
+                ["steps"] if s.get("status") == "pending"), None)))
+        if first_reservation is None:
+            _deny()
+        original_execution_turn_id = first_reservation.turn_id
+        if original_execution_turn_id == continuation_turn_id:
+            _deny()
     else:
         if (claim is None or claim.snapshot != expected_raw
                 or fence.turn_id != claim.turn_id
@@ -112,8 +131,10 @@ def _verify_revised_checkpoint_in_session(db, *, owner_id: str,
             if turn is not None and turn.user_message_id else None)
     if (turn is None or turn.conversation_id != conversation_id
             or (turn.state not in ("partial", "completed")
-                if terminal_history else turn.state != "running")
-            or (terminal_history and turn.failure_code is not None)
+                if terminal_history or continuation_turn_id is not None
+                else turn.state != "running")
+            or ((terminal_history or continuation_turn_id is not None)
+                and turn.failure_code is not None)
             or not turn.request_id
             or host is None or host.conversation_id != conversation_id
             or host.route_kind != "plan_resume"
@@ -180,10 +201,16 @@ def _verify_revised_checkpoint_in_session(db, *, owner_id: str,
     ).order_by(PlanToolDispatch.step_id, PlanToolDispatch.id)
         .with_for_update()).all()
     actual_v2 = [d for d in dispatches if d.plan_revision == 2]
-    if len(actual_v2) != 1 or actual_v2[0].step_id != step_id:
+    prior_v2 = [d for d in actual_v2 if d.step_id == step_id]
+    later_v2 = [d for d in actual_v2 if d.step_id != step_id]
+    if (len(prior_v2) != 1
+            or len(later_v2) != (1 if pending_dispatch_id is not None else 0)
+            or (later_v2 and later_v2[0].id != pending_dispatch_id)
+            or (pending_dispatch_id is not None and continuation_turn_id is None)):
         _deny()
-    item = actual_v2[0]
-    original = [d for d in dispatches if d.id != item.id]
+    item = prior_v2[0]
+    original = [d for d in dispatches if d.id not in (
+        {item.id} | ({pending_dispatch_id} if pending_dispatch_id else set()))]
     _verify_inherited(db, conversation_id=conversation_id,
                       checkpoint=pristine, dispatches=original)
     reservation = db.get(DependencyV2StepReservation,
@@ -197,8 +224,11 @@ def _verify_revised_checkpoint_in_session(db, *, owner_id: str,
             or reservation.dispatch_id != item.id
             or reservation.turn_id != item.turn_id
             or item.turn_id != original_execution_turn_id
-            or item.worker_generation != fence.generation
-            or item.worker_token_digest != fence.token_digest
+            or item.worker_generation != (
+                fence.generation - 1 if continuation_turn_id is not None
+                else fence.generation)
+            or (continuation_turn_id is None
+                and item.worker_token_digest != fence.token_digest)
             or item.status != "checkpointed"
             or item.tool_name != first.get("expected_tool")
             or item.tool_version != first.get("tool_version")
@@ -291,7 +321,7 @@ def _verify_revised_checkpoint_in_session(db, *, owner_id: str,
                                for s in expected["steps"]) else "partial"
     if task_steps != projection_expected or task.state != state:
         _deny()
-    if terminal_history:
+    if terminal_history or continuation_turn_id is not None:
         terminal_message = (db.get(Message, turn.assistant_message_id)
                             if turn.assistant_message_id else None)
         if (turn.state != state or terminal_message is None
