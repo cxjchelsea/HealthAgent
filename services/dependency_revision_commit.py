@@ -16,7 +16,7 @@ from agent.dependency_revision_candidate import (
 )
 from services.db import (
     AgentAttempt, AgentStateTransition, AgentTaskState, Conversation,
-    ConversationPlan, DependencyWorkerFence, Message, PlanExecutionClaim,
+    ConversationPlan, DependencyWorkerFence, DependencyRevisionAnchor, Message, PlanExecutionClaim,
     PlanToolDispatch, PrimaryRouteEvidence, Turn, now,
 )
 from services.evidence_store import arguments_digest, bounded_projection
@@ -228,10 +228,26 @@ def commit_dependency_revision_in_session(
             or admission.approved_revision_digest
                 != revision_fingerprint(verified.candidate)):
         _deny("dependency_revision_approval_mismatch")
+    # B3c-1: the immutable approval origin is created with the SAME
+    # B2b3 revision-save transaction; a failed CAS rolls it back too.
+    # Existing pre-migration unanchored candidates are never synthesized.
+    if db.get(DependencyRevisionAnchor, conversation_id) is not None:
+        _deny("dependency_revision_anchor_conflict")
+    candidate_raw = json.dumps(verified.candidate, ensure_ascii=False)
+    db.add(DependencyRevisionAnchor(
+        conversation_id=conversation_id,
+        revision_turn_id=turn_id,
+        approved_candidate_json=candidate_raw,
+        approved_digest=revision_fingerprint(verified.candidate),
+        parent_snapshot_sha256=raw_sha,
+        origin_refs_json=json.dumps(
+            verified.candidate["lineage"]["origin_refs"], ensure_ascii=False),
+        created_at=now(),
+    ))
     changed_plan = db.execute(update(ConversationPlan).where(
         ConversationPlan.conversation_id == conversation_id,
         ConversationPlan.snapshot == expected_raw,
-    ).values(snapshot=json.dumps(verified.candidate, ensure_ascii=False)))
+    ).values(snapshot=candidate_raw))
     if changed_plan.rowcount != 1:
         _deny("dependency_revision_snapshot_conflict")
     task = db.execute(select(AgentTaskState).where(
