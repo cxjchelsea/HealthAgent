@@ -15,7 +15,7 @@ from agent.dependency_plan_schema import DependencyPlanError
 from agent.dependency_revision_candidate import compile_revision_candidate
 from services.db import (
     AgentAttempt, AgentStateTransition, AgentTaskState, Conversation,
-    ConversationPlan, DependencyWorkerFence, Message, PlanExecutionClaim,
+    ConversationPlan, DependencyRevisionAnchor, DependencyWorkerFence, Message, PlanExecutionClaim,
     PlanToolDispatch, PrimaryRouteEvidence, Turn, database,
 )
 from services.dependency_revision_commit import commit_dependency_revision_in_session
@@ -106,7 +106,7 @@ def seeded(tmp_path, request):
     finally:
         with Session.begin() as db:
             for model in (
-                    AgentStateTransition, AgentAttempt, AgentTaskState,
+                    DependencyRevisionAnchor, AgentStateTransition, AgentAttempt, AgentTaskState,
                     PlanToolDispatch, PrimaryRouteEvidence,
                     PlanExecutionClaim, DependencyWorkerFence,
                     ConversationPlan, Turn, Message):
@@ -122,6 +122,7 @@ def test_revision_cas_commits_once_and_old_executor_is_not_enabled(seeded):
     assert result["plan_executor_version"] == "dependency-plan-read-replan-v1"
     with Session() as db:
         assert json.loads(db.get(ConversationPlan, cid).snapshot) == result
+        assert json.loads(db.get(DependencyRevisionAnchor, cid).approved_candidate_json) == result
         task = db.get(AgentTaskState, cid)
         assert task.plan_revision == 2
         assert task.state == "planned"
