@@ -110,10 +110,20 @@ def _verify_revised_checkpoint_in_session(db, *, owner_id: str,
                 or fence.turn_id != continuation_turn_id
                 or fence.state != "active"):
             _deny()
-        first_reservation = db.get(DependencyV2StepReservation, (
-            conversation_id, next((s.get("id") for s in
-                _obj(db.get(DependencyRevisionAnchor, conversation_id).approved_candidate_json)
-                ["steps"] if s.get("status") == "pending"), None)))
+        prior_anchor = db.get(DependencyRevisionAnchor, conversation_id)
+        if prior_anchor is None:
+            _deny()
+        prior_candidate = _obj(prior_anchor.approved_candidate_json)
+        prior_steps = prior_candidate.get("steps")
+        if type(prior_steps) is not list:
+            _deny()
+        first_step = next((step.get("id") for step in prior_steps
+                           if type(step) is dict
+                           and step.get("status") == "pending"), None)
+        if type(first_step) is not int:
+            _deny()
+        first_reservation = db.get(
+            DependencyV2StepReservation, (conversation_id, first_step))
         if first_reservation is None:
             _deny()
         original_execution_turn_id = first_reservation.turn_id
