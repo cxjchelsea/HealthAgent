@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     s25_07_failure_evidence_enabled: bool = False  # Gate A: verified negative receipt projection; no retry
     s25_07_dependency_revision_proposal_enabled: bool = False  # B2b2 Primary/Host proposal only; no CAS or RESUME
     s25_07_revision_resume_prepare_enabled: bool = False  # B3b internal-only; no HTTP/dispatch
+    s25_07_revision_dispatch_intent_enabled: bool = False  # B3c-2 internal DB intent only; no tool/HTTP
     s25_05_text_stats_enabled: bool = False  # opt-in; Host read-only grant, not registry authorization
     s25_05_calculate_registry_enabled: bool = False  # opt-in legacy read migration; ordinary only
     s25_05_utc_time_registry_enabled: bool = False

@@ -67,6 +67,10 @@ class PlanDispatchJournal:
                     or entry.turn_id != self.turn_id
                     or entry.status != "dispatch_unknown"):
                 raise DispatchConflict("dispatch_not_current")
+            # B3c-3 owns the specialized revision-2 Receipt protocol.
+            # The legacy journal must not make this new intent executable.
+            if entry.plan_revision == 2:
+                raise DispatchConflict("revision2_receipt_not_wired")
             # Legacy M4 dispatches have no generation and must not inherit
             # an unrelated S25-06 fence. A generation-bound dispatch always
             # requires the exact token even if the old worker was replaced.
