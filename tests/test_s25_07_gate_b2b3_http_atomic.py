@@ -89,7 +89,7 @@ def sandbox(tmp_path, request):
             )
             with Session.begin() as db:
                 for model in (
-                    AgentStateTransition, AgentTaskState, AgentAttempt,
+                    DependencyRevisionAnchor, AgentStateTransition, AgentTaskState, AgentAttempt,
                     PlanToolDispatch, PrimaryRouteEvidence,
                     PlanExecutionClaim, DependencyWorkerFence,
                     ConversationPlan, Turn, Message):
