@@ -277,6 +277,8 @@ def checkpoint_second_revised_step_in_session(
         "plan_revision": 2, "tool_name": entry.tool_name,
         "tool_version": entry.tool_version,
         "resolved_arguments_digest": arguments_digest(args),
+        "worker_generation": entry.worker_generation,
+        "worker_token_digest": entry.worker_token_digest,
         "source_evidence_refs": [{"source_dispatch_id": source.id}],
     }
     state = ("completed" if all(s["status"] == "completed"
