@@ -257,6 +257,26 @@ def record_revised_receipt_in_session(
     projected = bounded_projection(binding.tool_name, observation)
     if type(projected) is not dict or type(projected.get("ok")) is not bool:
         _deny("dependency_v2_receipt_invalid")
+    # Never persist a positive but unusable observation. Once written, the
+    # receipt is immutable and an unknown result cannot be safely replayed.
+    # Syntactic validity is NOT independent tool-invocation attestation.
+    if projected["ok"]:
+        if binding.tool_name == "mcp_reference_lookup":
+            definition = projected.get("definition")
+            if (type(definition) is not str or not definition
+                    or projected.get("definition_availability") == "truncated"
+                    or definition != observation.get("definition")):
+                _deny("dependency_v2_receipt_unusable_success")
+        elif binding.tool_name == "text_stats":
+            text = binding.arguments.get("text")
+            if (type(text) is not str
+                    or type(projected.get("characters")) is not int
+                    or type(projected.get("words")) is not int
+                    or projected["characters"] != len(text)
+                    or projected["words"] != len(text.split())):
+                _deny("dependency_v2_receipt_unusable_success")
+        else:
+            _deny("dependency_v2_receipt_tool_denied")
     dispatch.receipt_json = json.dumps(projected, ensure_ascii=False)
     dispatch.status = "observed" if projected["ok"] else "observed_failure"
     db.flush()
